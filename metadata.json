@@ -1,0 +1,11 @@
+{
+  "name": "Remix Central ITL - Segurança \u0026 Câmeras ao Vivo",
+  "description": "Sistema ITL de monitoramento de câmeras ao vivo com gravação em nuvem, alertas de movimento em tempo real, suporte RTSP/RTMP áudio bidirecional, criptografia E2EE, backup semanal e controle de permissões.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,136 @@
+{
+  "cameras": [
+    {
+      "id": "cam-5218",
+      "name": "Câmera Entrada Norte",
+      "location": "Portão 1",
+      "protocol": "RTSP",
+      "rtspUrl": "rtsp://admin:12345@192.168.1.101:554/live",
+      "rtmpUrl": "rtmp://localhost:1935/live/cam_285218",
+      "streamKey": "cam_285218",
+      "rtmpServerUrl": "rtmp://localhost:1935/live",
+      "fullRtmpUrl": "http://localhost/live/cam_285218.m3u8",
+      "stateUf": "BA",
+      "city": "Itamaraju",
+      "status": "ONLINE",
+      "isE2EEEncrypted": true,
+      "encryptionKeyHash": "e2ee-aes256-bmjk4e6r",
+      "fps": 30,
+      "resolution": "1080p Full HD",
+      "storageUsedGB": 0.1,
+      "cloudRecordingsActive": true,
+      "motionSensitivity": 7,
+      "aiDetectionEnabled": true,
+      "twoWayAudioEnabled": true,
+      "lat": -17.03425846276576,
+      "lng": -39.5350771036888,
+      "thumbnailUrl": "https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80",
+      "createdAt": "2026-07-28"
+    },
+    {
+      "id": "cam-6291",
+      "name": "Câmera Teste DB",
+      "location": "Portaria Principal",
+      "protocol": "RTSP",
+      "rtspUrl": "rtsp://admin:12345@192.168.1.100:554/stream1",
+      "rtmpUrl": "rtmp://localhost:1935/live/cam_886291",
+      "streamKey": "cam_886291",
+      "rtmpServerUrl": "rtmp://localhost:1935/live",
+      "fullRtmpUrl": "http://localhost/live/cam_886291.m3u8",
+      "stateUf": "BA",
+      "city": "Itamaraju",
+      "status": "ONLINE",
+      "isE2EEEncrypted": true,
+      "encryptionKeyHash": "e2ee-aes256-utf6bggs",
+      "fps": 30,
+      "resolution": "1080p Full HD",
+      "storageUsedGB": 0.1,
+      "cloudRecordingsActive": true,
+      "motionSensitivity": 7,
+      "aiDetectionEnabled": true,
+      "twoWayAudioEnabled": true,
+      "lat": -17.040921537243566,
+      "lng": -39.540225157326745,
+      "thumbnailUrl": "https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80",
+      "createdAt": "2026-07-28"
+    }
+  ],
+  "alerts": [],
+  "recordings": [],
+  "users": [
+    {
+      "id": "user-superadmin-01",
+      "name": "Super Admin Unity",
+      "email": "suporte@unityautomacoes.com.br",
+      "role": "ADMIN",
+      "phone": "+55 11 98765-4321",
+      "stateUf": "BA",
+      "city": "Itamaraju",
+      "status": "ACTIVE",
+      "customPermissions": {
+        "canViewLive": true,
+        "canViewRecordings": true,
+        "canControlPTZ": true,
+        "canUseTwoWayAudio": true,
+        "canManageCameras": true,
+        "canDeleteRecordings": true,
+        "canAccessAuditLogs": true,
+        "canManageUsers": true,
+        "canExportReports": true
+      },
+      "allowedCameraIds": [
+        "ALL"
+      ],
+      "lastActive": "Agora mesmo",
+      "createdAt": "2026-01-01"
+    }
+  ],
+  "logs": [
+    {
+      "id": "log-1785240285257",
+      "userName": "ITL Admin",
+      "action": "Nova câmera adicionada (RTSP): Câmera Entrada Norte",
+      "category": "SYSTEM",
+      "details": "URL: http://localhost/live/cam_285218.m3u8",
+      "ipAddress": "127.0.0.1",
+      "timestamp": "2026-07-28 12:04:45"
+    },
+    {
+      "id": "log-101",
+      "userName": "Super Admin Unity",
+      "action": "Banco de dados configurado para Produção",
+      "category": "AUTH",
+      "details": "Apenas Super Admin cadastrado na instalação limpa",
+      "ipAddress": "127.0.0.1",
+      "timestamp": "2026-07-23 00:00:00"
+    }
+  ],
+  "backupConfig": {
+    "schedule": "WEEKLY_SUNDAY_0200",
+    "destination": "LOCAL_VPS",
+    "retentionDays": 30,
+    "encryptBackups": true,
+    "autoBackupEnabled": true,
+    "lastBackupDate": "2026-07-20 02:00:00",
+    "nextBackupDate": "2026-07-27 02:00:00",
+    "status": "IDLE",
+    "storagePath": "/var/www/itl-backups/",
+    "storageLimitGB": 100
+  },
+  "notificationConfig": {
+    "pushEnabled": true,
+    "fcmServerKey": "",
+    "telegramBotToken": "",
+    "telegramChatId": "",
+    "whatsappWebhookUrl": "",
+    "soundAlerts": true,
+    "quietHoursEnabled": false,
+    "quietHoursStart": "23:00",
+    "quietHoursEnd": "06:00",
+    "alertSeverities": [
+      "CRITICAL",
+      "HIGH",
+      "MEDIUM"
+    ]
+  }
+}
