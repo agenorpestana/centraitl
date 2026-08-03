@@ -69,8 +69,7 @@ import_sql_schema() {
     rm -f "$ERR_LOG"
     return 1
 }
-    return 1
-}
+
 
 # Limpar links simbólicos quebrados no Nginx
 if [ -d /etc/nginx/sites-enabled/ ]; then

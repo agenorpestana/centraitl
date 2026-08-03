@@ -260,6 +260,7 @@ async function startServer() {
   let mpConfig: MercadoPagoConfig = { ...INITIAL_MP_CONFIG };
 
   const deletedRecordingIds = new Set<string>();
+  const deletedCameraIds = new Set<string>();
 
   // Real Active Recording Sessions Tracker
   interface ActiveRecordingSession {
@@ -283,7 +284,7 @@ async function startServer() {
   const saveToLocalFile = () => {
     try {
       const data = {
-        cameras,
+        cameras: cameras.filter((c) => c.id && !deletedCameraIds.has(c.id)),
         recordings,
         users,
         logs,
@@ -292,6 +293,8 @@ async function startServer() {
         plans,
         invoices,
         mpConfig,
+        deletedCameraIds: Array.from(deletedCameraIds),
+        deletedRecordingIds: Array.from(deletedRecordingIds),
       };
       fs.writeFileSync(LOCAL_STORE_FILE, JSON.stringify(data, null, 2), 'utf-8');
     } catch (err) {
@@ -305,7 +308,15 @@ async function startServer() {
       if (fs.existsSync(LOCAL_STORE_FILE)) {
         const raw = fs.readFileSync(LOCAL_STORE_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
-        if (parsed.cameras && Array.isArray(parsed.cameras)) cameras = parsed.cameras;
+        if (parsed.deletedCameraIds && Array.isArray(parsed.deletedCameraIds)) {
+          parsed.deletedCameraIds.forEach((id: string) => deletedCameraIds.add(id));
+        }
+        if (parsed.deletedRecordingIds && Array.isArray(parsed.deletedRecordingIds)) {
+          parsed.deletedRecordingIds.forEach((id: string) => deletedRecordingIds.add(id));
+        }
+        if (parsed.cameras && Array.isArray(parsed.cameras)) {
+          cameras = parsed.cameras.filter((c: any) => c.id && !deletedCameraIds.has(c.id));
+        }
         if (parsed.recordings && Array.isArray(parsed.recordings)) {
           // Strictly exclude legacy mock auto-generated items
           recordings = parsed.recordings.filter(
@@ -365,35 +376,40 @@ async function startServer() {
         const cols = camRes[0].columns;
         const getVal = (row: any[], name: string) => row[cols.indexOf(name)];
 
-        const loadedCams: Camera[] = camRes[0].values.map((row: any[]) => ({
-          id: String(getVal(row, 'id')),
-          name: String(getVal(row, 'name')),
-          location: String(getVal(row, 'location') || ''),
-          protocol: (getVal(row, 'protocol') || 'RTSP') as any,
-          rtspUrl: String(getVal(row, 'rtsp_url') || ''),
-          rtmpUrl: String(getVal(row, 'rtmp_url') || ''),
-          streamKey: String(getVal(row, 'stream_key') || ''),
-          rtmpServerUrl: String(getVal(row, 'rtmp_server_url') || ''),
-          fullRtmpUrl: String(getVal(row, 'full_rtmp_url') || ''),
-          stateUf: String(getVal(row, 'state_uf') || ''),
-          city: String(getVal(row, 'city') || ''),
-          status: (getVal(row, 'status') || 'ONLINE') as any,
-          isE2EEEncrypted: Boolean(getVal(row, 'is_e2ee_encrypted')),
-          encryptionKeyHash: String(getVal(row, 'encryption_key_hash') || ''),
-          fps: Number(getVal(row, 'fps') || 30),
-          resolution: String(getVal(row, 'resolution') || '1080p'),
-          storageUsedGB: parseFloat(getVal(row, 'storage_used_gb') || '0.1'),
-          cloudRecordingsActive: Boolean(getVal(row, 'cloud_recordings_active')),
-          motionSensitivity: Number(getVal(row, 'motion_sensitivity') || 7),
-          aiDetectionEnabled: Boolean(getVal(row, 'ai_detection_enabled')),
-          twoWayAudioEnabled: Boolean(getVal(row, 'two_way_audio_enabled')),
-          lat: parseFloat(getVal(row, 'lat') || '-17.0397'),
-          lng: parseFloat(getVal(row, 'lng') || '-39.5312'),
-          thumbnailUrl: String(getVal(row, 'thumbnail_url') || ''),
-          createdAt: String(getVal(row, 'created_at') || '2026-01-01'),
-        }));
-        if (loadedCams.length > 0) cameras = loadedCams;
+        const loadedCams: Camera[] = camRes[0].values
+          .map((row: any[]) => ({
+            id: String(getVal(row, 'id')),
+            name: String(getVal(row, 'name')),
+            location: String(getVal(row, 'location') || ''),
+            protocol: (getVal(row, 'protocol') || 'RTSP') as any,
+            rtspUrl: String(getVal(row, 'rtsp_url') || ''),
+            rtmpUrl: String(getVal(row, 'rtmp_url') || ''),
+            streamKey: String(getVal(row, 'stream_key') || ''),
+            rtmpServerUrl: String(getVal(row, 'rtmp_server_url') || ''),
+            fullRtmpUrl: String(getVal(row, 'full_rtmp_url') || ''),
+            stateUf: String(getVal(row, 'state_uf') || ''),
+            city: String(getVal(row, 'city') || ''),
+            status: (getVal(row, 'status') || 'ONLINE') as any,
+            isE2EEEncrypted: Boolean(getVal(row, 'is_e2ee_encrypted')),
+            encryptionKeyHash: String(getVal(row, 'encryption_key_hash') || ''),
+            fps: Number(getVal(row, 'fps') || 30),
+            resolution: String(getVal(row, 'resolution') || '1080p'),
+            storageUsedGB: parseFloat(getVal(row, 'storage_used_gb') || '0.1'),
+            cloudRecordingsActive: Boolean(getVal(row, 'cloud_recordings_active')),
+            motionSensitivity: Number(getVal(row, 'motion_sensitivity') || 7),
+            aiDetectionEnabled: Boolean(getVal(row, 'ai_detection_enabled')),
+            twoWayAudioEnabled: Boolean(getVal(row, 'two_way_audio_enabled')),
+            lat: parseFloat(getVal(row, 'lat') || '-17.0397'),
+            lng: parseFloat(getVal(row, 'lng') || '-39.5312'),
+            thumbnailUrl: String(getVal(row, 'thumbnail_url') || ''),
+            createdAt: String(getVal(row, 'created_at') || '2026-01-01'),
+          }))
+          .filter((c: Camera) => c.id && !deletedCameraIds.has(c.id));
+
+        cameras = loadedCams;
         console.log(`[SQLite ITL] ${cameras.length} câmeras carregadas do banco de dados SQL.`);
+      } else if (camRes) {
+        cameras = [];
       }
 
       // Load users
@@ -601,6 +617,8 @@ async function startServer() {
   };
 
   const deleteCameraFromSqlite = (id: string) => {
+    deletedCameraIds.add(id);
+    cameras = cameras.filter((c) => c.id !== id);
     if (!sqliteDb) return;
     try {
       sqliteDb.run('DELETE FROM cameras WHERE id = ?', [id]);
@@ -734,6 +752,8 @@ async function startServer() {
   }
 
   async function deleteCameraFromMysql(id: string) {
+    deletedCameraIds.add(id);
+    cameras = cameras.filter((c) => c.id !== id);
     saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
@@ -981,12 +1001,18 @@ async function startServer() {
       // 1. Ensure latest state from local JSON file is loaded into memory
       loadFromLocalFile();
 
+      cameras = cameras.filter((c) => c.id && !deletedCameraIds.has(c.id));
+
       // Ensure default essential seeds if memory is empty
       if (users.length === 0) users = [...INITIAL_USERS];
       if (plans.length === 0) plans = [...INITIAL_PLANS];
 
       // 2. Push all local JSON memory entities into PostgreSQL (upsert)
-      for (const c of cameras) { try { await syncCameraToMysql(c); } catch (e) {} }
+      for (const c of cameras) {
+        if (!deletedCameraIds.has(c.id)) {
+          try { await syncCameraToMysql(c); } catch (e) {}
+        }
+      }
       for (const u of users) { try { await syncUserToMysql(u); } catch (e) {} }
       for (const r of recordings) { try { await syncRecordingToMysql(r); } catch (e) {} }
       for (const l of logs) { try { await syncLogToMysql(l); } catch (e) {} }
@@ -1001,43 +1027,50 @@ async function startServer() {
       // Cameras
       const camRows = await queryPg('SELECT * FROM cameras ORDER BY created_at DESC');
       if (camRows && Array.isArray(camRows)) {
-        const dbCams = camRows.map((row: any) => ({
-          id: row.id,
-          name: row.name,
-          location: row.location || 'Localização ITL',
-          protocol: row.protocol || 'RTSP',
-          rtspUrl: row.rtsp_url || '',
-          rtmpUrl: row.rtmp_url || '',
-          streamKey: row.stream_key || '',
-          rtmpServerUrl: row.rtmp_server_url || '',
-          fullRtmpUrl: row.full_rtmp_url || '',
-          stateUf: row.state_uf || '',
-          city: row.city || '',
-          status: row.status || 'ONLINE',
-          isE2EEEncrypted: Boolean(row.is_e2ee_encrypted),
-          encryptionKeyHash: row.encryption_key_hash || '',
-          fps: row.fps || 30,
-          resolution: row.resolution || '1080p',
-          storageUsedGB: parseFloat(row.storage_used_gb || 0),
-          cloudRecordingsActive: Boolean(row.cloud_recordings_active),
-          motionSensitivity: row.motion_sensitivity || 7,
-          aiDetectionEnabled: Boolean(row.ai_detection_enabled),
-          twoWayAudioEnabled: Boolean(row.two_way_audio_enabled),
-          lat: parseFloat(row.lat || -17.0397),
-          lng: parseFloat(row.lng || -39.5312),
-          thumbnailUrl: row.thumbnail_url || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80',
-          createdAt: row.created_at || '2026-01-01',
-        }));
+        const dbCams: Camera[] = [];
+        for (const row of camRows) {
+          if (row.id && deletedCameraIds.has(row.id)) {
+            try { await queryPg('DELETE FROM cameras WHERE id = ?', [row.id]); } catch (e) {}
+            continue;
+          }
+          dbCams.push({
+            id: row.id,
+            name: row.name,
+            location: row.location || 'Localização ITL',
+            protocol: row.protocol || 'RTSP',
+            rtspUrl: row.rtsp_url || '',
+            rtmpUrl: row.rtmp_url || '',
+            streamKey: row.stream_key || '',
+            rtmpServerUrl: row.rtmp_server_url || '',
+            fullRtmpUrl: row.full_rtmp_url || '',
+            stateUf: row.state_uf || '',
+            city: row.city || '',
+            status: row.status || 'ONLINE',
+            isE2EEEncrypted: Boolean(row.is_e2ee_encrypted),
+            encryptionKeyHash: row.encryption_key_hash || '',
+            fps: row.fps || 30,
+            resolution: row.resolution || '1080p',
+            storageUsedGB: parseFloat(row.storage_used_gb || 0),
+            cloudRecordingsActive: Boolean(row.cloud_recordings_active),
+            motionSensitivity: row.motion_sensitivity || 7,
+            aiDetectionEnabled: Boolean(row.ai_detection_enabled),
+            twoWayAudioEnabled: Boolean(row.two_way_audio_enabled),
+            lat: parseFloat(row.lat || -17.0397),
+            lng: parseFloat(row.lng || -39.5312),
+            thumbnailUrl: row.thumbnail_url || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80',
+            createdAt: row.created_at || '2026-01-01',
+          });
+        }
 
         const camMap = new Map<string, Camera>();
         for (const c of dbCams) camMap.set(c.id, c);
         for (const c of cameras) {
-          if (!camMap.has(c.id)) {
+          if (!deletedCameraIds.has(c.id) && !camMap.has(c.id)) {
             camMap.set(c.id, c);
             await syncCameraToMysql(c);
           }
         }
-        cameras = Array.from(camMap.values());
+        cameras = Array.from(camMap.values()).filter((c) => !deletedCameraIds.has(c.id));
       }
 
       // Users
@@ -2441,6 +2474,7 @@ async function startServer() {
 
   app.delete('/api/cameras/:id', async (req, res) => {
     const { id } = req.params;
+    deletedCameraIds.add(id);
     const cam = cameras.find((c) => c.id === id);
     if (cam && cam.streamKey) {
       stopCameraRtspStream(cam.streamKey);
