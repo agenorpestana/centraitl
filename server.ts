@@ -1653,310 +1653,269 @@ async function startServer() {
     }
   }
 
+  // Comprehensive Table-by-Table & Column-by-Column Schema Auditor and Sync Engine
+  const auditAndSyncDatabaseSchema = async () => {
+    if (!isPgActive || !pool) {
+      return { success: false, message: 'PostgreSQL não está ativo/conectado.', auditLog: [], tableReports: [], totalPurged: 0 };
+    }
+
+    const auditLog: string[] = [];
+    const tableReports: Array<{ table: string; created: boolean; columnsAdded: string[]; totalColumns: number }> = [];
+
+    const schemaMap: Record<string, Record<string, string>> = {
+      cameras: {
+        id: 'VARCHAR(64) PRIMARY KEY',
+        name: 'VARCHAR(255) NOT NULL',
+        location: 'TEXT',
+        protocol: "VARCHAR(50) DEFAULT 'RTSP'",
+        rtsp_url: 'TEXT',
+        rtmp_url: 'TEXT',
+        stream_key: 'VARCHAR(100)',
+        rtmp_server_url: 'TEXT',
+        full_rtmp_url: 'TEXT',
+        state_uf: 'VARCHAR(20)',
+        city: 'VARCHAR(100)',
+        status: "VARCHAR(50) DEFAULT 'ONLINE'",
+        is_e2ee_encrypted: 'SMALLINT DEFAULT 1',
+        encryption_key_hash: 'TEXT',
+        fps: 'INT DEFAULT 30',
+        resolution: "VARCHAR(50) DEFAULT '1080p'",
+        storage_used_gb: 'DOUBLE PRECISION DEFAULT 0.1',
+        cloud_recordings_active: 'SMALLINT DEFAULT 1',
+        motion_sensitivity: 'INT DEFAULT 7',
+        ai_detection_enabled: 'SMALLINT DEFAULT 1',
+        two_way_audio_enabled: 'SMALLINT DEFAULT 1',
+        lat: 'DOUBLE PRECISION',
+        lng: 'DOUBLE PRECISION',
+        thumbnail_url: 'TEXT',
+        video_stream_url: 'TEXT',
+        is_live_webcam: 'SMALLINT DEFAULT 0',
+        is_demo: 'SMALLINT DEFAULT 0',
+        created_at: 'VARCHAR(100)'
+      },
+      users: {
+        id: 'VARCHAR(64) PRIMARY KEY',
+        name: 'VARCHAR(255) NOT NULL',
+        email: 'VARCHAR(255) NOT NULL',
+        password_hash: 'VARCHAR(255)',
+        role: "VARCHAR(50) DEFAULT 'RESIDENT'",
+        phone: 'VARCHAR(50)',
+        state_uf: 'VARCHAR(20)',
+        city: 'VARCHAR(100)',
+        status: "VARCHAR(50) DEFAULT 'ACTIVE'",
+        custom_permissions: 'JSONB',
+        allowed_camera_ids: 'JSONB',
+        plan_id: 'VARCHAR(64)',
+        plan_name: 'VARCHAR(255)',
+        monthly_fee: 'DOUBLE PRECISION DEFAULT 0',
+        chosen_due_day: 'INT DEFAULT 5',
+        financial_status: "VARCHAR(50) DEFAULT 'OK'",
+        days_overdue: 'INT DEFAULT 0',
+        last_active: "VARCHAR(100) DEFAULT 'Agora'",
+        created_at: "VARCHAR(100) DEFAULT '2026-01-01'"
+      },
+      cloud_recordings: {
+        id: 'VARCHAR(64) PRIMARY KEY',
+        camera_id: 'VARCHAR(64)',
+        camera_name: 'VARCHAR(255)',
+        start_time: 'VARCHAR(100)',
+        end_time: 'VARCHAR(100)',
+        duration_sec: 'INT DEFAULT 0',
+        file_size_mb: 'DOUBLE PRECISION DEFAULT 0',
+        stream_url: 'TEXT',
+        thumbnail_url: 'TEXT',
+        is_e2ee_locked: 'SMALLINT DEFAULT 0',
+        tags: 'JSONB',
+        created_at: 'VARCHAR(100)'
+      },
+      motion_alerts: {
+        id: 'VARCHAR(64) PRIMARY KEY',
+        camera_id: 'VARCHAR(64)',
+        camera_name: 'VARCHAR(255)',
+        event_type: "VARCHAR(50) DEFAULT 'HUMAN'",
+        confidence: 'INT DEFAULT 90',
+        snapshot_url: 'TEXT',
+        video_clip_url: 'TEXT',
+        timestamp: 'VARCHAR(100)',
+        severity: "VARCHAR(50) DEFAULT 'HIGH'",
+        read_status: 'SMALLINT DEFAULT 0',
+        pushed_to_mobile: 'SMALLINT DEFAULT 1',
+        created_at: 'VARCHAR(100)'
+      },
+      activity_logs: {
+        id: 'VARCHAR(64) PRIMARY KEY',
+        user_id: 'VARCHAR(64)',
+        user_name: 'VARCHAR(255)',
+        action: 'TEXT',
+        category: "VARCHAR(50) DEFAULT 'SYSTEM'",
+        details: 'TEXT',
+        ip_address: 'VARCHAR(50)',
+        timestamp: 'VARCHAR(100)'
+      },
+      financial_plans: {
+        id: 'VARCHAR(64) PRIMARY KEY',
+        name: 'VARCHAR(255) NOT NULL',
+        monthly_price: 'DOUBLE PRECISION DEFAULT 0',
+        cameras_included: 'INT DEFAULT 4',
+        cloud_retention_days: 'INT DEFAULT 7',
+        description: 'TEXT',
+        popular: 'SMALLINT DEFAULT 0',
+        created_at: 'VARCHAR(100)'
+      },
+      financial_invoices: {
+        id: 'VARCHAR(64) PRIMARY KEY',
+        user_id: 'VARCHAR(64)',
+        user_name: 'VARCHAR(255)',
+        user_email: 'VARCHAR(255)',
+        plan_name: 'VARCHAR(255)',
+        amount: 'DOUBLE PRECISION DEFAULT 0',
+        original_amount: 'DOUBLE PRECISION DEFAULT 0',
+        due_date: 'VARCHAR(50)',
+        payment_date: 'VARCHAR(50)',
+        status: "VARCHAR(50) DEFAULT 'PENDING'",
+        is_pro_rata: 'SMALLINT DEFAULT 0',
+        pro_rata_days: 'INT DEFAULT 0',
+        pix_code: 'TEXT',
+        pix_qr_code_url: 'TEXT',
+        mercado_pago_payment_id: 'VARCHAR(100)',
+        created_at: 'VARCHAR(100)'
+      },
+      mercado_pago_config: {
+        id: "VARCHAR(64) PRIMARY KEY DEFAULT 'default'",
+        access_token: 'TEXT',
+        public_key: 'TEXT',
+        webhook_secret: 'TEXT',
+        is_sandbox: 'SMALLINT DEFAULT 1',
+        auto_approve_simulated: 'SMALLINT DEFAULT 1',
+        updated_at: 'VARCHAR(100)'
+      },
+      backup_settings: {
+        id: "VARCHAR(64) PRIMARY KEY DEFAULT 'default'",
+        schedule: 'VARCHAR(50)',
+        destination: 'VARCHAR(50)',
+        retention_days: 'INT DEFAULT 30',
+        encrypt_backups: 'SMALLINT DEFAULT 1',
+        auto_backup_enabled: 'SMALLINT DEFAULT 1',
+        last_backup_date: 'VARCHAR(100)',
+        next_backup_date: 'VARCHAR(100)',
+        status: 'VARCHAR(50)',
+        storage_path: 'VARCHAR(255)',
+        storage_limit_gb: 'INT DEFAULT 100'
+      },
+      notification_settings: {
+        id: "VARCHAR(64) PRIMARY KEY DEFAULT 'default'",
+        push_enabled: 'SMALLINT DEFAULT 1',
+        fcm_server_key: 'TEXT',
+        telegram_bot_token: 'TEXT',
+        telegram_chat_id: 'VARCHAR(100)',
+        whatsapp_webhook_url: 'TEXT',
+        sound_alerts: 'SMALLINT DEFAULT 1',
+        quiet_hours_enabled: 'SMALLINT DEFAULT 0',
+        quiet_hours_start: 'VARCHAR(20)',
+        quiet_hours_end: 'VARCHAR(20)',
+        alert_severities: 'JSONB'
+      },
+      system_settings: {
+        id: "VARCHAR(64) PRIMARY KEY DEFAULT 'default'",
+        storage_limit_gb: 'DOUBLE PRECISION DEFAULT 100',
+        vault_unlocked: 'SMALLINT DEFAULT 1',
+        passphrase_hash: 'TEXT',
+        algorithm: "VARCHAR(50) DEFAULT 'AES-256-GCM'",
+        updated_at: 'VARCHAR(100)'
+      }
+    };
+
+    for (const [tableName, expectedCols] of Object.entries(schemaMap)) {
+      let wasCreated = false;
+      const addedCols: string[] = [];
+
+      try {
+        // 1. Verify table existence
+        const tableCheck = await queryPg(
+          "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?",
+          [tableName]
+        );
+
+        if (!tableCheck || tableCheck.length === 0) {
+          const colDefs = Object.entries(expectedCols)
+            .map(([colName, colType]) => `"${colName}" ${colType}`)
+            .join(', ');
+          await queryPg(`CREATE TABLE "${tableName}" (${colDefs})`);
+          wasCreated = true;
+          auditLog.push(`[Tabela Nova Criada] Tabela '${tableName}' não existia e foi criada com ${Object.keys(expectedCols).length} colunas.`);
+        }
+
+        // 2. Query existing columns in table
+        const colRows = await queryPg(
+          "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?",
+          [tableName]
+        );
+        const existingCols = new Set((colRows || []).map((r: any) => r.column_name));
+
+        // 3. Check column by column & add missing columns
+        for (const [colName, colType] of Object.entries(expectedCols)) {
+          if (!existingCols.has(colName)) {
+            const alterType = colType.replace(/PRIMARY KEY/i, '').trim();
+            try {
+              await queryPg(`ALTER TABLE "${tableName}" ADD COLUMN IF NOT EXISTS "${colName}" ${alterType}`);
+              addedCols.push(colName);
+              auditLog.push(`[Coluna Adicionada] Coluna '${colName}' adicionada na tabela '${tableName}'.`);
+            } catch (colErr: any) {
+              console.error(`[Col Add Error] ${tableName}.${colName}:`, colErr.message || colErr);
+            }
+          }
+        }
+
+        tableReports.push({
+          table: tableName,
+          created: wasCreated,
+          columnsAdded: addedCols,
+          totalColumns: Object.keys(expectedCols).length
+        });
+      } catch (tblErr: any) {
+        console.error(`[Audit Error] Tabela ${tableName}:`, tblErr.message || tblErr);
+      }
+    }
+
+    // 4. Purge deleted records from PostgreSQL
+    let totalPurged = 0;
+    for (const id of deletedCameraIds) {
+      try { await queryPg('DELETE FROM cameras WHERE id = ?', [id]); totalPurged++; } catch (e) {}
+    }
+    for (const id of deletedUserIds) {
+      try { await queryPg('DELETE FROM users WHERE id = ?', [id]); totalPurged++; } catch (e) {}
+    }
+    for (const id of deletedRecordingIds) {
+      try { await queryPg('DELETE FROM cloud_recordings WHERE id = ?', [id]); totalPurged++; } catch (e) {}
+    }
+    for (const id of deletedPlanIds) {
+      try { await queryPg('DELETE FROM financial_plans WHERE id = ?', [id]); totalPurged++; } catch (e) {}
+    }
+    for (const id of deletedInvoiceIds) {
+      try { await queryPg('DELETE FROM financial_invoices WHERE id = ?', [id]); totalPurged++; } catch (e) {}
+    }
+
+    if (totalPurged > 0) {
+      auditLog.push(`[Registros Purgados] ${totalPurged} registros marcados como excluídos foram removidos permanentemente do banco PostgreSQL.`);
+    } else {
+      auditLog.push('[Registros Purgados] Nenhum registro pendente de exclusão.');
+    }
+
+    return {
+      success: true,
+      message: `Auditoria tabela a tabela / coluna a coluna concluída: ${tableReports.length} tabelas auditadas, ${auditLog.length} apontamentos.`,
+      auditLog,
+      tableReports,
+      totalPurged
+    };
+  };
+
   // Standalone table creation and column migration helper
   const ensurePgTablesExist = async () => {
     if (!isPgActive || !pool) return;
     try {
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS cameras (
-            id VARCHAR(64) PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            location TEXT,
-            protocol VARCHAR(50) DEFAULT 'RTSP',
-            rtsp_url TEXT,
-            rtmp_url TEXT,
-            stream_key VARCHAR(100),
-            rtmp_server_url TEXT,
-            full_rtmp_url TEXT,
-            state_uf VARCHAR(20),
-            city VARCHAR(100),
-            status VARCHAR(50) DEFAULT 'ONLINE',
-            is_e2ee_encrypted SMALLINT DEFAULT 1,
-            encryption_key_hash TEXT,
-            fps INT DEFAULT 30,
-            resolution VARCHAR(50) DEFAULT '1080p',
-            storage_used_gb DOUBLE PRECISION DEFAULT 0.1,
-            cloud_recordings_active SMALLINT DEFAULT 1,
-            motion_sensitivity INT DEFAULT 7,
-            ai_detection_enabled SMALLINT DEFAULT 1,
-            two_way_audio_enabled SMALLINT DEFAULT 1,
-            lat DOUBLE PRECISION,
-            lng DOUBLE PRECISION,
-            thumbnail_url TEXT,
-            video_stream_url TEXT,
-            is_live_webcam SMALLINT DEFAULT 0,
-            is_demo SMALLINT DEFAULT 0,
-            created_at VARCHAR(100)
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] cameras:', e.message); }
-
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS users (
-            id VARCHAR(64) PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            email VARCHAR(255) NOT NULL,
-            password_hash VARCHAR(255),
-            role VARCHAR(50) DEFAULT 'RESIDENT',
-            phone VARCHAR(50),
-            state_uf VARCHAR(20),
-            city VARCHAR(100),
-            status VARCHAR(50) DEFAULT 'ACTIVE',
-            custom_permissions JSONB,
-            allowed_camera_ids JSONB,
-            plan_id VARCHAR(64),
-            plan_name VARCHAR(255),
-            monthly_fee DOUBLE PRECISION DEFAULT 0,
-            chosen_due_day INT DEFAULT 5,
-            financial_status VARCHAR(50) DEFAULT 'OK',
-            days_overdue INT DEFAULT 0,
-            last_active VARCHAR(100) DEFAULT 'Agora',
-            created_at VARCHAR(100) DEFAULT '2026-01-01'
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] users:', e.message); }
-
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS cloud_recordings (
-            id VARCHAR(64) PRIMARY KEY,
-            camera_id VARCHAR(64),
-            camera_name VARCHAR(255),
-            start_time VARCHAR(100),
-            end_time VARCHAR(100),
-            duration_sec INT DEFAULT 0,
-            file_size_mb DOUBLE PRECISION DEFAULT 0,
-            stream_url TEXT,
-            thumbnail_url TEXT,
-            is_e2ee_locked SMALLINT DEFAULT 0,
-            tags JSONB,
-            created_at VARCHAR(100)
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] cloud_recordings:', e.message); }
-
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS motion_alerts (
-            id VARCHAR(64) PRIMARY KEY,
-            camera_id VARCHAR(64),
-            camera_name VARCHAR(255),
-            event_type VARCHAR(50) DEFAULT 'HUMAN',
-            confidence INT DEFAULT 90,
-            snapshot_url TEXT,
-            video_clip_url TEXT,
-            timestamp VARCHAR(100),
-            severity VARCHAR(50) DEFAULT 'HIGH',
-            read_status SMALLINT DEFAULT 0,
-            pushed_to_mobile SMALLINT DEFAULT 1,
-            created_at VARCHAR(100)
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] motion_alerts:', e.message); }
-
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS activity_logs (
-            id VARCHAR(64) PRIMARY KEY,
-            user_id VARCHAR(64),
-            user_name VARCHAR(255),
-            action TEXT,
-            category VARCHAR(50) DEFAULT 'SYSTEM',
-            details TEXT,
-            ip_address VARCHAR(50),
-            timestamp VARCHAR(100)
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] activity_logs:', e.message); }
-
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS financial_plans (
-            id VARCHAR(64) PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            monthly_price DOUBLE PRECISION DEFAULT 0,
-            cameras_included INT DEFAULT 4,
-            cloud_retention_days INT DEFAULT 7,
-            description TEXT,
-            popular SMALLINT DEFAULT 0,
-            created_at VARCHAR(100)
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] financial_plans:', e.message); }
-
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS financial_invoices (
-            id VARCHAR(64) PRIMARY KEY,
-            user_id VARCHAR(64),
-            user_name VARCHAR(255),
-            user_email VARCHAR(255),
-            plan_name VARCHAR(255),
-            amount DOUBLE PRECISION DEFAULT 0,
-            original_amount DOUBLE PRECISION DEFAULT 0,
-            due_date VARCHAR(50),
-            payment_date VARCHAR(50),
-            status VARCHAR(50) DEFAULT 'PENDING',
-            is_pro_rata SMALLINT DEFAULT 0,
-            pro_rata_days INT DEFAULT 0,
-            pix_code TEXT,
-            pix_qr_code_url TEXT,
-            mercado_pago_payment_id VARCHAR(100),
-            created_at VARCHAR(100)
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] financial_invoices:', e.message); }
-
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS mercado_pago_config (
-            id VARCHAR(64) PRIMARY KEY DEFAULT 'default',
-            access_token TEXT,
-            public_key TEXT,
-            webhook_secret TEXT,
-            is_sandbox SMALLINT DEFAULT 1,
-            auto_approve_simulated SMALLINT DEFAULT 1,
-            updated_at VARCHAR(100)
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] mercado_pago_config:', e.message); }
-
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS backup_settings (
-            id VARCHAR(64) PRIMARY KEY DEFAULT 'default',
-            schedule VARCHAR(50),
-            destination VARCHAR(50),
-            retention_days INT DEFAULT 30,
-            encrypt_backups SMALLINT DEFAULT 1,
-            auto_backup_enabled SMALLINT DEFAULT 1,
-            last_backup_date VARCHAR(100),
-            next_backup_date VARCHAR(100),
-            status VARCHAR(50),
-            storage_path VARCHAR(255),
-            storage_limit_gb INT DEFAULT 100
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] backup_settings:', e.message); }
-
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS notification_settings (
-            id VARCHAR(64) PRIMARY KEY DEFAULT 'default',
-            push_enabled SMALLINT DEFAULT 1,
-            fcm_server_key TEXT,
-            telegram_bot_token TEXT,
-            telegram_chat_id VARCHAR(100),
-            whatsapp_webhook_url TEXT,
-            sound_alerts SMALLINT DEFAULT 1,
-            quiet_hours_enabled SMALLINT DEFAULT 0,
-            quiet_hours_start VARCHAR(20),
-            quiet_hours_end VARCHAR(20),
-            alert_severities JSONB
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] notification_settings:', e.message); }
-
-      try {
-        await queryPg(`
-          CREATE TABLE IF NOT EXISTS system_settings (
-            id VARCHAR(64) PRIMARY KEY DEFAULT 'default',
-            storage_limit_gb DOUBLE PRECISION DEFAULT 100,
-            vault_unlocked SMALLINT DEFAULT 1,
-            passphrase_hash TEXT,
-            algorithm VARCHAR(50) DEFAULT 'AES-256-GCM',
-            updated_at VARCHAR(100)
-          );
-        `);
-      } catch (e: any) { console.error('[PostgreSQL Table Error] system_settings:', e.message); }
-
-      // Migration helpers for existing PostgreSQL tables
-      const alterPg = async (sql: string) => { try { await queryPg(sql); } catch (e) {} };
-      // Cameras
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS location TEXT");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS protocol VARCHAR(50) DEFAULT 'RTSP'");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS rtsp_url TEXT");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS rtmp_url TEXT");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS stream_key VARCHAR(100)");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS rtmp_server_url TEXT");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS full_rtmp_url TEXT");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS state_uf VARCHAR(20)");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS city VARCHAR(100)");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ONLINE'");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_e2ee_encrypted SMALLINT DEFAULT 1");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS encryption_key_hash TEXT");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS fps INT DEFAULT 30");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS resolution VARCHAR(50) DEFAULT '1080p'");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS storage_used_gb DOUBLE PRECISION DEFAULT 0.1");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS cloud_recordings_active SMALLINT DEFAULT 1");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS motion_sensitivity INT DEFAULT 7");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS ai_detection_enabled SMALLINT DEFAULT 1");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS two_way_audio_enabled SMALLINT DEFAULT 1");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS thumbnail_url TEXT");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS video_stream_url TEXT");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_live_webcam SMALLINT DEFAULT 0");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_demo SMALLINT DEFAULT 0");
-      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS created_at VARCHAR(100)");
-
-      // Users
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'RESIDENT'");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50)");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS state_uf VARCHAR(20)");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS city VARCHAR(100)");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ACTIVE'");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_permissions JSONB");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_camera_ids JSONB");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_id VARCHAR(64)");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_name VARCHAR(255)");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_fee DOUBLE PRECISION DEFAULT 0");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS chosen_due_day INT DEFAULT 5");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS financial_status VARCHAR(50) DEFAULT 'OK'");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS days_overdue INT DEFAULT 0");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active VARCHAR(100) DEFAULT 'Agora'");
-      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at VARCHAR(100) DEFAULT '2026-01-01'");
-
-      // Cloud Recordings
-      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS camera_id VARCHAR(64)");
-      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS camera_name VARCHAR(255)");
-      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS start_time VARCHAR(100)");
-      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS end_time VARCHAR(100)");
-      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS duration_sec INT DEFAULT 0");
-      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS file_size_mb DOUBLE PRECISION DEFAULT 0");
-      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS stream_url TEXT");
-      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS thumbnail_url TEXT");
-      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS is_e2ee_locked SMALLINT DEFAULT 0");
-      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS tags JSONB");
-
-      // Financial Plans
-      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS name VARCHAR(255)");
-      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS monthly_price DOUBLE PRECISION DEFAULT 0");
-      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS cameras_included INT DEFAULT 4");
-      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS cloud_retention_days INT DEFAULT 7");
-      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS description TEXT");
-      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS popular SMALLINT DEFAULT 0");
-
-      // Financial Invoices
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS user_id VARCHAR(64)");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS user_name VARCHAR(255)");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS user_email VARCHAR(255)");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS plan_name VARCHAR(255)");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS amount DOUBLE PRECISION DEFAULT 0");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS original_amount DOUBLE PRECISION DEFAULT 0");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS due_date VARCHAR(50)");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS payment_date VARCHAR(50)");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'PENDING'");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS is_pro_rata SMALLINT DEFAULT 0");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS pro_rata_days INT DEFAULT 0");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS pix_code TEXT");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS pix_qr_code_url TEXT");
-      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS mercado_pago_payment_id VARCHAR(100)");
-
-      console.log('[PostgreSQL ITL Table Audit] Schema e tabelas auditados e prontos.');
+      await auditAndSyncDatabaseSchema();
+      console.log('[PostgreSQL ITL Table Audit] Schema, tabelas e colunas auditadas com SUCESSO.');
     } catch (err: any) {
       console.error('[PostgreSQL Table Audit Error]', err.message || err);
     }
@@ -3008,25 +2967,40 @@ async function startServer() {
   });
 
   app.post('/api/db-sync', async (req, res) => {
-    await initPostgresAndSync();
-    if (isPgActive && pool) {
-      for (const cam of cameras) { await syncCameraToMysql(cam); }
-      for (const user of users) { await syncUserToMysql(user); }
-      for (const rec of recordings) { await syncRecordingToMysql(rec); }
-      for (const log of logs) { await syncLogToMysql(log); }
-      for (const plan of plans) { await syncPlanToMysql(plan); }
-      for (const inv of invoices) { await syncInvoiceToMysql(inv); }
-      await syncMpConfigToMysql(mpConfig);
-      await syncBackupConfigToMysql(backupConfig);
-      await syncNotificationConfigToMysql(notificationConfig);
-      await syncSystemSettingsToMysql(backupConfig.storageLimitGB || 100);
+    try {
+      await initPostgresAndSync();
+      if (isPgActive && pool) {
+        const auditResult = await auditAndSyncDatabaseSchema();
+        await fullTwoWaySync();
 
-      return res.json({
-        success: true,
-        message: `Sincronização completa de todas as tabelas concluída com sucesso! (${cameras.length} câmeras, ${users.length} usuários, ${recordings.length} gravações, ${plans.length} planos, ${invoices.length} faturas salvas no PostgreSQL).`
+        return res.json({
+          success: true,
+          message: `Sincronização e auditoria completa concluídas com sucesso! (${cameras.length} câmeras, ${users.length} usuários, ${recordings.length} gravações, ${plans.length} planos, ${invoices.length} faturas sincronizados).`,
+          auditResult,
+          isPgActive: true,
+          counts: {
+            cameras: cameras.length,
+            users: users.length,
+            recordings: recordings.length,
+            plans: plans.length,
+            invoices: invoices.length,
+            logs: logs.length
+          }
+        });
+      } else {
+        return res.json({
+          success: false,
+          message: 'PostgreSQL não está ativo ou acessível no momento. O sistema está operando com persistência JSON local.',
+          isPgActive: false
+        });
+      }
+    } catch (err: any) {
+      console.error('[API /api/db-sync Error]', err);
+      return res.status(500).json({
+        success: false,
+        message: `Erro ao executar sincronização do banco: ${err.message || err}`,
+        isPgActive: isPgActive
       });
-    } else {
-      return res.status(500).json({ success: false, message: 'Não foi possível conectar ao PostgreSQL para sincronizar.' });
     }
   });
 

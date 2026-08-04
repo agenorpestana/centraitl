@@ -73,6 +73,14 @@ export const DatabaseDiagnosticsPanel: React.FC<DatabaseDiagnosticsPanelProps> =
   const [savingConfig, setSavingConfig] = useState(false);
   const [configMessage, setConfigMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  const [syncResult, setSyncResult] = useState<{
+    success: boolean;
+    message: string;
+    auditLog?: string[];
+    tableReports?: Array<{ table: string; created: boolean; columnsAdded: string[]; totalColumns: number }>;
+    totalPurged?: number;
+  } | null>(null);
+
   const addLog = (msg: string) => {
     const timestamp = new Date().toLocaleTimeString('pt-BR');
     setConsoleLogs((prev) => [`[${timestamp}] ${msg}`, ...prev.slice(0, 99)]);
@@ -164,17 +172,36 @@ export const DatabaseDiagnosticsPanel: React.FC<DatabaseDiagnosticsPanelProps> =
 
   const handleForceSync = async () => {
     setIsSyncing(true);
-    addLog('Iniciando sincronização forçada das tabelas de memória para o PostgreSQL...');
+    setSyncResult(null);
+    addLog('=== INICIANDO AUDITORIA TABELA A TABELA, COLUNA A COLUNA E SINCRONIZAÇÃO ===');
     try {
       const res = await fetch('/api/db-sync', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
         addLog(`[SUCESSO] ${data.message}`);
+        if (data.auditResult?.auditLog) {
+          data.auditResult.auditLog.forEach((entry: string) => addLog(entry));
+        }
+        setSyncResult({
+          success: true,
+          message: data.message,
+          auditLog: data.auditResult?.auditLog,
+          tableReports: data.auditResult?.tableReports,
+          totalPurged: data.auditResult?.totalPurged,
+        });
       } else {
-        addLog(`[ERRO SINCRONIZAÇÃO] ${data.message || 'Erro desconhecido'}`);
+        addLog(`[ATENÇÃO] ${data.message || 'Erro desconhecido na sincronização'}`);
+        setSyncResult({
+          success: false,
+          message: data.message || 'Não foi possível sincronizar com o banco PostgreSQL',
+        });
       }
     } catch (err: any) {
-      addLog(`[ERRO] Falha ao enviar requisição /api/db-sync: ${err.message || err}`);
+      addLog(`[ERRO FATAL] Falha ao enviar requisição /api/db-sync: ${err.message || err}`);
+      setSyncResult({
+        success: false,
+        message: `Erro na comunicação com o servidor: ${err.message || err}`,
+      });
     } finally {
       setIsSyncing(false);
       fetchDbStatus();
@@ -323,6 +350,72 @@ export const DatabaseDiagnosticsPanel: React.FC<DatabaseDiagnosticsPanelProps> =
           </button>
         </div>
       </div>
+
+      {/* Sync Result Banner & Table-by-Table Column Audit Report */}
+      {syncResult && (
+        <div
+          className={`p-5 rounded-2xl border space-y-3 transition ${
+            syncResult.success
+              ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+              : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2.5 font-bold text-sm">
+              {syncResult.success ? (
+                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+              ) : (
+                <XCircle className="w-5 h-5 text-rose-400 shrink-0" />
+              )}
+              <span>{syncResult.message}</span>
+            </div>
+            {syncResult.totalPurged !== undefined && syncResult.totalPurged > 0 && (
+              <span className="px-2.5 py-1 bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[10px] font-bold rounded-full">
+                {syncResult.totalPurged} itens excluídos purgados do BD
+              </span>
+            )}
+          </div>
+
+          {/* Table-by-Table & Column-by-Column Breakdown */}
+          {syncResult.tableReports && syncResult.tableReports.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-slate-800 space-y-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">
+                Relatório de Auditoria Estrutural (Tabela a Tabela & Coluna a Coluna):
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {syncResult.tableReports.map((report, idx) => (
+                  <div
+                    key={idx}
+                    className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs flex flex-col justify-between space-y-1"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono font-bold text-slate-200">{report.table}</span>
+                      {report.created ? (
+                        <span className="px-1.5 py-0.5 bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 text-[9px] font-bold rounded">
+                          Nova Criada
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[9px] font-bold rounded">
+                          OK ({report.totalColumns} cols)
+                        </span>
+                      )}
+                    </div>
+                    {report.columnsAdded && report.columnsAdded.length > 0 ? (
+                      <div className="text-[10px] text-amber-400 font-mono">
+                        + Colunas criadas: {report.columnsAdded.join(', ')}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-slate-500">
+                        Todas as {report.totalColumns} colunas verificadas.
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Main Grid: Config Form & Diagnostic Test Results */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
