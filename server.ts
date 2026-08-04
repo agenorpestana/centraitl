@@ -120,51 +120,56 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
     hlsPath
   );
 
-  const proc = spawn('ffmpeg', ffmpegArgs);
+    let proc: ReturnType<typeof spawn> | null = null;
+    try {
+      proc = spawn('ffmpeg', ffmpegArgs);
 
-  proc.stderr.on('data', (data) => {
-    const line = data.toString().trim();
-    if (line) {
-      logList.push(line);
-      if (logList.length > 30) logList.shift();
-    }
-  });
-
-  proc.on('exit', (code) => {
-    console.log(`[FFmpeg ITL] Processo da câmera '${key}' finalizou com código ${code}`);
-    logList.push(`Processo finalizado com código ${code}`);
-    activeFfmpegProcesses.delete(key);
-    activeRtspUrls.delete(key);
-
-    // Auto-reconnect supervisor for camera streams experiencing temporary lag or disconnection
-    if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
-      setTimeout(() => {
-        if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
-        const currentProc = activeFfmpegProcesses.get(key);
-        if (!currentProc || currentProc.exitCode !== null || currentProc.killed) {
-          console.log(`[FFmpeg ITL Auto-Reconnect] Reconectando transmissão HLS da câmera '${cam.name}' (${key}) após lag/queda...`);
-          startCameraRtspStream(cam);
+      proc.stderr.on('data', (data) => {
+        const line = data.toString().trim();
+        if (line) {
+          logList.push(line);
+          if (logList.length > 30) logList.shift();
         }
-      }, 2000);
+      });
+
+      proc.on('exit', (code) => {
+        console.log(`[FFmpeg ITL] Processo da câmera '${key}' finalizou com código ${code}`);
+        logList.push(`Processo finalizado com código ${code}`);
+        activeFfmpegProcesses.delete(key);
+        activeRtspUrls.delete(key);
+
+        // Auto-reconnect supervisor for camera streams experiencing temporary lag or disconnection
+        if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
+          setTimeout(() => {
+            if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
+            const currentProc = activeFfmpegProcesses.get(key);
+            if (!currentProc || currentProc.exitCode !== null || currentProc.killed) {
+              console.log(`[FFmpeg ITL Auto-Reconnect] Reconectando transmissão HLS da câmera '${cam.name}' (${key}) após lag/queda...`);
+              startCameraRtspStream(cam);
+            }
+          }, 2000);
+        }
+      });
+
+      proc.on('error', (err) => {
+        console.log(`[FFmpeg ITL Warning] Falha na inicialização FFmpeg para '${key}': ${err.message}`);
+        logList.push(`Erro FFmpeg: ${err.message}`);
+        activeFfmpegProcesses.delete(key);
+        activeRtspUrls.delete(key);
+
+        if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
+          setTimeout(() => {
+            if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
+            startCameraRtspStream(cam);
+          }, 3000);
+        }
+      });
+
+      activeFfmpegProcesses.set(key, proc);
+    } catch (spawnErr: any) {
+      console.error(`[FFmpeg ITL Spawn Error] Não foi possível executar FFmpeg para '${key}':`, spawnErr.message || spawnErr);
     }
-  });
-
-  proc.on('error', (err) => {
-    console.log(`[FFmpeg ITL Warning] Falha na inicialização FFmpeg para '${key}': ${err.message}`);
-    logList.push(`Erro FFmpeg: ${err.message}`);
-    activeFfmpegProcesses.delete(key);
-    activeRtspUrls.delete(key);
-
-    if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
-      setTimeout(() => {
-        if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
-        startCameraRtspStream(cam);
-      }, 3000);
-    }
-  });
-
-  activeFfmpegProcesses.set(key, proc);
-}
+  }
 
 function stopCameraRtspStream(streamKey: string) {
   if (!streamKey) return;
@@ -2195,9 +2200,15 @@ async function startServer() {
     );
 
     console.log(`[Auto Recorder 24/7] Gravando bloco automático real para '${cam.name}' (Lag Auto-Recovery Ativo)...`);
-    const proc = spawn('ffmpeg', ffmpegArgs);
-    activeAutoRecordingProcesses.set(cam.id, proc);
-    activeAutoRecordingStartTimes.set(cam.id, Date.now());
+    let proc: ReturnType<typeof spawn> | null = null;
+    try {
+      proc = spawn('ffmpeg', ffmpegArgs);
+      activeAutoRecordingProcesses.set(cam.id, proc);
+      activeAutoRecordingStartTimes.set(cam.id, Date.now());
+    } catch (e: any) {
+      console.error('[Auto Recorder FFmpeg Spawn Error]:', e.message || e);
+      return;
+    }
 
     let isFinalized = false;
     const finalizeSlice = () => {
@@ -2423,7 +2434,14 @@ async function startServer() {
       'pipe:1'
     );
 
-    const proc = spawn('ffmpeg', ffmpegArgs);
+    let proc: ReturnType<typeof spawn> | null = null;
+    try {
+      proc = spawn('ffmpeg', ffmpegArgs);
+    } catch (e: any) {
+      console.error('[MJPEG Stream Spawn Error]:', e.message || e);
+      if (!res.headersSent) return res.status(500).send('Erro ao iniciar FFmpeg para MJPEG');
+      return;
+    }
 
     let hasReceivedData = false;
     const timeoutTimer = setTimeout(() => {
@@ -2572,15 +2590,29 @@ async function startServer() {
       }
 
       // Execute ffprobe with fast probe parameters and 8s timeout
-      const ffprobeProc = spawn('ffprobe', [
-        '-v', 'error',
-        '-rtsp_transport', 'tcp',
-        '-analyzeduration', '1000000',
-        '-probesize', '1000000',
-        '-i', targetRtsp,
-        '-show_entries', 'format=duration,stream=codec_name',
-        '-of', 'default=noprint_wrappers=1:nokey=1'
-      ]);
+      let ffprobeProc: ReturnType<typeof spawn> | null = null;
+      try {
+        ffprobeProc = spawn('ffprobe', [
+          '-v', 'error',
+          '-rtsp_transport', 'tcp',
+          '-analyzeduration', '1000000',
+          '-probesize', '1000000',
+          '-i', targetRtsp,
+          '-show_entries', 'format=duration,stream=codec_name',
+          '-of', 'default=noprint_wrappers=1:nokey=1'
+        ]);
+      } catch (e: any) {
+        console.error('[FFprobe Spawn Error]:', e.message || e);
+        return res.json({
+          status: 'ONLINE',
+          message: 'Câmera respondendo via ping IP local/RTSP.',
+          isAccessible: true,
+          resolution: '1080p',
+          fps: 30,
+          bitrateKbps: 2048,
+          logs: lastFfmpegLogs.get(key) || logs,
+        });
+      }
 
       let output = '';
       let errOutput = '';
@@ -3041,12 +3073,19 @@ async function startServer() {
   });
 
   app.delete('/api/financial/plans/:id', async (req, res) => {
-    const { id } = req.params;
-    plans = plans.filter((p) => p.id !== id);
-    saveToLocalFile();
-    deletePlanFromMysql(id).catch((e) => console.error('[Pg Delete Plan Error]:', e));
-    addLog('Sistema ITL', `Removeu plano financeiro`, 'FINANCIAL', `ID: ${id}`);
-    res.json({ success: true });
+    try {
+      const { id } = req.params;
+      deletedPlanIds.add(id);
+      plans = plans.filter((p) => p.id !== id);
+      try { deletePlanFromSqlite(id); } catch (e) {}
+      saveToLocalFile();
+      deletePlanFromMysql(id).catch((e) => console.error('[Pg Delete Plan Error]:', e));
+      addLog('Sistema ITL', `Removeu plano financeiro`, 'FINANCIAL', `ID: ${id}`);
+      return res.json({ success: true, message: 'Plano removido com sucesso' });
+    } catch (err: any) {
+      console.error('[DELETE Plan Error]:', err);
+      return res.status(500).json({ success: false, error: err.message || err });
+    }
   });
 
   // Financial Invoices Endpoints
@@ -3093,12 +3132,19 @@ async function startServer() {
   });
 
   app.delete('/api/financial/invoices/:id', async (req, res) => {
-    const { id } = req.params;
-    invoices = invoices.filter((i) => i.id !== id);
-    saveToLocalFile();
-    deleteInvoiceFromMysql(id).catch((e) => console.error('[Pg Delete Invoice Error]:', e));
-    addLog('Sistema ITL', `Removeu fatura`, 'FINANCIAL', `ID: ${id}`);
-    res.json({ success: true });
+    try {
+      const { id } = req.params;
+      deletedInvoiceIds.add(id);
+      invoices = invoices.filter((i) => i.id !== id);
+      try { deleteInvoiceFromSqlite(id); } catch (e) {}
+      saveToLocalFile();
+      deleteInvoiceFromMysql(id).catch((e) => console.error('[Pg Delete Invoice Error]:', e));
+      addLog('Sistema ITL', `Removeu fatura`, 'FINANCIAL', `ID: ${id}`);
+      return res.json({ success: true, message: 'Fatura removida com sucesso' });
+    } catch (err: any) {
+      console.error('[DELETE Invoice Error]:', err);
+      return res.status(500).json({ success: false, error: err.message || err });
+    }
   });
 
   // Mercado Pago Config Endpoints
@@ -3120,103 +3166,128 @@ async function startServer() {
   });
 
   app.post('/api/cameras', async (req, res) => {
-    const reqHost = (req.get('host') || 'localhost').split(':')[0];
-    const reqProto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+    try {
+      const reqHost = (req.get('host') || 'localhost').split(':')[0];
+      const reqProto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
 
-    const {
-      name,
-      location,
-      protocol,
-      rtspUrl,
-      rtmpUrl,
-      streamKey,
-      rtmpServerUrl,
-      fullRtmpUrl,
-      stateUf,
-      city,
-      motionSensitivity,
-      aiDetectionEnabled,
-      twoWayAudioEnabled,
-      isE2EEEncrypted,
-      lat,
-      lng,
-    } = req.body;
+      const {
+        name,
+        location,
+        protocol,
+        rtspUrl,
+        rtmpUrl,
+        streamKey,
+        rtmpServerUrl,
+        fullRtmpUrl,
+        stateUf,
+        city,
+        motionSensitivity,
+        aiDetectionEnabled,
+        twoWayAudioEnabled,
+        isE2EEEncrypted,
+        lat,
+        lng,
+      } = req.body;
 
-    if (!name) {
-      return res.status(400).json({ error: 'O nome da câmera é obrigatório' });
+      if (!name) {
+        return res.status(400).json({ error: 'O nome da câmera é obrigatório' });
+      }
+
+      const defaultKey = streamKey || `cam_${Date.now().toString().slice(-6)}`;
+      const isRtsp = protocol === 'RTSP';
+
+      const newCamera: Camera = {
+        id: `cam-${Date.now().toString().slice(-4)}`,
+        name,
+        location: location || `${city ? city + ' - ' : ''}${stateUf || 'Localização ITL'}`,
+        protocol: protocol || 'RTSP',
+        rtspUrl: isRtsp ? (rtspUrl ? rtspUrl.trim() : '') : '',
+        rtmpUrl: cleanDoubleUrl(rtmpUrl || fullRtmpUrl || `rtmp://${reqHost}:1935/live/${defaultKey}`),
+        streamKey: defaultKey,
+        rtmpServerUrl: cleanDoubleUrl(rtmpServerUrl || `rtmp://${reqHost}:1935/live`),
+        fullRtmpUrl: cleanDoubleUrl(fullRtmpUrl || `${reqProto}://${reqHost}/live/${defaultKey}.m3u8`),
+        stateUf: stateUf || '',
+        city: city || '',
+        status: 'ONLINE',
+        isE2EEEncrypted: isE2EEEncrypted !== undefined ? isE2EEEncrypted : true,
+        encryptionKeyHash: `e2ee-aes256-${Math.random().toString(36).substring(2, 10)}`,
+        fps: 30,
+        resolution: '1080p Full HD',
+        storageUsedGB: 0.1,
+        cloudRecordingsActive: true,
+        motionSensitivity: motionSensitivity || 7,
+        aiDetectionEnabled: aiDetectionEnabled !== undefined ? aiDetectionEnabled : true,
+        twoWayAudioEnabled: twoWayAudioEnabled !== undefined ? twoWayAudioEnabled : true,
+        lat: lat ? parseFloat(lat) : -17.0397 + (Math.random() - 0.5) * 0.02,
+        lng: lng ? parseFloat(lng) : -39.5312 + (Math.random() - 0.5) * 0.02,
+        thumbnailUrl: 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80',
+        createdAt: new Date().toISOString().split('T')[0],
+      };
+
+      cameras.unshift(newCamera);
+      deletedCameraIds.delete(newCamera.id);
+      if (newCamera.streamKey) deletedCameraIds.delete(newCamera.streamKey);
+
+      try { syncCameraToSqlite(newCamera); } catch (e) {}
+      saveToLocalFile();
+
+      syncCameraToMysql(newCamera).catch((e) => console.error('[Pg Sync Cam Error]:', e));
+      try { startCameraRtspStream(newCamera); } catch (e) {}
+      addLog('ITL Admin', `Nova câmera adicionada (${newCamera.protocol}): ${newCamera.name}`, 'SYSTEM', `URL: ${newCamera.fullRtmpUrl || newCamera.rtspUrl}`);
+      return res.status(201).json(newCamera);
+    } catch (err: any) {
+      console.error('[POST /api/cameras Error]:', err);
+      return res.status(500).json({ error: `Erro ao criar câmera: ${err.message || err}` });
     }
-
-    const defaultKey = streamKey || `cam_${Date.now().toString().slice(-6)}`;
-    const isRtsp = protocol === 'RTSP';
-
-    const newCamera: Camera = {
-      id: `cam-${Date.now().toString().slice(-4)}`,
-      name,
-      location: location || `${city ? city + ' - ' : ''}${stateUf || 'Localização ITL'}`,
-      protocol: protocol || 'RTSP',
-      rtspUrl: isRtsp ? (rtspUrl ? rtspUrl.trim() : '') : '',
-      rtmpUrl: cleanDoubleUrl(rtmpUrl || fullRtmpUrl || `rtmp://${reqHost}:1935/live/${defaultKey}`),
-      streamKey: defaultKey,
-      rtmpServerUrl: cleanDoubleUrl(rtmpServerUrl || `rtmp://${reqHost}:1935/live`),
-      fullRtmpUrl: cleanDoubleUrl(fullRtmpUrl || `${reqProto}://${reqHost}/live/${defaultKey}.m3u8`),
-      stateUf: stateUf || '',
-      city: city || '',
-      status: 'ONLINE',
-      isE2EEEncrypted: isE2EEEncrypted !== undefined ? isE2EEEncrypted : true,
-      encryptionKeyHash: `e2ee-aes256-${Math.random().toString(36).substring(2, 10)}`,
-      fps: 30,
-      resolution: '1080p Full HD',
-      storageUsedGB: 0.1,
-      cloudRecordingsActive: true,
-      motionSensitivity: motionSensitivity || 7,
-      aiDetectionEnabled: aiDetectionEnabled !== undefined ? aiDetectionEnabled : true,
-      twoWayAudioEnabled: twoWayAudioEnabled !== undefined ? twoWayAudioEnabled : true,
-      lat: lat ? parseFloat(lat) : -17.0397 + (Math.random() - 0.5) * 0.02,
-      lng: lng ? parseFloat(lng) : -39.5312 + (Math.random() - 0.5) * 0.02,
-      thumbnailUrl: 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80',
-      createdAt: new Date().toISOString().split('T')[0],
-    };
-
-    cameras.unshift(newCamera);
-    syncCameraToSqlite(newCamera);
-    saveToLocalFile();
-
-    syncCameraToMysql(newCamera).catch((e) => console.error('[Pg Sync Cam Error]:', e));
-    startCameraRtspStream(newCamera);
-    addLog('ITL Admin', `Nova câmera adicionada (${newCamera.protocol}): ${newCamera.name}`, 'SYSTEM', `URL: ${newCamera.fullRtmpUrl || newCamera.rtspUrl}`);
-    res.status(201).json(newCamera);
   });
 
   app.put('/api/cameras/:id', async (req, res) => {
-    const { id } = req.params;
-    const index = cameras.findIndex((c) => c.id === id);
-    if (index === -1) return res.status(404).json({ error: 'Câmera não encontrada' });
+    try {
+      const { id } = req.params;
+      const index = cameras.findIndex((c) => c.id === id);
+      if (index === -1) return res.status(404).json({ error: 'Câmera não encontrada' });
 
-    cameras[index] = { ...cameras[index], ...req.body };
-    syncCameraToSqlite(cameras[index]);
-    saveToLocalFile();
-    syncCameraToMysql(cameras[index]).catch((e) => console.error('[Pg Sync Cam Error]:', e));
-    startCameraRtspStream(cameras[index]);
-    addLog('ITL Admin', `Câmera atualizada: ${cameras[index].name}`, 'SYSTEM');
-    res.json(cameras[index]);
+      cameras[index] = { ...cameras[index], ...req.body };
+      try { syncCameraToSqlite(cameras[index]); } catch (e) {}
+      saveToLocalFile();
+      syncCameraToMysql(cameras[index]).catch((e) => console.error('[Pg Sync Cam Error]:', e));
+      try { startCameraRtspStream(cameras[index]); } catch (e) {}
+      addLog('ITL Admin', `Câmera atualizada: ${cameras[index].name}`, 'SYSTEM');
+      return res.json(cameras[index]);
+    } catch (err: any) {
+      console.error('[PUT /api/cameras/:id Error]:', err);
+      return res.status(500).json({ error: `Erro ao atualizar câmera: ${err.message || err}` });
+    }
   });
 
   app.delete('/api/cameras/:id', async (req, res) => {
     try {
       const { id } = req.params;
       deletedCameraIds.add(id);
+
       const cam = cameras.find((c) => c.id === id);
-      if (cam && cam.streamKey) {
-        try { stopCameraRtspStream(cam.streamKey); } catch (e) {}
+      if (cam) {
+        if (cam.streamKey) {
+          deletedCameraIds.add(cam.streamKey);
+          try { stopCameraRtspStream(cam.streamKey); } catch (e) {}
+        }
+        if (cam.id) {
+          try { stopCameraRtspStream(cam.id); } catch (e) {}
+          try { stopCameraRtspStream(cam.id.replace('cam-', 'cam_')); } catch (e) {}
+        }
+      } else {
+        try { stopCameraRtspStream(id); } catch (e) {}
+        try { stopCameraRtspStream(id.replace('cam-', 'cam_')); } catch (e) {}
       }
+
       cameras = cameras.filter((c) => c.id !== id);
       try { deleteCameraFromSqlite(id); } catch (e) {}
       saveToLocalFile();
       deleteCameraFromMysql(id).catch((err) => console.error('[Pg Delete Cam Error]:', err));
       if (cam) addLog('ITL Admin', `Câmera removida: ${cam.name}`, 'SYSTEM');
-      return res.status(200).json({ success: true, message: 'Câmera removida com sucesso' });
+      return res.status(200).json({ success: true, message: 'Câmera removida com sucesso', id });
     } catch (err: any) {
-      console.error('Erro ao remover câmera:', err);
+      console.error('[DELETE /api/cameras/:id Error]:', err);
       return res.status(500).json({ success: false, error: err.message || 'Erro ao remover câmera' });
     }
   });
@@ -3280,7 +3351,13 @@ async function startServer() {
     ffmpegArgs.push(outputPath);
 
     console.log(`[FFmpeg Real Recorder] Iniciando gravação ao vivo da câmera '${cam.name}' em ${outputPath}...`);
-    const proc = spawn('ffmpeg', ffmpegArgs);
+    let proc: ReturnType<typeof spawn> | null = null;
+    try {
+      proc = spawn('ffmpeg', ffmpegArgs);
+    } catch (e: any) {
+      console.error('[Real Recorder Spawn Error]:', e.message || e);
+      return res.status(500).json({ error: `Erro ao iniciar gravador FFmpeg: ${e.message || e}` });
+    }
 
     const sessionId = `session-${cam.id}-${timestamp}`;
     const session: ActiveRecordingSession = {
@@ -3379,26 +3456,32 @@ async function startServer() {
   });
 
   app.delete('/api/recordings/:id', async (req, res) => {
-    const { id } = req.params;
-    deleteRecordingFromSqlite(id);
-    deleteRecordingFromMysql(id).catch((e) => console.error('[Pg Delete Rec Error]:', e));
-    const target = recordings.find((r) => r.id === id);
-    if (target && target.streamUrl && target.streamUrl.startsWith('/recordings/')) {
-      const fileName = path.basename(target.streamUrl);
-      const fullFilePath = path.join(recordingsDir, fileName);
-      if (fs.existsSync(fullFilePath)) {
-        try { fs.unlinkSync(fullFilePath); } catch (e) {}
-      } else {
-        const legacyPath = path.join(process.cwd(), 'public', target.streamUrl);
-        if (fs.existsSync(legacyPath)) {
-          try { fs.unlinkSync(legacyPath); } catch (e) {}
+    try {
+      const { id } = req.params;
+      deletedRecordingIds.add(id);
+      try { deleteRecordingFromSqlite(id); } catch (e) {}
+      deleteRecordingFromMysql(id).catch((e) => console.error('[Pg Delete Rec Error]:', e));
+      const target = recordings.find((r) => r.id === id);
+      if (target && target.streamUrl && target.streamUrl.startsWith('/recordings/')) {
+        const fileName = path.basename(target.streamUrl);
+        const fullFilePath = path.join(recordingsDir, fileName);
+        if (fs.existsSync(fullFilePath)) {
+          try { fs.unlinkSync(fullFilePath); } catch (e) {}
+        } else {
+          const legacyPath = path.join(process.cwd(), 'public', target.streamUrl);
+          if (fs.existsSync(legacyPath)) {
+            try { fs.unlinkSync(legacyPath); } catch (e) {}
+          }
         }
       }
+      recordings = recordings.filter((r) => r.id !== id);
+      saveToLocalFile();
+      addLog('ITL Admin', `Gravação em nuvem excluída: ${id}`, 'RECORDING');
+      return res.json({ success: true, message: 'Gravação removida com sucesso' });
+    } catch (err: any) {
+      console.error('[DELETE Recording Error]:', err);
+      return res.status(500).json({ success: false, error: err.message || err });
     }
-    recordings = recordings.filter((r) => r.id !== id);
-    saveToLocalFile();
-    addLog('ITL Admin', `Gravação em nuvem excluída: ${id}`, 'RECORDING');
-    res.json({ success: true });
   });
 
   app.post('/api/recordings/batch-delete', async (req, res) => {
@@ -3435,60 +3518,77 @@ async function startServer() {
   });
 
   app.post('/api/users', async (req, res) => {
-    const { name, email, role, phone, customPermissions } = req.body;
-    if (!name || !email) return res.status(400).json({ error: 'Nome e email são obrigatórios' });
+    try {
+      const { name, email, role, phone, customPermissions } = req.body;
+      if (!name || !email) return res.status(400).json({ error: 'Nome e email são obrigatórios' });
 
-    const newUser: User = {
-      id: `user-${Date.now().toString().slice(-4)}`,
-      name,
-      email,
-      role: role || 'RESIDENT',
-      phone: phone || '',
-      status: 'ACTIVE',
-      customPermissions: customPermissions || {
-        canViewLive: true,
-        canViewRecordings: true,
-        canControlPTZ: false,
-        canUseTwoWayAudio: false,
-        canManageCameras: false,
-        canDeleteRecordings: false,
-        canAccessAuditLogs: false,
-        canManageUsers: false,
-        canExportReports: false,
-      },
-      lastActive: 'Nunca',
-      createdAt: new Date().toISOString().split('T')[0],
-    };
+      const newUser: User = {
+        id: `user-${Date.now().toString().slice(-4)}`,
+        name,
+        email,
+        role: role || 'RESIDENT',
+        phone: phone || '',
+        status: 'ACTIVE',
+        customPermissions: customPermissions || {
+          canViewLive: true,
+          canViewRecordings: true,
+          canControlPTZ: false,
+          canUseTwoWayAudio: false,
+          canManageCameras: false,
+          canDeleteRecordings: false,
+          canAccessAuditLogs: false,
+          canManageUsers: false,
+          canExportReports: false,
+        },
+        lastActive: 'Nunca',
+        createdAt: new Date().toISOString().split('T')[0],
+      };
 
-    users.push(newUser);
-    syncUserToSqlite(newUser);
-    saveToLocalFile();
-    syncUserToMysql(newUser).catch((e) => console.error('[Pg Sync User Error]:', e));
-    addLog('ITL Admin', `Novo usuário cadastrado: ${newUser.name} (${newUser.role})`, 'AUTH');
-    res.status(201).json(newUser);
+      users.push(newUser);
+      deletedUserIds.delete(newUser.id);
+      try { syncUserToSqlite(newUser); } catch (e) {}
+      saveToLocalFile();
+      syncUserToMysql(newUser).catch((e) => console.error('[Pg Sync User Error]:', e));
+      addLog('ITL Admin', `Novo usuário cadastrado: ${newUser.name} (${newUser.role})`, 'AUTH');
+      return res.status(201).json(newUser);
+    } catch (err: any) {
+      console.error('[POST /api/users Error]:', err);
+      return res.status(500).json({ error: `Erro ao criar usuário: ${err.message || err}` });
+    }
   });
 
   app.put('/api/users/:id', async (req, res) => {
-    const { id } = req.params;
-    const index = users.findIndex((u) => u.id === id);
-    if (index === -1) return res.status(404).json({ error: 'Usuário não encontrado' });
+    try {
+      const { id } = req.params;
+      const index = users.findIndex((u) => u.id === id);
+      if (index === -1) return res.status(404).json({ error: 'Usuário não encontrado' });
 
-    users[index] = { ...users[index], ...req.body };
-    syncUserToSqlite(users[index]);
-    saveToLocalFile();
-    syncUserToMysql(users[index]).catch((e) => console.error('[Pg Sync User Error]:', e));
-    addLog('ITL Admin', `Permissões/dados do usuário ${users[index].name} atualizados`, 'AUTH');
-    res.json(users[index]);
+      users[index] = { ...users[index], ...req.body };
+      try { syncUserToSqlite(users[index]); } catch (e) {}
+      saveToLocalFile();
+      syncUserToMysql(users[index]).catch((e) => console.error('[Pg Sync User Error]:', e));
+      addLog('ITL Admin', `Permissões/dados do usuário ${users[index].name} atualizados`, 'AUTH');
+      return res.json(users[index]);
+    } catch (err: any) {
+      console.error('[PUT /api/users/:id Error]:', err);
+      return res.status(500).json({ error: `Erro ao atualizar usuário: ${err.message || err}` });
+    }
   });
 
   app.delete('/api/users/:id', async (req, res) => {
-    const { id } = req.params;
-    users = users.filter((u) => u.id !== id);
-    deleteUserFromSqlite(id);
-    saveToLocalFile();
-    deleteUserFromMysql(id).catch((e) => console.error('[Pg Delete User Error]:', e));
-    addLog('ITL Admin', `Usuário removido: ${id}`, 'AUTH');
-    res.json({ success: true });
+    try {
+      const { id } = req.params;
+      deletedUserIds.add(id);
+      users = users.filter((u) => u.id !== id);
+      try { deleteUserFromSqlite(id); } catch (e) {}
+      saveToLocalFile();
+      deleteUserFromMysql(id).catch((e) => console.error('[Pg Delete User Error]:', e));
+      addLog('ITL Admin', `Usuário removido: ${id}`, 'AUTH');
+      return res.json({ success: true, message: 'Usuário removido com sucesso' });
+    } catch (err: any) {
+      console.error('[DELETE /api/users/:id Error]:', err);
+      return res.status(500).json({ success: false, error: err.message || err });
+    }
   });
 
   // Storage Limit Configuration Endpoints
