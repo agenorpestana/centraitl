@@ -273,19 +273,13 @@ async function startServer() {
     try {
       let paramIndex = 1;
       const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
-      const connectPromise = pool.connect();
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('PostgreSQL Pool Connection Timeout (3000ms)')), 3000)
-      );
-      const client = await Promise.race([connectPromise, timeoutPromise]);
-      try {
-        const res = await client.query(pgSql, params);
-        return res.rows;
-      } finally {
-        client.release();
-      }
+      const res = await pool.query(pgSql, params);
+      return res.rows || [];
     } catch (err: any) {
       console.error('[PostgreSQL Query Error]', err.message || err);
+      if (err.code === 'ECONNREFUSED' || err.code === '57P01' || (err.message && err.message.includes('closed'))) {
+        isPgActive = false;
+      }
       return [];
     }
   }
@@ -1932,9 +1926,17 @@ async function startServer() {
     loadFromLocalFile();
 
     if (isPgActive && pool) {
-      await ensurePgTablesExist();
-      await fullTwoWaySync();
-      return;
+      try {
+        await pool.query('SELECT 1');
+        await ensurePgTablesExist();
+        await fullTwoWaySync();
+        return;
+      } catch (checkErr) {
+        console.warn('[PostgreSQL Pool Check] Conexão existente falhou, tentando reconectar...');
+        isPgActive = false;
+        try { await pool.end(); } catch (e) {}
+        pool = null;
+      }
     }
 
     const targetHost = dbConfig.dbHost || process.env.DB_HOST || '127.0.0.1';
@@ -1943,7 +1945,7 @@ async function startServer() {
     const targetPassword = dbConfig.dbPassword !== undefined ? dbConfig.dbPassword : 'itl123.789';
     const targetName = dbConfig.dbName || process.env.DB_NAME || 'itl_cameras';
 
-    const hostsToTry = [targetHost, '127.0.0.1', 'localhost'];
+    const hostsToTry = [targetHost, '127.0.0.1', 'localhost'].filter((h, i, a) => a.indexOf(h) === i);
     const candidatesPass = [
       targetPassword,
       'itl123.789',
@@ -1966,16 +1968,21 @@ async function startServer() {
     for (const hostCandidate of hostsToTry) {
       if (isPgActive) break;
       for (const cred of credentials) {
+        let testPool: InstanceType<typeof Pool> | null = null;
         try {
-          const testPool = new pg.Pool({
+          testPool = new pg.Pool({
             host: hostCandidate,
             port: targetPort,
             user: cred.user,
             password: cred.pass,
             database: targetName,
-            max: 15,
+            max: 10,
             idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 1500,
+            connectionTimeoutMillis: 1000,
+          });
+
+          testPool.on('error', (err) => {
+            console.error('[PostgreSQL Pool Background Error]', err.message || err);
           });
 
           const client = await testPool.connect();
@@ -2003,6 +2010,9 @@ async function startServer() {
           console.log(`[PostgreSQL ITL] Conectado com SUCESSO ao PostgreSQL em ${connectedHost}:${targetPort} (banco '${targetName}', usuário '${cred.user}')`);
           break;
         } catch (err: any) {
+          if (testPool) {
+            try { await testPool.end(); } catch (e) {}
+          }
           // If database doesn't exist, try creating it via root database 'postgres'
           if (err.code === '3D000') {
             try {
@@ -2012,8 +2022,9 @@ async function startServer() {
                 user: cred.user,
                 password: cred.pass,
                 database: 'postgres',
-                connectionTimeoutMillis: 3000,
+                connectionTimeoutMillis: 2000,
               });
+              rootPool.on('error', (e) => console.error('[Pg Root Pool Error]', e.message || e));
               const rootClient = await rootPool.connect();
               await rootClient.query(`CREATE DATABASE "${targetName}"`);
               rootClient.release();
@@ -2025,9 +2036,10 @@ async function startServer() {
                 user: cred.user,
                 password: cred.pass,
                 database: targetName,
-                max: 15,
-                connectionTimeoutMillis: 3000,
+                max: 10,
+                connectionTimeoutMillis: 2000,
               });
+              targetPool.on('error', (e) => console.error('[Pg Target Pool Error]', e.message || e));
               const targetClient = await targetPool.connect();
               await targetClient.query('SELECT 1');
               targetClient.release();
@@ -2952,6 +2964,10 @@ async function startServer() {
         max: 10,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 5000,
+      });
+
+      testPool.on('error', (err) => {
+        console.error('[PostgreSQL Pool Background Error]', err.message || err);
       });
 
       const client = await testPool.connect();
