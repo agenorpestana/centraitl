@@ -52,6 +52,10 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
   const key = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
 
+  if (cam.id && deletedCameraIds.has(cam.id)) return;
+  if (key && deletedCameraIds.has(key)) return;
+  if (cleanKey && deletedCameraIds.has(`cam-${cleanKey}`)) return;
+
   let streamSource = getValidStreamSource(cam);
 
   if (streamSource.includes('localhost:1935') || streamSource.includes('127.0.0.1:1935') || streamSource.includes('aerocam.itlfibra.com:1935')) {
@@ -128,8 +132,9 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
     activeRtspUrls.delete(key);
 
     // Auto-reconnect supervisor for camera streams experiencing temporary lag or disconnection
-    if (cam) {
+    if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
       setTimeout(() => {
+        if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
         const currentProc = activeFfmpegProcesses.get(key);
         if (!currentProc || currentProc.exitCode !== null || currentProc.killed) {
           console.log(`[FFmpeg ITL Auto-Reconnect] Reconectando transmissão HLS da câmera '${cam.name}' (${key}) após lag/queda...`);
@@ -145,8 +150,9 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
     activeFfmpegProcesses.delete(key);
     activeRtspUrls.delete(key);
 
-    if (cam) {
+    if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
       setTimeout(() => {
+        if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
         startCameraRtspStream(cam);
       }, 3000);
     }
@@ -156,9 +162,14 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
 }
 
 function stopCameraRtspStream(streamKey: string) {
+  if (!streamKey) return;
   if (activeFfmpegProcesses.has(streamKey)) {
     try {
-      activeFfmpegProcesses.get(streamKey)?.kill('SIGKILL');
+      const proc = activeFfmpegProcesses.get(streamKey);
+      if (proc) {
+        proc.removeAllListeners();
+        proc.kill('SIGKILL');
+      }
     } catch (e) {}
     activeFfmpegProcesses.delete(streamKey);
     activeRtspUrls.delete(streamKey);
