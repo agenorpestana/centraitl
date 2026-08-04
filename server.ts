@@ -268,7 +268,11 @@ async function startServer() {
     try {
       let paramIndex = 1;
       const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
-      const client = await pool.connect();
+      const connectPromise = pool.connect();
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('PostgreSQL Pool Connection Timeout (3000ms)')), 3000)
+      );
+      const client = await Promise.race([connectPromise, timeoutPromise]);
       try {
         const res = await client.query(pgSql, params);
         return res.rows;
@@ -1649,137 +1653,9 @@ async function startServer() {
     }
   }
 
-  // Attempt PostgreSQL Pool initialization & Sync
-  const initPostgresAndSync = async () => {
-    // Load local JSON state first
-    loadFromLocalFile();
-    const targetHost = dbConfig.dbHost || process.env.DB_HOST || '127.0.0.1';
-    const targetPort = dbConfig.dbPort || parseInt(process.env.DB_PORT || '5432', 10);
-    const targetUser = dbConfig.dbUser || process.env.DB_USER || 'itl_user';
-    const targetPassword = dbConfig.dbPassword !== undefined ? dbConfig.dbPassword : 'itl123.789';
-    const targetName = dbConfig.dbName || process.env.DB_NAME || 'itl_cameras';
-
-    const hostsToTry = [targetHost, '127.0.0.1', 'localhost'];
-    const candidatesPass = [
-      targetPassword,
-      'itl123.789',
-      'itl_pass_2026',
-      'postgres',
-      ''
-    ].filter((p, index, self) => p !== undefined && self.indexOf(p) === index);
-
-    const candidatesUser = [targetUser, 'itl_user', 'postgres'].filter((u, index, self) => self.indexOf(u) === index);
-
-    const credentials: Array<{ user: string; pass: string }> = [];
-    for (const u of candidatesUser) {
-      for (const p of candidatesPass) {
-        credentials.push({ user: u, pass: p });
-      }
-    }
-
-    let connectedHost = '';
-
-    for (const hostCandidate of hostsToTry) {
-      if (isPgActive) break;
-      for (const cred of credentials) {
-        try {
-          const testPool = new pg.Pool({
-            host: hostCandidate,
-            port: targetPort,
-            user: cred.user,
-            password: cred.pass,
-            database: targetName,
-            max: 10,
-            idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 800,
-          });
-
-          const client = await testPool.connect();
-          await client.query('SELECT 1');
-          client.release();
-
-          pool = testPool;
-          isPgActive = true;
-          connectedHost = hostCandidate;
-
-          dbConfig = {
-            dbHost: hostCandidate,
-            dbPort: targetPort,
-            dbName: targetName,
-            dbUser: cred.user,
-            dbPassword: cred.pass,
-          };
-          process.env.DB_HOST = hostCandidate;
-          process.env.DB_PORT = String(targetPort);
-          process.env.DB_NAME = targetName;
-          process.env.DB_USER = cred.user;
-          process.env.DB_PASSWORD = cred.pass;
-          saveToLocalFile();
-
-          console.log(`[PostgreSQL ITL] Conectado com SUCESSO ao PostgreSQL em ${connectedHost}:${targetPort} (banco '${targetName}', usuário '${cred.user}')`);
-          break;
-        } catch (err: any) {
-          // If database doesn't exist, try creating it via root database 'postgres'
-          if (err.code === '3D000') {
-            try {
-              const rootPool = new pg.Pool({
-                host: hostCandidate,
-                port: targetPort,
-                user: cred.user,
-                password: cred.pass,
-                database: 'postgres',
-                connectionTimeoutMillis: 3000,
-              });
-              const rootClient = await rootPool.connect();
-              await rootClient.query(`CREATE DATABASE "${targetName}"`);
-              rootClient.release();
-              await rootPool.end();
-
-              const targetPool = new pg.Pool({
-                host: hostCandidate,
-                port: targetPort,
-                user: cred.user,
-                password: cred.pass,
-                database: targetName,
-                max: 10,
-                connectionTimeoutMillis: 3000,
-              });
-              const targetClient = await targetPool.connect();
-              await targetClient.query('SELECT 1');
-              targetClient.release();
-
-              pool = targetPool;
-              isPgActive = true;
-              connectedHost = hostCandidate;
-
-              dbConfig = {
-                dbHost: hostCandidate,
-                dbPort: targetPort,
-                dbName: targetName,
-                dbUser: cred.user,
-                dbPassword: cred.pass,
-              };
-              process.env.DB_HOST = hostCandidate;
-              process.env.DB_PORT = String(targetPort);
-              process.env.DB_NAME = targetName;
-              process.env.DB_USER = cred.user;
-              process.env.DB_PASSWORD = cred.pass;
-              saveToLocalFile();
-
-              console.log(`[PostgreSQL ITL] Banco de dados '${targetName}' criado e conectado em ${connectedHost}:${targetPort}`);
-              break;
-            } catch (e2) {}
-          }
-        }
-      }
-    }
-
-    if (!isPgActive || !pool) {
-      console.log('[PostgreSQL ITL] Banco PostgreSQL local indisponível, usando arquivo JSON de persistência local.');
-      loadFromLocalFile();
-      return;
-    }
-
+  // Standalone table creation and column migration helper
+  const ensurePgTablesExist = async () => {
+    if (!isPgActive || !pool) return;
     try {
       try {
         await queryPg(`
@@ -2080,9 +1956,153 @@ async function startServer() {
       await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS pix_qr_code_url TEXT");
       await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS mercado_pago_payment_id VARCHAR(100)");
 
-      // Execute complete initial two-way synchronization between JSON file and PostgreSQL
-      await fullTwoWaySync();
+      console.log('[PostgreSQL ITL Table Audit] Schema e tabelas auditados e prontos.');
+    } catch (err: any) {
+      console.error('[PostgreSQL Table Audit Error]', err.message || err);
+    }
+  };
 
+  // Attempt PostgreSQL Pool initialization & Sync
+  const initPostgresAndSync = async () => {
+    // Load local JSON state first
+    loadFromLocalFile();
+
+    if (isPgActive && pool) {
+      await ensurePgTablesExist();
+      await fullTwoWaySync();
+      return;
+    }
+
+    const targetHost = dbConfig.dbHost || process.env.DB_HOST || '127.0.0.1';
+    const targetPort = dbConfig.dbPort || parseInt(process.env.DB_PORT || '5432', 10);
+    const targetUser = dbConfig.dbUser || process.env.DB_USER || 'itl_user';
+    const targetPassword = dbConfig.dbPassword !== undefined ? dbConfig.dbPassword : 'itl123.789';
+    const targetName = dbConfig.dbName || process.env.DB_NAME || 'itl_cameras';
+
+    const hostsToTry = [targetHost, '127.0.0.1', 'localhost'];
+    const candidatesPass = [
+      targetPassword,
+      'itl123.789',
+      'itl_pass_2026',
+      'postgres',
+      ''
+    ].filter((p, index, self) => p !== undefined && self.indexOf(p) === index);
+
+    const candidatesUser = [targetUser, 'itl_user', 'postgres'].filter((u, index, self) => self.indexOf(u) === index);
+
+    const credentials: Array<{ user: string; pass: string }> = [];
+    for (const u of candidatesUser) {
+      for (const p of candidatesPass) {
+        credentials.push({ user: u, pass: p });
+      }
+    }
+
+    let connectedHost = '';
+
+    for (const hostCandidate of hostsToTry) {
+      if (isPgActive) break;
+      for (const cred of credentials) {
+        try {
+          const testPool = new pg.Pool({
+            host: hostCandidate,
+            port: targetPort,
+            user: cred.user,
+            password: cred.pass,
+            database: targetName,
+            max: 15,
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 1500,
+          });
+
+          const client = await testPool.connect();
+          await client.query('SELECT 1');
+          client.release();
+
+          pool = testPool;
+          isPgActive = true;
+          connectedHost = hostCandidate;
+
+          dbConfig = {
+            dbHost: hostCandidate,
+            dbPort: targetPort,
+            dbName: targetName,
+            dbUser: cred.user,
+            dbPassword: cred.pass,
+          };
+          process.env.DB_HOST = hostCandidate;
+          process.env.DB_PORT = String(targetPort);
+          process.env.DB_NAME = targetName;
+          process.env.DB_USER = cred.user;
+          process.env.DB_PASSWORD = cred.pass;
+          saveToLocalFile();
+
+          console.log(`[PostgreSQL ITL] Conectado com SUCESSO ao PostgreSQL em ${connectedHost}:${targetPort} (banco '${targetName}', usuário '${cred.user}')`);
+          break;
+        } catch (err: any) {
+          // If database doesn't exist, try creating it via root database 'postgres'
+          if (err.code === '3D000') {
+            try {
+              const rootPool = new pg.Pool({
+                host: hostCandidate,
+                port: targetPort,
+                user: cred.user,
+                password: cred.pass,
+                database: 'postgres',
+                connectionTimeoutMillis: 3000,
+              });
+              const rootClient = await rootPool.connect();
+              await rootClient.query(`CREATE DATABASE "${targetName}"`);
+              rootClient.release();
+              await rootPool.end();
+
+              const targetPool = new pg.Pool({
+                host: hostCandidate,
+                port: targetPort,
+                user: cred.user,
+                password: cred.pass,
+                database: targetName,
+                max: 15,
+                connectionTimeoutMillis: 3000,
+              });
+              const targetClient = await targetPool.connect();
+              await targetClient.query('SELECT 1');
+              targetClient.release();
+
+              pool = targetPool;
+              isPgActive = true;
+              connectedHost = hostCandidate;
+
+              dbConfig = {
+                dbHost: hostCandidate,
+                dbPort: targetPort,
+                dbName: targetName,
+                dbUser: cred.user,
+                dbPassword: cred.pass,
+              };
+              process.env.DB_HOST = hostCandidate;
+              process.env.DB_PORT = String(targetPort);
+              process.env.DB_NAME = targetName;
+              process.env.DB_USER = cred.user;
+              process.env.DB_PASSWORD = cred.pass;
+              saveToLocalFile();
+
+              console.log(`[PostgreSQL ITL] Banco de dados '${targetName}' criado e conectado em ${connectedHost}:${targetPort}`);
+              break;
+            } catch (e2) {}
+          }
+        }
+      }
+    }
+
+    if (!isPgActive || !pool) {
+      console.log('[PostgreSQL ITL] Banco PostgreSQL local indisponível, usando arquivo JSON de persistência local.');
+      loadFromLocalFile();
+      return;
+    }
+
+    try {
+      await ensurePgTablesExist();
+      await fullTwoWaySync();
       console.log(`[PostgreSQL ITL Complete Sync] Conectado e Sincronizado com SUCESSO! (${cameras.length} câmeras, ${users.length} usuários, ${plans.length} planos, ${invoices.length} faturas em '${dbConfig.dbName}')`);
     } catch (err: any) {
       console.log('[PostgreSQL ITL Sync Warning]', err.message);
@@ -2095,12 +2115,12 @@ async function startServer() {
   await initSqliteEngine();
   await initPostgresAndSync();
 
-  // Background interval for continuous two-way sync every 10 seconds
+  // Background interval for continuous two-way sync every 30 seconds
   setInterval(() => {
     if (isPgActive && pool) {
       fullTwoWaySync().catch((e) => console.error('[Background Sync Interval Warning]', e.message || e));
     }
-  }, 10000);
+  }, 30000);
 
   // Start FFmpeg streams for RTSP cameras
   cameras.forEach((c) => startCameraRtspStream(c));
@@ -2965,12 +2985,17 @@ async function startServer() {
 
       saveToLocalFile();
 
-      // Ensure tables exist on newly connected database
-      initPostgresAndSync().catch((e) => console.error('[Init Post DB Config Error]', e));
+      // Ensure tables exist and run two-way sync on newly connected database
+      try {
+        await ensurePgTablesExist();
+        await fullTwoWaySync();
+      } catch (syncErr: any) {
+        console.error('[DB Config Post-Sync Warning]', syncErr.message || syncErr);
+      }
 
       res.json({
         success: true,
-        message: `Conexão estabelecida com sucesso ao PostgreSQL em ${host}:${port} (banco '${name}')!`,
+        message: `Conexão estabelecida, tabelas e dados sincronizados com sucesso no PostgreSQL em ${host}:${port} (banco '${name}')!`,
         isPgActive: true,
       });
     } catch (err: any) {
@@ -3729,4 +3754,12 @@ async function startServer() {
 
 startServer().catch((err) => {
   console.error('Erro ao iniciar o servidor:', err);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Global Uncaught Exception]', err.message || err);
+});
+
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[Global Unhandled Rejection]', reason?.message || reason);
 });
