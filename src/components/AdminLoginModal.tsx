@@ -26,38 +26,6 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
     setErrorMsg('');
     setSuccessMsg('');
 
-    if (loginEmail === 'suporte@unityautomacoes.com.br' && loginPass === '200616') {
-      const superUser: User = {
-        id: 'user-superadmin-01',
-        name: 'Super Admin Unity (ITL)',
-        email: 'suporte@unityautomacoes.com.br',
-        role: 'ADMIN',
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-        phone: '+55 11 98765-4321',
-        status: 'ACTIVE',
-        customPermissions: {
-          canViewLive: true,
-          canViewRecordings: true,
-          canControlPTZ: true,
-          canUseTwoWayAudio: true,
-          canManageCameras: true,
-          canDeleteRecordings: true,
-          canAccessAuditLogs: true,
-          canManageUsers: true,
-          canExportReports: true,
-        },
-        lastActive: 'Agora mesmo',
-        createdAt: '2026-01-01',
-      };
-
-      setSuccessMsg('Autenticado com sucesso como Super Admin!');
-      setTimeout(() => {
-        onLoginSuccess(superUser);
-        onClose();
-      }, 700);
-      return;
-    }
-
     // Try backend API login
     try {
       const res = await fetch('/api/auth/login', {
@@ -117,7 +85,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="suporte@unityautomacoes.com.br"
+                placeholder="seu.email@empresa.com.br"
                 className="w-full bg-slate-950 border border-slate-800 text-slate-100 pl-9 pr-3 py-2.5 rounded-xl outline-none focus:border-emerald-500 text-xs"
                 required
               />

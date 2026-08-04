@@ -20,6 +20,7 @@ import { MercadoPagoSettingsModal } from './components/MercadoPagoSettingsModal'
 import { ArchitectureConfigPanel } from './components/ArchitectureConfigPanel';
 import { EventMapPanel } from './components/EventMapPanel';
 import { DatabaseDiagnosticsPanel } from './components/DatabaseDiagnosticsPanel';
+import { ApiDocumentationPanel } from './components/ApiDocumentationPanel';
 
 import {
   Camera,
@@ -481,7 +482,7 @@ export default function App() {
           <button onClick={() => setActiveTab('cloud-recordings')} className={`p-1.5 flex flex-col items-center ${activeTab === 'cloud-recordings' ? 'text-emerald-400 font-bold' : ''}`}>
             Nuvem
           </button>
-          {(activeUser.role === 'ADMIN' || activeUser.email === 'suporte@unityautomacoes.com.br' || activeUser.customPermissions?.canManageUsers) && (
+          {(activeUser.role === 'ADMIN' || activeUser.customPermissions?.canManageUsers) && (
             <button onClick={() => setActiveTab('user-management')} className={`p-1.5 flex flex-col items-center ${activeTab === 'user-management' ? 'text-emerald-400 font-bold' : ''}`}>
               Acesso
             </button>
@@ -539,7 +540,7 @@ export default function App() {
           )}
 
           {activeTab === 'user-management' && (
-            (activeUser.role === 'ADMIN' || activeUser.email === 'suporte@unityautomacoes.com.br' || activeUser.customPermissions?.canManageUsers) ? (
+            (activeUser.role === 'ADMIN' || activeUser.customPermissions?.canManageUsers) ? (
               <UserManagement
                 users={users}
                 cameras={cameras}
@@ -559,6 +560,10 @@ export default function App() {
                 </p>
               </div>
             )
+          )}
+
+          {activeTab === 'api-docs' && (
+            <ApiDocumentationPanel />
           )}
 
           {activeTab === 'financial-management' && (

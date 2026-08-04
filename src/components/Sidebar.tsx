@@ -13,6 +13,7 @@ import {
   Network,
   MapPin,
   Server,
+  Code,
 } from 'lucide-react';
 
 import { User } from '../types';
@@ -32,7 +33,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const isAdmin = activeUser
     ? activeUser.role === 'ADMIN' ||
-      activeUser.email === 'suporte@unityautomacoes.com.br' ||
       Boolean(activeUser.customPermissions?.canManageUsers)
     : true;
 
@@ -44,6 +44,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'cloud-recordings', label: 'Gravações na Nuvem', icon: Film },
     { id: 'camera-admin', label: 'Adicionar / RTSP', icon: PlusCircle },
     { id: 'user-management', label: 'Acesso Multiusuário', icon: Users, adminOnly: true },
+    { id: 'api-docs', label: 'Documentação API REST', icon: Code },
     { id: 'financial-management', label: 'Financeiro & Planos', icon: DollarSign },
     { id: 'activity-reports', label: 'Relatórios Diários', icon: FileText },
     { id: 'backup-manager', label: 'Backup Automático', icon: Database },
