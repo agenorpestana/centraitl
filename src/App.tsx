@@ -216,7 +216,7 @@ export default function App() {
       });
       const newCam = await res.json();
       if (newCam && newCam.id) {
-        setCameras((prev) => [...prev, newCam]);
+        setCameras((prev) => [newCam, ...prev.filter((c) => c.id !== newCam.id)]);
         return;
       }
     } catch (e) {}
@@ -245,10 +245,11 @@ export default function App() {
       lng: camData.lng || -39.5312,
       createdAt: new Date().toISOString(),
     };
-    setCameras((prev) => [...prev, fallback]);
+    setCameras((prev) => [fallback, ...prev]);
   };
 
   const handleUpdateCamera = async (id: string, updatedData: Partial<Camera>) => {
+    setCameras((prev) => prev.map((c) => (c.id === id ? { ...c, ...updatedData } : c)));
     try {
       await fetch(`/api/cameras/${id}`, {
         method: 'PUT',
@@ -256,14 +257,13 @@ export default function App() {
         body: JSON.stringify(updatedData),
       });
     } catch (e) {}
-    setCameras((prev) => prev.map((c) => (c.id === id ? { ...c, ...updatedData } : c)));
   };
 
   const handleDeleteCamera = async (id: string) => {
+    setCameras((prev) => prev.filter((c) => c.id !== id));
     try {
       await fetch(`/api/cameras/${id}`, { method: 'DELETE' });
     } catch (e) {}
-    setCameras((prev) => prev.filter((c) => c.id !== id));
   };
 
   const handleDeleteRecording = async (id: string) => {

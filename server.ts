@@ -370,47 +370,70 @@ async function startServer() {
         if (!isNaN(val) && val >= 10) backupConfig.storageLimitGB = val;
       }
 
-      // Load cameras
+      // Purge deleted cameras from SQLite table
+      deletedCameraIds.forEach((delId) => {
+        try {
+          sqliteDb.run('DELETE FROM cameras WHERE id = ?', [delId]);
+        } catch (e) {}
+      });
+
+      // Load cameras from SQLite
       const camRes = sqliteDb.exec('SELECT * FROM cameras ORDER BY created_at DESC');
+      const loadedCamsMap = new Map<string, Camera>();
+
       if (camRes && camRes.length > 0 && camRes[0].values.length > 0) {
         const cols = camRes[0].columns;
         const getVal = (row: any[], name: string) => row[cols.indexOf(name)];
 
-        const loadedCams: Camera[] = camRes[0].values
-          .map((row: any[]) => ({
-            id: String(getVal(row, 'id')),
-            name: String(getVal(row, 'name')),
-            location: String(getVal(row, 'location') || ''),
-            protocol: (getVal(row, 'protocol') || 'RTSP') as any,
-            rtspUrl: String(getVal(row, 'rtsp_url') || ''),
-            rtmpUrl: String(getVal(row, 'rtmp_url') || ''),
-            streamKey: String(getVal(row, 'stream_key') || ''),
-            rtmpServerUrl: String(getVal(row, 'rtmp_server_url') || ''),
-            fullRtmpUrl: String(getVal(row, 'full_rtmp_url') || ''),
-            stateUf: String(getVal(row, 'state_uf') || ''),
-            city: String(getVal(row, 'city') || ''),
-            status: (getVal(row, 'status') || 'ONLINE') as any,
-            isE2EEEncrypted: Boolean(getVal(row, 'is_e2ee_encrypted')),
-            encryptionKeyHash: String(getVal(row, 'encryption_key_hash') || ''),
-            fps: Number(getVal(row, 'fps') || 30),
-            resolution: String(getVal(row, 'resolution') || '1080p'),
-            storageUsedGB: parseFloat(getVal(row, 'storage_used_gb') || '0.1'),
-            cloudRecordingsActive: Boolean(getVal(row, 'cloud_recordings_active')),
-            motionSensitivity: Number(getVal(row, 'motion_sensitivity') || 7),
-            aiDetectionEnabled: Boolean(getVal(row, 'ai_detection_enabled')),
-            twoWayAudioEnabled: Boolean(getVal(row, 'two_way_audio_enabled')),
-            lat: parseFloat(getVal(row, 'lat') || '-17.0397'),
-            lng: parseFloat(getVal(row, 'lng') || '-39.5312'),
-            thumbnailUrl: String(getVal(row, 'thumbnail_url') || ''),
-            createdAt: String(getVal(row, 'created_at') || '2026-01-01'),
-          }))
-          .filter((c: Camera) => c.id && !deletedCameraIds.has(c.id));
-
-        cameras = loadedCams;
-        console.log(`[SQLite ITL] ${cameras.length} câmeras carregadas do banco de dados SQL.`);
-      } else if (camRes) {
-        cameras = [];
+        camRes[0].values.forEach((row: any[]) => {
+          const id = String(getVal(row, 'id'));
+          if (id && !deletedCameraIds.has(id)) {
+            loadedCamsMap.set(id, {
+              id,
+              name: String(getVal(row, 'name')),
+              location: String(getVal(row, 'location') || ''),
+              protocol: (getVal(row, 'protocol') || 'RTSP') as any,
+              rtspUrl: String(getVal(row, 'rtsp_url') || ''),
+              rtmpUrl: String(getVal(row, 'rtmp_url') || ''),
+              streamKey: String(getVal(row, 'stream_key') || ''),
+              rtmpServerUrl: String(getVal(row, 'rtmp_server_url') || ''),
+              fullRtmpUrl: String(getVal(row, 'full_rtmp_url') || ''),
+              stateUf: String(getVal(row, 'state_uf') || ''),
+              city: String(getVal(row, 'city') || ''),
+              status: (getVal(row, 'status') || 'ONLINE') as any,
+              isE2EEEncrypted: Boolean(getVal(row, 'is_e2ee_encrypted')),
+              encryptionKeyHash: String(getVal(row, 'encryption_key_hash') || ''),
+              fps: Number(getVal(row, 'fps') || 30),
+              resolution: String(getVal(row, 'resolution') || '1080p'),
+              storageUsedGB: parseFloat(getVal(row, 'storage_used_gb') || '0.1'),
+              cloudRecordingsActive: Boolean(getVal(row, 'cloud_recordings_active')),
+              motionSensitivity: Number(getVal(row, 'motion_sensitivity') || 7),
+              aiDetectionEnabled: Boolean(getVal(row, 'ai_detection_enabled')),
+              twoWayAudioEnabled: Boolean(getVal(row, 'two_way_audio_enabled')),
+              lat: parseFloat(getVal(row, 'lat') || '-17.0397'),
+              lng: parseFloat(getVal(row, 'lng') || '-39.5312'),
+              thumbnailUrl: String(getVal(row, 'thumbnail_url') || ''),
+              createdAt: String(getVal(row, 'created_at') || '2026-01-01'),
+            });
+          }
+        });
       }
+
+      // Merge SQLite cameras with existing in-memory cameras (loaded from local JSON file)
+      const mergedCamMap = new Map<string, Camera>();
+      loadedCamsMap.forEach((cam, id) => {
+        if (!deletedCameraIds.has(id)) {
+          mergedCamMap.set(id, cam);
+        }
+      });
+      cameras.forEach((cam) => {
+        if (cam.id && !deletedCameraIds.has(cam.id)) {
+          mergedCamMap.set(cam.id, cam);
+        }
+      });
+
+      cameras = Array.from(mergedCamMap.values()).filter((c) => c.id && !deletedCameraIds.has(c.id));
+      console.log(`[SQLite ITL] ${cameras.length} câmeras ativas e sincronizadas no SQLite.`);
 
       // Load users
       const userRes = sqliteDb.exec('SELECT * FROM users');
@@ -1557,7 +1580,8 @@ async function startServer() {
     }
   };
 
-  // Initialize DB engines on startup
+  // Initialize DB engines on startup (Load local JSON store FIRST)
+  loadFromLocalFile();
   await initSqliteEngine();
   await initPostgresAndSync();
 
