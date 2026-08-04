@@ -13,6 +13,8 @@ import { createServer as createViteServer } from 'vite';
 const activeFfmpegProcesses = new Map<string, ChildProcess>();
 const lastFfmpegLogs = new Map<string, string[]>();
 const activeRtspUrls = new Map<string, string>();
+const deletedCameraIds = new Set<string>();
+const deletedRecordingIds = new Set<string>();
 
 function getValidStreamSource(cam: any): string {
   if (!cam) return '';
@@ -270,9 +272,6 @@ async function startServer() {
   let invoices: Invoice[] = [];
   let mpConfig: MercadoPagoConfig = { ...INITIAL_MP_CONFIG };
 
-  const deletedRecordingIds = new Set<string>();
-  const deletedCameraIds = new Set<string>();
-
   // Real Active Recording Sessions Tracker
   interface ActiveRecordingSession {
     sessionId: string;
@@ -424,13 +423,16 @@ async function startServer() {
               lat: parseFloat(getVal(row, 'lat') || '-17.0397'),
               lng: parseFloat(getVal(row, 'lng') || '-39.5312'),
               thumbnailUrl: String(getVal(row, 'thumbnail_url') || ''),
+              videoStreamUrl: String(getVal(row, 'video_stream_url') || ''),
+              isLiveWebcam: Boolean(getVal(row, 'is_live_webcam')),
+              isDemo: Boolean(getVal(row, 'is_demo')),
               createdAt: String(getVal(row, 'created_at') || '2026-01-01'),
             });
           }
         });
       }
 
-      // Merge SQLite cameras with existing in-memory cameras (loaded from local JSON file)
+      // Merge SQLite cameras with existing in-memory cameras
       const mergedCamMap = new Map<string, Camera>();
       loadedCamsMap.forEach((cam, id) => {
         if (!deletedCameraIds.has(id)) {
@@ -444,9 +446,8 @@ async function startServer() {
       });
 
       cameras = Array.from(mergedCamMap.values()).filter((c) => c.id && !deletedCameraIds.has(c.id));
-      console.log(`[SQLite ITL] ${cameras.length} câmeras ativas e sincronizadas no SQLite.`);
 
-      // Load users
+      // Load users from SQLite
       const userRes = sqliteDb.exec('SELECT * FROM users');
       if (userRes && userRes.length > 0 && userRes[0].values.length > 0) {
         const cols = userRes[0].columns;
@@ -475,12 +476,17 @@ async function startServer() {
             status: (getVal(row, 'status') || 'ACTIVE') as any,
             customPermissions: perms as any,
             allowedCameraIds: allowedCams,
+            planId: getVal(row, 'plan_id') ? String(getVal(row, 'plan_id')) : undefined,
+            planName: getVal(row, 'plan_name') ? String(getVal(row, 'plan_name')) : undefined,
+            monthlyFee: getVal(row, 'monthly_fee') ? parseFloat(getVal(row, 'monthly_fee')) : undefined,
+            chosenDueDay: getVal(row, 'chosen_due_day') ? Number(getVal(row, 'chosen_due_day')) : undefined,
+            financialStatus: (getVal(row, 'financial_status') || 'OK') as any,
+            daysOverdue: Number(getVal(row, 'days_overdue') || 0),
             lastActive: String(getVal(row, 'last_active') || 'Agora'),
             createdAt: String(getVal(row, 'created_at') || '2026-01-01'),
           };
         });
         if (loadedUsers.length > 0) users = loadedUsers;
-        console.log(`[SQLite ITL] ${users.length} usuários carregados do banco de dados SQL.`);
       }
 
     } catch (e: any) {
@@ -538,6 +544,9 @@ async function startServer() {
           lat REAL,
           lng REAL,
           thumbnail_url TEXT,
+          video_stream_url TEXT,
+          is_live_webcam INTEGER DEFAULT 0,
+          is_demo INTEGER DEFAULT 0,
           created_at TEXT
         );
       `);
@@ -547,6 +556,7 @@ async function startServer() {
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL,
           email TEXT UNIQUE NOT NULL,
+          password_hash TEXT,
           role TEXT DEFAULT 'RESIDENT',
           phone TEXT,
           state_uf TEXT,
@@ -554,8 +564,122 @@ async function startServer() {
           status TEXT DEFAULT 'ACTIVE',
           custom_permissions TEXT,
           allowed_camera_ids TEXT,
+          plan_id TEXT,
+          plan_name TEXT,
+          monthly_fee REAL DEFAULT 0,
+          chosen_due_day INTEGER DEFAULT 5,
+          financial_status TEXT DEFAULT 'OK',
+          days_overdue INTEGER DEFAULT 0,
           last_active TEXT,
           created_at TEXT
+        );
+      `);
+
+      sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS cloud_recordings (
+          id TEXT PRIMARY KEY,
+          camera_id TEXT,
+          camera_name TEXT,
+          start_time TEXT,
+          end_time TEXT,
+          duration_sec INTEGER DEFAULT 0,
+          file_size_mb REAL DEFAULT 0,
+          stream_url TEXT,
+          thumbnail_url TEXT,
+          is_e2ee_locked INTEGER DEFAULT 0,
+          tags TEXT,
+          created_at TEXT
+        );
+      `);
+
+      sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS activity_logs (
+          id TEXT PRIMARY KEY,
+          user_id TEXT,
+          user_name TEXT,
+          action TEXT,
+          category TEXT DEFAULT 'SYSTEM',
+          details TEXT,
+          ip_address TEXT,
+          timestamp TEXT
+        );
+      `);
+
+      sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS financial_plans (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          monthly_price REAL DEFAULT 0,
+          cameras_included INTEGER DEFAULT 4,
+          cloud_retention_days INTEGER DEFAULT 7,
+          description TEXT,
+          popular INTEGER DEFAULT 0,
+          created_at TEXT
+        );
+      `);
+
+      sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS financial_invoices (
+          id TEXT PRIMARY KEY,
+          user_id TEXT,
+          user_name TEXT,
+          user_email TEXT,
+          plan_name TEXT,
+          amount REAL DEFAULT 0,
+          original_amount REAL DEFAULT 0,
+          due_date TEXT,
+          payment_date TEXT,
+          status TEXT DEFAULT 'PENDING',
+          is_pro_rata INTEGER DEFAULT 0,
+          pro_rata_days INTEGER DEFAULT 0,
+          pix_code TEXT,
+          pix_qr_code_url TEXT,
+          mercado_pago_payment_id TEXT,
+          created_at TEXT
+        );
+      `);
+
+      sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS mercado_pago_config (
+          id TEXT PRIMARY KEY DEFAULT 'default',
+          access_token TEXT,
+          public_key TEXT,
+          webhook_secret TEXT,
+          is_sandbox INTEGER DEFAULT 1,
+          auto_approve_simulated INTEGER DEFAULT 1,
+          updated_at TEXT
+        );
+      `);
+
+      sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS backup_settings (
+          id TEXT PRIMARY KEY DEFAULT 'default',
+          schedule TEXT,
+          destination TEXT,
+          retention_days INTEGER DEFAULT 30,
+          encrypt_backups INTEGER DEFAULT 1,
+          auto_backup_enabled INTEGER DEFAULT 1,
+          last_backup_date TEXT,
+          next_backup_date TEXT,
+          status TEXT,
+          storage_path TEXT,
+          storage_limit_gb INTEGER DEFAULT 100
+        );
+      `);
+
+      sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS notification_settings (
+          id TEXT PRIMARY KEY DEFAULT 'default',
+          push_enabled INTEGER DEFAULT 1,
+          fcm_server_key TEXT,
+          telegram_bot_token TEXT,
+          telegram_chat_id TEXT,
+          whatsapp_webhook_url TEXT,
+          sound_alerts INTEGER DEFAULT 1,
+          quiet_hours_enabled INTEGER DEFAULT 0,
+          quiet_hours_start TEXT,
+          quiet_hours_end TEXT,
+          alert_severities TEXT
         );
       `);
 
@@ -567,18 +691,33 @@ async function startServer() {
         );
       `);
 
+      // Migrations for existing SQLite database files
+      const alterSqlite = (sql: string) => { try { sqliteDb.run(sql); } catch (e) {} };
+      alterSqlite("ALTER TABLE cameras ADD COLUMN video_stream_url TEXT");
+      alterSqlite("ALTER TABLE cameras ADD COLUMN is_live_webcam INTEGER DEFAULT 0");
+      alterSqlite("ALTER TABLE cameras ADD COLUMN is_demo INTEGER DEFAULT 0");
+      alterSqlite("ALTER TABLE users ADD COLUMN password_hash TEXT");
+      alterSqlite("ALTER TABLE users ADD COLUMN plan_id TEXT");
+      alterSqlite("ALTER TABLE users ADD COLUMN plan_name TEXT");
+      alterSqlite("ALTER TABLE users ADD COLUMN monthly_fee REAL DEFAULT 0");
+      alterSqlite("ALTER TABLE users ADD COLUMN chosen_due_day INTEGER DEFAULT 5");
+      alterSqlite("ALTER TABLE users ADD COLUMN financial_status TEXT DEFAULT 'OK'");
+      alterSqlite("ALTER TABLE users ADD COLUMN days_overdue INTEGER DEFAULT 0");
+      alterSqlite("ALTER TABLE cloud_recordings ADD COLUMN is_e2ee_locked INTEGER DEFAULT 0");
+      alterSqlite("ALTER TABLE cloud_recordings ADD COLUMN tags TEXT");
+
       loadDataFromSqlite();
 
-      // Ensure current in-memory cameras and users are seeded into SQLite tables
+      // Ensure current in-memory entities are seeded into SQLite tables
       if (cameras.length > 0) {
         cameras.forEach((c) => {
           try {
             sqliteDb.run(
               `INSERT OR REPLACE INTO cameras (
-                id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
-                c.id, c.name, c.location || '', c.protocol || 'RTSP', c.rtspUrl || '', c.rtmpUrl || '', c.streamKey || '', c.rtmpServerUrl || '', c.fullRtmpUrl || '', c.stateUf || '', c.city || '', c.status || 'ONLINE', c.isE2EEEncrypted ? 1 : 0, c.encryptionKeyHash || '', c.fps || 30, c.resolution || '1080p', c.storageUsedGB || 0, c.cloudRecordingsActive ? 1 : 0, c.motionSensitivity || 7, c.aiDetectionEnabled ? 1 : 0, c.twoWayAudioEnabled ? 1 : 0, c.lat || -17.0397, c.lng || -39.5312, c.thumbnailUrl || '', c.createdAt || new Date().toISOString().split('T')[0]
+                c.id, c.name, c.location || '', c.protocol || 'RTSP', c.rtspUrl || '', c.rtmpUrl || '', c.streamKey || '', c.rtmpServerUrl || '', c.fullRtmpUrl || '', c.stateUf || '', c.city || '', c.status || 'ONLINE', c.isE2EEEncrypted ? 1 : 0, c.encryptionKeyHash || '', c.fps || 30, c.resolution || '1080p', c.storageUsedGB || 0, c.cloudRecordingsActive ? 1 : 0, c.motionSensitivity || 7, c.aiDetectionEnabled ? 1 : 0, c.twoWayAudioEnabled ? 1 : 0, c.lat || -17.0397, c.lng || -39.5312, c.thumbnailUrl || '', c.videoStreamUrl || '', c.isLiveWebcam ? 1 : 0, c.isDemo ? 1 : 0, c.createdAt || new Date().toISOString().split('T')[0]
               ]
             );
           } catch (e) {}
@@ -590,10 +729,10 @@ async function startServer() {
           try {
             sqliteDb.run(
               `INSERT OR REPLACE INTO users (
-                id, name, email, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, last_active, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, last_active, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
-                u.id, u.name, u.email, u.role || 'RESIDENT', u.phone || '', u.stateUf || '', u.city || '', u.status || 'ACTIVE', JSON.stringify(u.customPermissions || {}), JSON.stringify(u.allowedCameraIds || ['ALL']), u.lastActive || 'Agora', u.createdAt || new Date().toISOString().split('T')[0]
+                u.id, u.name, u.email, '$2b$10$itlpasswordhash2026', u.role || 'RESIDENT', u.phone || '', u.stateUf || '', u.city || '', u.status || 'ACTIVE', JSON.stringify(u.customPermissions || {}), JSON.stringify(u.allowedCameraIds || ['ALL']), u.planId || '', u.planName || '', u.monthlyFee || 0, u.chosenDueDay || 5, u.financialStatus || 'OK', u.daysOverdue || 0, u.lastActive || 'Agora', u.createdAt || new Date().toISOString().split('T')[0]
               ]
             );
           } catch (e) {}
@@ -601,7 +740,7 @@ async function startServer() {
       }
 
       saveSqliteFile();
-      console.log(`[SQLite ITL Engine] Tabela 'cameras' (${cameras.length} registros) e 'users' (${users.length} registros) sincronizadas no SQLite!`);
+      console.log(`[SQLite ITL Engine] Tabelas do sistema sincronizadas no SQLite!`);
     } catch (err: any) {
       console.error('[SQLite ITL Error] Falha ao inicializar SQLite Engine:', err.message || err);
       loadFromLocalFile();
@@ -613,8 +752,8 @@ async function startServer() {
     try {
       sqliteDb.run(
         `INSERT OR REPLACE INTO cameras (
-          id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           cam.id,
           cam.name,
@@ -640,13 +779,15 @@ async function startServer() {
           cam.lat || -17.0397,
           cam.lng || -39.5312,
           cam.thumbnailUrl || '',
+          cam.videoStreamUrl || '',
+          cam.isLiveWebcam ? 1 : 0,
+          cam.isDemo ? 1 : 0,
           cam.createdAt || new Date().toISOString().split('T')[0],
         ]
       );
       saveSqliteFile();
-      console.log(`[SQLite ITL Sync] Câmera '${cam.name}' (${cam.id}) GRAVADA no banco SQL!`);
     } catch (e: any) {
-      console.error('[SQLite Sync Error]', e.message);
+      console.error('[SQLite Sync Error] Camera:', e.message);
     }
   };
 
@@ -665,12 +806,13 @@ async function startServer() {
     try {
       sqliteDb.run(
         `INSERT OR REPLACE INTO users (
-          id, name, email, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, last_active, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, last_active, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           u.id,
           u.name,
           u.email,
+          '$2b$10$itlpasswordhash2026',
           u.role || 'RESIDENT',
           u.phone || '',
           u.stateUf || '',
@@ -678,14 +820,19 @@ async function startServer() {
           u.status || 'ACTIVE',
           JSON.stringify(u.customPermissions || {}),
           JSON.stringify(u.allowedCameraIds || ['ALL']),
+          u.planId || '',
+          u.planName || '',
+          u.monthlyFee || 0,
+          u.chosenDueDay || 5,
+          u.financialStatus || 'OK',
+          u.daysOverdue || 0,
           u.lastActive || 'Agora',
           u.createdAt || new Date().toISOString().split('T')[0],
         ]
       );
       saveSqliteFile();
-      console.log(`[SQLite ITL Sync] Usuário '${u.name}' (${u.id}) GRAVADO no banco SQL!`);
     } catch (e: any) {
-      console.error('[SQLite Sync Error]', e.message);
+      console.error('[SQLite Sync Error] User:', e.message);
     }
   };
 
@@ -697,6 +844,128 @@ async function startServer() {
     } catch (e) {}
   };
 
+  const syncRecordingToSqlite = (rec: CloudRecording) => {
+    if (!sqliteDb) return;
+    try {
+      sqliteDb.run(
+        `INSERT OR REPLACE INTO cloud_recordings (
+          id, camera_id, camera_name, start_time, end_time, duration_sec, file_size_mb, stream_url, thumbnail_url, is_e2ee_locked, tags, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          rec.id,
+          rec.cameraId,
+          rec.cameraName,
+          rec.startTime,
+          rec.endTime,
+          rec.durationSeconds || 0,
+          rec.fileSizeMB || 0,
+          rec.streamUrl || '',
+          rec.thumbnailUrl || '',
+          rec.isE2EELocked ? 1 : 0,
+          JSON.stringify(rec.tags || ['gravação', 'nuvem']),
+          rec.startTime ? rec.startTime.split(' ')[0] : new Date().toISOString().split('T')[0],
+        ]
+      );
+      saveSqliteFile();
+    } catch (e: any) {
+      console.error('[SQLite Sync Error] Recording:', e.message);
+    }
+  };
+
+  const deleteRecordingFromSqlite = (id: string) => {
+    deletedRecordingIds.add(id);
+    recordings = recordings.filter((r) => r.id !== id);
+    if (!sqliteDb) return;
+    try {
+      sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ?', [id]);
+      saveSqliteFile();
+    } catch (e) {}
+  };
+
+  const syncPlanToSqlite = (p: FinancialPlan) => {
+    if (!sqliteDb) return;
+    try {
+      sqliteDb.run(
+        `INSERT OR REPLACE INTO financial_plans (id, name, monthly_price, cameras_included, cloud_retention_days, description, popular, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [p.id, p.name, p.monthlyPrice || 0, p.camerasIncluded || 4, p.cloudRetentionDays || 7, p.description || '', p.popular ? 1 : 0, new Date().toISOString().split('T')[0]]
+      );
+      saveSqliteFile();
+    } catch (e: any) {}
+  };
+
+  const deletePlanFromSqlite = (id: string) => {
+    plans = plans.filter((p) => p.id !== id);
+    if (!sqliteDb) return;
+    try {
+      sqliteDb.run('DELETE FROM financial_plans WHERE id = ?', [id]);
+      saveSqliteFile();
+    } catch (e) {}
+  };
+
+  const syncInvoiceToSqlite = (inv: Invoice) => {
+    if (!sqliteDb) return;
+    try {
+      sqliteDb.run(
+        `INSERT OR REPLACE INTO financial_invoices (id, user_id, user_name, user_email, plan_name, amount, original_amount, due_date, payment_date, status, is_pro_rata, pro_rata_days, pix_code, pix_qr_code_url, mercado_pago_payment_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [inv.id, inv.userId, inv.userName, inv.userEmail, inv.planName, inv.amount || 0, inv.originalAmount || 0, inv.dueDate || '', inv.paymentDate || '', inv.status || 'PENDING', inv.isProRata ? 1 : 0, inv.proRataDays || 0, inv.pixCode || '', inv.pixQrCodeUrl || '', inv.mercadoPagoPaymentId || '', inv.createdAt || new Date().toISOString().split('T')[0]]
+      );
+      saveSqliteFile();
+    } catch (e: any) {}
+  };
+
+  const deleteInvoiceFromSqlite = (id: string) => {
+    invoices = invoices.filter((i) => i.id !== id);
+    if (!sqliteDb) return;
+    try {
+      sqliteDb.run('DELETE FROM financial_invoices WHERE id = ?', [id]);
+      saveSqliteFile();
+    } catch (e) {}
+  };
+
+  const syncLogToSqlite = (log: ActivityLog) => {
+    if (!sqliteDb) return;
+    try {
+      sqliteDb.run(
+        `INSERT OR REPLACE INTO activity_logs (id, user_id, user_name, action, category, details, ip_address, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [log.id, log.userId || 'sys', log.userName || 'Sistema ITL', log.action || '', log.category || 'SYSTEM', log.details || '', log.ipAddress || '127.0.0.1', log.timestamp || new Date().toISOString().replace('T', ' ').substring(0, 19)]
+      );
+      saveSqliteFile();
+    } catch (e: any) {}
+  };
+
+  const syncMpConfigToSqlite = (cfg: MercadoPagoConfig) => {
+    if (!sqliteDb) return;
+    try {
+      sqliteDb.run(
+        `INSERT OR REPLACE INTO mercado_pago_config (id, access_token, public_key, webhook_secret, is_sandbox, auto_approve_simulated, updated_at) VALUES ('default', ?, ?, ?, ?, ?, ?)`,
+        [cfg.accessToken || '', cfg.publicKey || '', cfg.webhookSecret || '', cfg.isSandbox ? 1 : 0, cfg.autoApproveSimulated ? 1 : 0, new Date().toISOString()]
+      );
+      saveSqliteFile();
+    } catch (e: any) {}
+  };
+
+  const syncBackupConfigToSqlite = (cfg: BackupConfig) => {
+    if (!sqliteDb) return;
+    try {
+      sqliteDb.run(
+        `INSERT OR REPLACE INTO backup_settings (id, schedule, destination, retention_days, encrypt_backups, auto_backup_enabled, last_backup_date, next_backup_date, status, storage_path, storage_limit_gb) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [cfg.schedule || 'WEEKLY_SUNDAY_0200', cfg.destination || 'LOCAL_VPS', cfg.retentionDays || 30, cfg.encryptBackups ? 1 : 0, cfg.autoBackupEnabled ? 1 : 0, cfg.lastBackupDate || '', cfg.nextBackupDate || '', cfg.status || 'IDLE', cfg.storagePath || '/var/www/itl-backups/', cfg.storageLimitGB || 100]
+      );
+      saveSqliteFile();
+    } catch (e: any) {}
+  };
+
+  const syncNotificationConfigToSqlite = (cfg: NotificationConfig) => {
+    if (!sqliteDb) return;
+    try {
+      sqliteDb.run(
+        `INSERT OR REPLACE INTO notification_settings (id, push_enabled, fcm_server_key, telegram_bot_token, telegram_chat_id, whatsapp_webhook_url, sound_alerts, quiet_hours_enabled, quiet_hours_start, quiet_hours_end, alert_severities) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [cfg.pushEnabled ? 1 : 0, cfg.fcmServerKey || '', cfg.telegramBotToken || '', cfg.telegramChatId || '', cfg.whatsappWebhookUrl || '', cfg.soundAlerts ? 1 : 0, cfg.quietHoursEnabled ? 1 : 0, cfg.quietHoursStart || '22:00', cfg.quietHoursEnd || '07:00', JSON.stringify(cfg.alertSeverities || {})]
+      );
+      saveSqliteFile();
+    } catch (e: any) {}
+  };
+
   const saveStorageLimitToSqlite = (limitGB: number) => {
     if (!sqliteDb) return;
     try {
@@ -705,10 +974,7 @@ async function startServer() {
         [limitGB, new Date().toISOString()]
       );
       saveSqliteFile();
-      console.log(`[SQLite ITL Sync] Limite de Armazenamento de ${limitGB} GB SALVO no Banco SQL!`);
-    } catch (e: any) {
-      console.error('[SQLite Storage Sync Error]', e.message);
-    }
+    } catch (e: any) {}
   };
 
   // Helper functions to persist data to PostgreSQL
@@ -717,9 +983,9 @@ async function startServer() {
     if (!isPgActive || !pool) return;
     try {
       await queryPg(
-        `INSERT INTO cloud_recordings (id, camera_id, camera_name, start_time, end_time, duration_sec, file_size_mb, stream_url, thumbnail_url, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET camera_id=EXCLUDED.camera_id, camera_name=EXCLUDED.camera_name, start_time=EXCLUDED.start_time, end_time=EXCLUDED.end_time, duration_sec=EXCLUDED.duration_sec, file_size_mb=EXCLUDED.file_size_mb, stream_url=EXCLUDED.stream_url, thumbnail_url=EXCLUDED.thumbnail_url`,
+        `INSERT INTO cloud_recordings (id, camera_id, camera_name, start_time, end_time, duration_sec, file_size_mb, stream_url, thumbnail_url, is_e2ee_locked, tags, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET camera_id=EXCLUDED.camera_id, camera_name=EXCLUDED.camera_name, start_time=EXCLUDED.start_time, end_time=EXCLUDED.end_time, duration_sec=EXCLUDED.duration_sec, file_size_mb=EXCLUDED.file_size_mb, stream_url=EXCLUDED.stream_url, thumbnail_url=EXCLUDED.thumbnail_url, is_e2ee_locked=EXCLUDED.is_e2ee_locked, tags=EXCLUDED.tags`,
         [
           rec.id,
           rec.cameraId,
@@ -730,11 +996,25 @@ async function startServer() {
           rec.fileSizeMB || 0,
           rec.streamUrl || '',
           rec.thumbnailUrl || '',
+          rec.isE2EELocked ? 1 : 0,
+          JSON.stringify(rec.tags || ['gravação', 'nuvem']),
           rec.startTime ? rec.startTime.split(' ')[0] : new Date().toISOString().split('T')[0]
         ]
       );
     } catch (e: any) {
       console.error('[PostgreSQL Sync Error] Erro ao gravar gravação no PostgreSQL:', e.message || e);
+    }
+  }
+
+  async function deleteRecordingFromMysql(id: string) {
+    deletedRecordingIds.add(id);
+    recordings = recordings.filter((r) => r.id !== id);
+    saveToLocalFile();
+    if (!isPgActive || !pool) return;
+    try {
+      await queryPg('DELETE FROM cloud_recordings WHERE id = ?', [id]);
+    } catch (e) {
+      console.error('[PostgreSQL Sync Error] Erro ao deletar gravação:', e);
     }
   }
 
@@ -747,10 +1027,10 @@ async function startServer() {
       const safeStorage = isNaN(Number(cam.storageUsedGB)) ? 0.1 : Number(cam.storageUsedGB);
 
       await queryPg(
-        `INSERT INTO cameras (id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO cameras (id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
-         name=EXCLUDED.name, location=EXCLUDED.location, protocol=EXCLUDED.protocol, rtsp_url=EXCLUDED.rtsp_url, rtmp_url=EXCLUDED.rtmp_url, stream_key=EXCLUDED.stream_key, rtmp_server_url=EXCLUDED.rtmp_server_url, full_rtmp_url=EXCLUDED.full_rtmp_url, state_uf=EXCLUDED.state_uf, city=EXCLUDED.city, status=EXCLUDED.status, is_e2ee_encrypted=EXCLUDED.is_e2ee_encrypted, encryption_key_hash=EXCLUDED.encryption_key_hash, fps=EXCLUDED.fps, resolution=EXCLUDED.resolution, storage_used_gb=EXCLUDED.storage_used_gb, cloud_recordings_active=EXCLUDED.cloud_recordings_active, motion_sensitivity=EXCLUDED.motion_sensitivity, ai_detection_enabled=EXCLUDED.ai_detection_enabled, two_way_audio_enabled=EXCLUDED.two_way_audio_enabled, lat=EXCLUDED.lat, lng=EXCLUDED.lng, thumbnail_url=EXCLUDED.thumbnail_url`,
+         name=EXCLUDED.name, location=EXCLUDED.location, protocol=EXCLUDED.protocol, rtsp_url=EXCLUDED.rtsp_url, rtmp_url=EXCLUDED.rtmp_url, stream_key=EXCLUDED.stream_key, rtmp_server_url=EXCLUDED.rtmp_server_url, full_rtmp_url=EXCLUDED.full_rtmp_url, state_uf=EXCLUDED.state_uf, city=EXCLUDED.city, status=EXCLUDED.status, is_e2ee_encrypted=EXCLUDED.is_e2ee_encrypted, encryption_key_hash=EXCLUDED.encryption_key_hash, fps=EXCLUDED.fps, resolution=EXCLUDED.resolution, storage_used_gb=EXCLUDED.storage_used_gb, cloud_recordings_active=EXCLUDED.cloud_recordings_active, motion_sensitivity=EXCLUDED.motion_sensitivity, ai_detection_enabled=EXCLUDED.ai_detection_enabled, two_way_audio_enabled=EXCLUDED.two_way_audio_enabled, lat=EXCLUDED.lat, lng=EXCLUDED.lng, thumbnail_url=EXCLUDED.thumbnail_url, video_stream_url=EXCLUDED.video_stream_url, is_live_webcam=EXCLUDED.is_live_webcam, is_demo=EXCLUDED.is_demo`,
         [
           cam.id,
           cam.name,
@@ -776,6 +1056,9 @@ async function startServer() {
           safeLat,
           safeLng,
           cam.thumbnailUrl || '',
+          cam.videoStreamUrl || '',
+          cam.isLiveWebcam ? 1 : 0,
+          cam.isDemo ? 1 : 0,
           cam.createdAt || new Date().toISOString().split('T')[0],
         ]
       );
@@ -804,7 +1087,7 @@ async function startServer() {
       await queryPg(
         `INSERT INTO users (id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, last_active, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, role=EXCLUDED.role, phone=EXCLUDED.phone, state_uf=EXCLUDED.state_uf, city=EXCLUDED.city, status=EXCLUDED.status, custom_permissions=EXCLUDED.custom_permissions, allowed_camera_ids=EXCLUDED.allowed_camera_ids, plan_id=EXCLUDED.plan_id, plan_name=EXCLUDED.plan_name, monthly_fee=EXCLUDED.monthly_fee, chosen_due_day=EXCLUDED.chosen_due_day, financial_status=EXCLUDED.financial_status, days_overdue=EXCLUDED.days_overdue, last_active=EXCLUDED.last_active`,
+         ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, email=EXCLUDED.email, role=EXCLUDED.role, phone=EXCLUDED.phone, state_uf=EXCLUDED.state_uf, city=EXCLUDED.city, status=EXCLUDED.status, custom_permissions=EXCLUDED.custom_permissions, allowed_camera_ids=EXCLUDED.allowed_camera_ids, plan_id=EXCLUDED.plan_id, plan_name=EXCLUDED.plan_name, monthly_fee=EXCLUDED.monthly_fee, chosen_due_day=EXCLUDED.chosen_due_day, financial_status=EXCLUDED.financial_status, days_overdue=EXCLUDED.days_overdue, last_active=EXCLUDED.last_active`,
         [
           u.id,
           u.name,
@@ -1092,6 +1375,9 @@ async function startServer() {
             lat: parseFloat(row.lat || -17.0397),
             lng: parseFloat(row.lng || -39.5312),
             thumbnailUrl: row.thumbnail_url || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80',
+            videoStreamUrl: row.video_stream_url || '',
+            isLiveWebcam: Boolean(row.is_live_webcam),
+            isDemo: Boolean(row.is_demo),
             createdAt: row.created_at || '2026-01-01',
           });
         }
@@ -1155,8 +1441,8 @@ async function startServer() {
           fileSizeMB: parseFloat(row.file_size_mb || 0),
           streamUrl: row.stream_url,
           thumbnailUrl: row.thumbnail_url,
-          isE2EELocked: false,
-          tags: ['gravação', 'nuvem'],
+          isE2EELocked: Boolean(row.is_e2ee_locked),
+          tags: row.tags ? (typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags) : ['gravação', 'nuvem'],
         }));
 
         const recMap = new Map<string, CloudRecording>();
@@ -1398,6 +1684,9 @@ async function startServer() {
             lat DOUBLE PRECISION,
             lng DOUBLE PRECISION,
             thumbnail_url TEXT,
+            video_stream_url TEXT,
+            is_live_webcam SMALLINT DEFAULT 0,
+            is_demo SMALLINT DEFAULT 0,
             created_at VARCHAR(100)
           );
         `);
@@ -1441,6 +1730,8 @@ async function startServer() {
             file_size_mb DOUBLE PRECISION DEFAULT 0,
             stream_url TEXT,
             thumbnail_url TEXT,
+            is_e2ee_locked SMALLINT DEFAULT 0,
+            tags JSONB,
             created_at VARCHAR(100)
           );
         `);
@@ -1580,6 +1871,21 @@ async function startServer() {
           );
         `);
       } catch (e: any) { console.error('[PostgreSQL Table Error] system_settings:', e.message); }
+
+      // Migration helpers for existing PostgreSQL tables
+      const alterPg = async (sql: string) => { try { await queryPg(sql); } catch (e) {} };
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS video_stream_url TEXT");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_live_webcam SMALLINT DEFAULT 0");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_demo SMALLINT DEFAULT 0");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_id VARCHAR(64)");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_name VARCHAR(255)");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_fee DOUBLE PRECISION DEFAULT 0");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS chosen_due_day INT DEFAULT 5");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS financial_status VARCHAR(50) DEFAULT 'OK'");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS days_overdue INT DEFAULT 0");
+      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS is_e2ee_locked SMALLINT DEFAULT 0");
+      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS tags JSONB");
 
       // Execute complete initial two-way synchronization between JSON file and PostgreSQL
       await fullTwoWaySync();
@@ -2679,9 +2985,10 @@ async function startServer() {
     res.json({ success: true, message: `Gravação ao vivo interrompida e finalizada para ${session.cameraName}` });
   });
 
-  app.delete('/api/recordings/:id', (req, res) => {
+  app.delete('/api/recordings/:id', async (req, res) => {
     const { id } = req.params;
-    deletedRecordingIds.add(id);
+    deleteRecordingFromSqlite(id);
+    await deleteRecordingFromMysql(id);
     const target = recordings.find((r) => r.id === id);
     if (target && target.streamUrl && target.streamUrl.startsWith('/recordings/')) {
       const fileName = path.basename(target.streamUrl);
@@ -2701,12 +3008,13 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.post('/api/recordings/batch-delete', (req, res) => {
+  app.post('/api/recordings/batch-delete', async (req, res) => {
     const { ids } = req.body;
     if (Array.isArray(ids) && ids.length > 0) {
       const idSet = new Set(ids);
-      ids.forEach((id: string) => {
-        deletedRecordingIds.add(id);
+      for (const id of ids) {
+        deleteRecordingFromSqlite(id);
+        await deleteRecordingFromMysql(id);
         const target = recordings.find((r) => r.id === id);
         if (target && target.streamUrl && target.streamUrl.startsWith('/recordings/')) {
           const fileName = path.basename(target.streamUrl);
@@ -2720,7 +3028,7 @@ async function startServer() {
             }
           }
         }
-      });
+      }
       recordings = recordings.filter((r) => !idSet.has(r.id));
       saveToLocalFile();
       addLog('ITL Admin', `${ids.length} gravações em nuvem excluídas em lote`, 'RECORDING');
