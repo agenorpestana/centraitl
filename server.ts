@@ -15,6 +15,9 @@ const lastFfmpegLogs = new Map<string, string[]>();
 const activeRtspUrls = new Map<string, string>();
 const deletedCameraIds = new Set<string>();
 const deletedRecordingIds = new Set<string>();
+const deletedUserIds = new Set<string>();
+const deletedPlanIds = new Set<string>();
+const deletedInvoiceIds = new Set<string>();
 
 function getValidStreamSource(cam: any): string {
   if (!cam) return '';
@@ -267,7 +270,7 @@ async function startServer() {
       const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
       const client = await pool.connect();
       try {
-        const res = await client.query({ text: pgSql, values: params, timeout: 2000 });
+        const res = await client.query(pgSql, params);
         return res.rows;
       } finally {
         client.release();
@@ -313,18 +316,21 @@ async function startServer() {
     try {
       const data = {
         cameras: cameras.filter((c) => c.id && !deletedCameraIds.has(c.id)),
-        recordings,
-        users,
+        recordings: recordings.filter((r) => r.id && !deletedRecordingIds.has(r.id)),
+        users: users.filter((u) => u.id && !deletedUserIds.has(u.id)),
         logs,
         backupConfig,
         notificationConfig,
-        plans,
-        invoices,
+        plans: plans.filter((p) => p.id && !deletedPlanIds.has(p.id)),
+        invoices: invoices.filter((i) => i.id && !deletedInvoiceIds.has(i.id)),
         mpConfig,
         architectureConfig,
         dbConfig,
         deletedCameraIds: Array.from(deletedCameraIds),
         deletedRecordingIds: Array.from(deletedRecordingIds),
+        deletedUserIds: Array.from(deletedUserIds),
+        deletedPlanIds: Array.from(deletedPlanIds),
+        deletedInvoiceIds: Array.from(deletedInvoiceIds),
       };
       fs.writeFileSync(LOCAL_STORE_FILE, JSON.stringify(data, null, 2), 'utf-8');
     } catch (err) {
@@ -352,6 +358,15 @@ async function startServer() {
         if (parsed.deletedRecordingIds && Array.isArray(parsed.deletedRecordingIds)) {
           parsed.deletedRecordingIds.forEach((id: string) => deletedRecordingIds.add(id));
         }
+        if (parsed.deletedUserIds && Array.isArray(parsed.deletedUserIds)) {
+          parsed.deletedUserIds.forEach((id: string) => deletedUserIds.add(id));
+        }
+        if (parsed.deletedPlanIds && Array.isArray(parsed.deletedPlanIds)) {
+          parsed.deletedPlanIds.forEach((id: string) => deletedPlanIds.add(id));
+        }
+        if (parsed.deletedInvoiceIds && Array.isArray(parsed.deletedInvoiceIds)) {
+          parsed.deletedInvoiceIds.forEach((id: string) => deletedInvoiceIds.add(id));
+        }
         if (parsed.cameras && Array.isArray(parsed.cameras)) {
           cameras = parsed.cameras.filter((c: any) => c.id && !deletedCameraIds.has(c.id));
         }
@@ -366,12 +381,18 @@ async function startServer() {
               !deletedRecordingIds.has(r.id)
           );
         }
-        if (parsed.users && Array.isArray(parsed.users)) users = parsed.users;
+        if (parsed.users && Array.isArray(parsed.users)) {
+          users = parsed.users.filter((u: any) => u.id && !deletedUserIds.has(u.id));
+        }
         if (parsed.logs && Array.isArray(parsed.logs)) logs = parsed.logs;
         if (parsed.backupConfig) backupConfig = parsed.backupConfig;
         if (parsed.notificationConfig) notificationConfig = parsed.notificationConfig;
-        if (parsed.plans && Array.isArray(parsed.plans)) plans = parsed.plans;
-        if (parsed.invoices && Array.isArray(parsed.invoices)) invoices = parsed.invoices;
+        if (parsed.plans && Array.isArray(parsed.plans)) {
+          plans = parsed.plans.filter((p: any) => p.id && !deletedPlanIds.has(p.id));
+        }
+        if (parsed.invoices && Array.isArray(parsed.invoices)) {
+          invoices = parsed.invoices.filter((i: any) => i.id && !deletedInvoiceIds.has(i.id));
+        }
         if (parsed.mpConfig && parsed.mpConfig.accessToken) mpConfig = parsed.mpConfig;
         if (parsed.architectureConfig) architectureConfig = parsed.architectureConfig;
         console.log(`[ITL Storage] ${cameras.length} câmeras e ${users.length} usuários carregados do arquivo local.`);
@@ -1110,9 +1131,17 @@ async function startServer() {
   }
 
   async function syncUserToMysql(u: User) {
+    deletedUserIds.delete(u.id);
     saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
+      const safeCustomPerms = typeof u.customPermissions === 'string'
+        ? u.customPermissions
+        : JSON.stringify(u.customPermissions || {});
+      const safeAllowedCams = typeof u.allowedCameraIds === 'string'
+        ? u.allowedCameraIds
+        : JSON.stringify(u.allowedCameraIds || ['ALL']);
+
       await queryPg(
         `INSERT INTO users (id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, last_active, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1127,8 +1156,8 @@ async function startServer() {
           u.stateUf || '',
           u.city || '',
           u.status || 'ACTIVE',
-          JSON.stringify(u.customPermissions || {}),
-          JSON.stringify(u.allowedCameraIds || ['ALL']),
+          safeCustomPerms,
+          safeAllowedCams,
           u.planId || null,
           u.planName || null,
           u.monthlyFee || 0,
@@ -1146,6 +1175,8 @@ async function startServer() {
   }
 
   async function deleteUserFromMysql(id: string) {
+    deletedUserIds.add(id);
+    users = users.filter((u) => u.id !== id);
     saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
@@ -1180,6 +1211,7 @@ async function startServer() {
   }
 
   async function syncPlanToMysql(plan: FinancialPlan) {
+    deletedPlanIds.delete(plan.id);
     saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
@@ -1204,6 +1236,8 @@ async function startServer() {
   }
 
   async function deletePlanFromMysql(id: string) {
+    deletedPlanIds.add(id);
+    plans = plans.filter((p) => p.id !== id);
     saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
@@ -1212,6 +1246,7 @@ async function startServer() {
   }
 
   async function syncInvoiceToMysql(inv: Invoice) {
+    deletedInvoiceIds.delete(inv.id);
     saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
@@ -1244,6 +1279,8 @@ async function startServer() {
   }
 
   async function deleteInvoiceFromMysql(id: string) {
+    deletedInvoiceIds.add(id);
+    invoices = invoices.filter((i) => i.id !== id);
     saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
@@ -1348,10 +1385,31 @@ async function startServer() {
       loadFromLocalFile();
 
       cameras = cameras.filter((c) => c.id && !deletedCameraIds.has(c.id));
+      users = users.filter((u) => u.id && !deletedUserIds.has(u.id));
+      recordings = recordings.filter((r) => r.id && !deletedRecordingIds.has(r.id));
+      plans = plans.filter((p) => p.id && !deletedPlanIds.has(p.id));
+      invoices = invoices.filter((i) => i.id && !deletedInvoiceIds.has(i.id));
 
       // Ensure default essential seeds if memory is empty
       if (users.length === 0) users = [...INITIAL_USERS];
       if (plans.length === 0) plans = [...INITIAL_PLANS];
+
+      // Purge deleted records from PostgreSQL database
+      for (const id of deletedCameraIds) {
+        try { await queryPg('DELETE FROM cameras WHERE id = ?', [id]); } catch (e) {}
+      }
+      for (const id of deletedUserIds) {
+        try { await queryPg('DELETE FROM users WHERE id = ?', [id]); } catch (e) {}
+      }
+      for (const id of deletedRecordingIds) {
+        try { await queryPg('DELETE FROM cloud_recordings WHERE id = ?', [id]); } catch (e) {}
+      }
+      for (const id of deletedPlanIds) {
+        try { await queryPg('DELETE FROM financial_plans WHERE id = ?', [id]); } catch (e) {}
+      }
+      for (const id of deletedInvoiceIds) {
+        try { await queryPg('DELETE FROM financial_invoices WHERE id = ?', [id]); } catch (e) {}
+      }
 
       // 2. Push all local JSON memory entities into PostgreSQL (upsert)
       for (const c of cameras) {
@@ -1359,11 +1417,11 @@ async function startServer() {
           try { await syncCameraToMysql(c); } catch (e) {}
         }
       }
-      for (const u of users) { try { await syncUserToMysql(u); } catch (e) {} }
-      for (const r of recordings) { try { await syncRecordingToMysql(r); } catch (e) {} }
+      for (const u of users) { if (!deletedUserIds.has(u.id)) { try { await syncUserToMysql(u); } catch (e) {} } }
+      for (const r of recordings) { if (!deletedRecordingIds.has(r.id)) { try { await syncRecordingToMysql(r); } catch (e) {} } }
       for (const l of logs) { try { await syncLogToMysql(l); } catch (e) {} }
-      for (const p of plans) { try { await syncPlanToMysql(p); } catch (e) {} }
-      for (const i of invoices) { try { await syncInvoiceToMysql(i); } catch (e) {} }
+      for (const p of plans) { if (!deletedPlanIds.has(p.id)) { try { await syncPlanToMysql(p); } catch (e) {} } }
+      for (const i of invoices) { if (!deletedInvoiceIds.has(i.id)) { try { await syncInvoiceToMysql(i); } catch (e) {} } }
       try { await syncMpConfigToMysql(mpConfig); } catch (e) {}
       try { await syncBackupConfigToMysql(backupConfig); } catch (e) {}
       try { await syncNotificationConfigToMysql(notificationConfig); } catch (e) {}
@@ -1414,9 +1472,8 @@ async function startServer() {
         const camMap = new Map<string, Camera>();
         for (const c of dbCams) camMap.set(c.id, c);
         for (const c of cameras) {
-          if (!deletedCameraIds.has(c.id) && !camMap.has(c.id)) {
-            camMap.set(c.id, c);
-            await syncCameraToMysql(c);
+          if (!deletedCameraIds.has(c.id)) {
+            camMap.set(c.id, c); // Prefer memory version
           }
         }
         cameras = Array.from(camMap.values()).filter((c) => !deletedCameraIds.has(c.id));
@@ -1425,66 +1482,68 @@ async function startServer() {
       // Users
       const userRows = await queryPg('SELECT * FROM users');
       if (userRows && Array.isArray(userRows)) {
-        const dbUsers = userRows.map((row: any) => ({
-          id: row.id,
-          name: row.name,
-          email: row.email,
-          role: row.role,
-          phone: row.phone,
-          stateUf: row.state_uf || '',
-          city: row.city || '',
-          status: row.status,
-          customPermissions: typeof row.custom_permissions === 'string' ? JSON.parse(row.custom_permissions) : row.custom_permissions,
-          allowedCameraIds: row.allowed_camera_ids ? (typeof row.allowed_camera_ids === 'string' ? JSON.parse(row.allowed_camera_ids) : row.allowed_camera_ids) : ['ALL'],
-          planId: row.plan_id || undefined,
-          planName: row.plan_name || undefined,
-          monthlyFee: row.monthly_fee ? parseFloat(row.monthly_fee) : undefined,
-          chosenDueDay: row.chosen_due_day || undefined,
-          financialStatus: row.financial_status || 'OK',
-          daysOverdue: row.days_overdue || 0,
-          lastActive: row.last_active,
-          createdAt: row.created_at,
-        }));
+        const dbUsers = userRows
+          .filter((row: any) => row.id && !deletedUserIds.has(row.id))
+          .map((row: any) => ({
+            id: row.id,
+            name: row.name,
+            email: row.email,
+            role: row.role,
+            phone: row.phone,
+            stateUf: row.state_uf || '',
+            city: row.city || '',
+            status: row.status,
+            customPermissions: typeof row.custom_permissions === 'string' ? JSON.parse(row.custom_permissions) : row.custom_permissions,
+            allowedCameraIds: row.allowed_camera_ids ? (typeof row.allowed_camera_ids === 'string' ? JSON.parse(row.allowed_camera_ids) : row.allowed_camera_ids) : ['ALL'],
+            planId: row.plan_id || undefined,
+            planName: row.plan_name || undefined,
+            monthlyFee: row.monthly_fee ? parseFloat(row.monthly_fee) : undefined,
+            chosenDueDay: row.chosen_due_day || undefined,
+            financialStatus: row.financial_status || 'OK',
+            daysOverdue: row.days_overdue || 0,
+            lastActive: row.last_active,
+            createdAt: row.created_at,
+          }));
 
         const userMap = new Map<string, User>();
         for (const u of dbUsers) userMap.set(u.id, u);
         for (const u of users) {
-          if (!userMap.has(u.id)) {
-            userMap.set(u.id, u);
-            await syncUserToMysql(u);
+          if (!deletedUserIds.has(u.id)) {
+            userMap.set(u.id, u); // Prefer memory version
           }
         }
-        users = Array.from(userMap.values());
+        users = Array.from(userMap.values()).filter((u) => !deletedUserIds.has(u.id));
       }
 
       // Cloud Recordings
       const recRows = await queryPg('SELECT * FROM cloud_recordings ORDER BY start_time DESC');
       if (recRows && Array.isArray(recRows)) {
-        const dbRecs = recRows.map((row: any) => ({
-          id: row.id,
-          cameraId: row.camera_id,
-          cameraName: row.camera_name,
-          startTime: row.start_time,
-          endTime: row.end_time,
-          durationSeconds: row.duration_sec || 0,
-          fileSizeMB: parseFloat(row.file_size_mb || 0),
-          streamUrl: row.stream_url,
-          thumbnailUrl: row.thumbnail_url,
-          isE2EELocked: Boolean(row.is_e2ee_locked),
-          tags: row.tags ? (typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags) : ['gravação', 'nuvem'],
-        }));
+        const dbRecs = recRows
+          .filter((row: any) => row.id && !deletedRecordingIds.has(row.id))
+          .map((row: any) => ({
+            id: row.id,
+            cameraId: row.camera_id,
+            cameraName: row.camera_name,
+            startTime: row.start_time,
+            endTime: row.end_time,
+            durationSeconds: row.duration_sec || 0,
+            fileSizeMB: parseFloat(row.file_size_mb || 0),
+            streamUrl: row.stream_url,
+            thumbnailUrl: row.thumbnail_url,
+            isE2EELocked: Boolean(row.is_e2ee_locked),
+            tags: row.tags ? (typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags) : ['gravação', 'nuvem'],
+          }));
 
         const recMap = new Map<string, CloudRecording>();
         for (const r of dbRecs) {
           if (!deletedRecordingIds.has(r.id)) recMap.set(r.id, r);
         }
         for (const r of recordings) {
-          if (!deletedRecordingIds.has(r.id) && !recMap.has(r.id)) {
+          if (!deletedRecordingIds.has(r.id)) {
             recMap.set(r.id, r);
-            await syncRecordingToMysql(r);
           }
         }
-        recordings = Array.from(recMap.values());
+        recordings = Array.from(recMap.values()).filter((r) => !deletedRecordingIds.has(r.id));
       }
 
       // Activity Logs
@@ -1504,10 +1563,7 @@ async function startServer() {
         const logMap = new Map<string, ActivityLog>();
         for (const l of dbLogs) logMap.set(l.id, l);
         for (const l of logs) {
-          if (!logMap.has(l.id)) {
-            logMap.set(l.id, l);
-            await syncLogToMysql(l);
-          }
+          logMap.set(l.id, l);
         }
         logs = Array.from(logMap.values());
       }
@@ -1515,58 +1571,60 @@ async function startServer() {
       // Financial Plans
       const planRows = await queryPg('SELECT * FROM financial_plans');
       if (planRows && Array.isArray(planRows)) {
-        const dbPlans = planRows.map((row: any) => ({
-          id: row.id,
-          name: row.name,
-          monthlyPrice: parseFloat(row.monthly_price || 0),
-          camerasIncluded: row.cameras_included || 4,
-          cloudRetentionDays: row.cloud_retention_days || 7,
-          description: row.description || '',
-          popular: Boolean(row.popular),
-        }));
+        const dbPlans = planRows
+          .filter((row: any) => row.id && !deletedPlanIds.has(row.id))
+          .map((row: any) => ({
+            id: row.id,
+            name: row.name,
+            monthlyPrice: parseFloat(row.monthly_price || 0),
+            camerasIncluded: row.cameras_included || 4,
+            cloudRetentionDays: row.cloud_retention_days || 7,
+            description: row.description || '',
+            popular: Boolean(row.popular),
+          }));
 
         const planMap = new Map<string, FinancialPlan>();
         for (const p of dbPlans) planMap.set(p.id, p);
         for (const p of plans) {
-          if (!planMap.has(p.id)) {
+          if (!deletedPlanIds.has(p.id)) {
             planMap.set(p.id, p);
-            await syncPlanToMysql(p);
           }
         }
-        plans = Array.from(planMap.values());
+        plans = Array.from(planMap.values()).filter((p) => !deletedPlanIds.has(p.id));
       }
 
       // Financial Invoices
       const invoiceRows = await queryPg('SELECT * FROM financial_invoices ORDER BY created_at DESC');
       if (invoiceRows && Array.isArray(invoiceRows)) {
-        const dbInvoices = invoiceRows.map((row: any) => ({
-          id: row.id,
-          userId: row.user_id,
-          userName: row.user_name,
-          userEmail: row.user_email,
-          planName: row.plan_name,
-          amount: parseFloat(row.amount || 0),
-          originalAmount: parseFloat(row.original_amount || 0),
-          dueDate: row.due_date,
-          paymentDate: row.payment_date || undefined,
-          status: row.status,
-          isProRata: Boolean(row.is_pro_rata),
-          proRataDays: row.pro_rata_days || undefined,
-          pixCode: row.pix_code || undefined,
-          pixQrCodeUrl: row.pix_qr_code_url || undefined,
-          mercadoPagoPaymentId: row.mercado_pago_payment_id || undefined,
-          createdAt: row.created_at,
-        }));
+        const dbInvoices = invoiceRows
+          .filter((row: any) => row.id && !deletedInvoiceIds.has(row.id))
+          .map((row: any) => ({
+            id: row.id,
+            userId: row.user_id,
+            userName: row.user_name,
+            userEmail: row.user_email,
+            planName: row.plan_name,
+            amount: parseFloat(row.amount || 0),
+            originalAmount: parseFloat(row.original_amount || 0),
+            dueDate: row.due_date,
+            paymentDate: row.payment_date || undefined,
+            status: row.status,
+            isProRata: Boolean(row.is_pro_rata),
+            proRataDays: row.pro_rata_days || undefined,
+            pixCode: row.pix_code || undefined,
+            pixQrCodeUrl: row.pix_qr_code_url || undefined,
+            mercadoPagoPaymentId: row.mercado_pago_payment_id || undefined,
+            createdAt: row.created_at,
+          }));
 
         const invoiceMap = new Map<string, Invoice>();
         for (const i of dbInvoices) invoiceMap.set(i.id, i);
         for (const i of invoices) {
-          if (!invoiceMap.has(i.id)) {
+          if (!deletedInvoiceIds.has(i.id)) {
             invoiceMap.set(i.id, i);
-            await syncInvoiceToMysql(i);
           }
         }
-        invoices = Array.from(invoiceMap.values());
+        invoices = Array.from(invoiceMap.values()).filter((i) => !deletedInvoiceIds.has(i.id));
       }
 
       // Mercado Pago Config
@@ -1940,23 +1998,92 @@ async function startServer() {
 
       // Migration helpers for existing PostgreSQL tables
       const alterPg = async (sql: string) => { try { await queryPg(sql); } catch (e) {} };
+      // Cameras
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS location TEXT");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS protocol VARCHAR(50) DEFAULT 'RTSP'");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS rtsp_url TEXT");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS rtmp_url TEXT");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS stream_key VARCHAR(100)");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS rtmp_server_url TEXT");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS full_rtmp_url TEXT");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS state_uf VARCHAR(20)");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS city VARCHAR(100)");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ONLINE'");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_e2ee_encrypted SMALLINT DEFAULT 1");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS encryption_key_hash TEXT");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS fps INT DEFAULT 30");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS resolution VARCHAR(50) DEFAULT '1080p'");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS storage_used_gb DOUBLE PRECISION DEFAULT 0.1");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS cloud_recordings_active SMALLINT DEFAULT 1");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS motion_sensitivity INT DEFAULT 7");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS ai_detection_enabled SMALLINT DEFAULT 1");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS two_way_audio_enabled SMALLINT DEFAULT 1");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS thumbnail_url TEXT");
       await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS video_stream_url TEXT");
       await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_live_webcam SMALLINT DEFAULT 0");
       await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_demo SMALLINT DEFAULT 0");
+      await alterPg("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS created_at VARCHAR(100)");
+
+      // Users
       await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'RESIDENT'");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50)");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS state_uf VARCHAR(20)");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS city VARCHAR(100)");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ACTIVE'");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_permissions JSONB");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_camera_ids JSONB");
       await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_id VARCHAR(64)");
       await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_name VARCHAR(255)");
       await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_fee DOUBLE PRECISION DEFAULT 0");
       await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS chosen_due_day INT DEFAULT 5");
       await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS financial_status VARCHAR(50) DEFAULT 'OK'");
       await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS days_overdue INT DEFAULT 0");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active VARCHAR(100) DEFAULT 'Agora'");
+      await alterPg("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at VARCHAR(100) DEFAULT '2026-01-01'");
+
+      // Cloud Recordings
+      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS camera_id VARCHAR(64)");
+      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS camera_name VARCHAR(255)");
+      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS start_time VARCHAR(100)");
+      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS end_time VARCHAR(100)");
+      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS duration_sec INT DEFAULT 0");
+      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS file_size_mb DOUBLE PRECISION DEFAULT 0");
+      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS stream_url TEXT");
+      await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS thumbnail_url TEXT");
       await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS is_e2ee_locked SMALLINT DEFAULT 0");
       await alterPg("ALTER TABLE cloud_recordings ADD COLUMN IF NOT EXISTS tags JSONB");
+
+      // Financial Plans
+      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS name VARCHAR(255)");
+      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS monthly_price DOUBLE PRECISION DEFAULT 0");
+      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS cameras_included INT DEFAULT 4");
+      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS cloud_retention_days INT DEFAULT 7");
+      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS description TEXT");
+      await alterPg("ALTER TABLE financial_plans ADD COLUMN IF NOT EXISTS popular SMALLINT DEFAULT 0");
+
+      // Financial Invoices
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS user_id VARCHAR(64)");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS user_name VARCHAR(255)");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS user_email VARCHAR(255)");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS plan_name VARCHAR(255)");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS amount DOUBLE PRECISION DEFAULT 0");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS original_amount DOUBLE PRECISION DEFAULT 0");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS due_date VARCHAR(50)");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS payment_date VARCHAR(50)");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'PENDING'");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS is_pro_rata SMALLINT DEFAULT 0");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS pro_rata_days INT DEFAULT 0");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS pix_code TEXT");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS pix_qr_code_url TEXT");
+      await alterPg("ALTER TABLE financial_invoices ADD COLUMN IF NOT EXISTS mercado_pago_payment_id VARCHAR(100)");
 
       // Execute complete initial two-way synchronization between JSON file and PostgreSQL
       await fullTwoWaySync();
 
-      console.log(`[PostgreSQL ITL Complete Sync] Conectado e Sincronizado com SUCESSO! (${cameras.length} câmeras, ${users.length} usuários, ${plans.length} planos, ${invoices.length} faturas em '${dbName}')`);
+      console.log(`[PostgreSQL ITL Complete Sync] Conectado e Sincronizado com SUCESSO! (${cameras.length} câmeras, ${users.length} usuários, ${plans.length} planos, ${invoices.length} faturas em '${dbConfig.dbName}')`);
     } catch (err: any) {
       console.log('[PostgreSQL ITL Sync Warning]', err.message);
       loadFromLocalFile();
