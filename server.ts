@@ -252,13 +252,26 @@ async function startServer() {
   let isPgActive = false;
   let isMysqlActive = false;
 
+  let dbConfig = {
+    dbHost: process.env.DB_HOST || '127.0.0.1',
+    dbPort: parseInt(process.env.DB_PORT || '5432', 10),
+    dbName: process.env.DB_NAME || 'itl_cameras',
+    dbUser: process.env.DB_USER || 'itl_user',
+    dbPassword: process.env.DB_PASSWORD !== undefined ? process.env.DB_PASSWORD : 'itl123.789',
+  };
+
   async function queryPg(sql: string, params: any[] = []): Promise<any[]> {
     if (!isPgActive || !pool) return [];
     try {
       let paramIndex = 1;
       const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
-      const res = await pool.query(pgSql, params);
-      return res.rows;
+      const client = await pool.connect();
+      try {
+        const res = await client.query({ text: pgSql, values: params, timeout: 2000 });
+        return res.rows;
+      } finally {
+        client.release();
+      }
     } catch (err: any) {
       console.error('[PostgreSQL Query Error]', err.message || err);
       return [];
@@ -309,6 +322,7 @@ async function startServer() {
         invoices,
         mpConfig,
         architectureConfig,
+        dbConfig,
         deletedCameraIds: Array.from(deletedCameraIds),
         deletedRecordingIds: Array.from(deletedRecordingIds),
       };
@@ -324,6 +338,14 @@ async function startServer() {
       if (fs.existsSync(LOCAL_STORE_FILE)) {
         const raw = fs.readFileSync(LOCAL_STORE_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
+        if (parsed.dbConfig) {
+          dbConfig = { ...dbConfig, ...parsed.dbConfig };
+          if (dbConfig.dbHost) process.env.DB_HOST = dbConfig.dbHost;
+          if (dbConfig.dbPort) process.env.DB_PORT = String(dbConfig.dbPort);
+          if (dbConfig.dbName) process.env.DB_NAME = dbConfig.dbName;
+          if (dbConfig.dbUser) process.env.DB_USER = dbConfig.dbUser;
+          if (dbConfig.dbPassword !== undefined) process.env.DB_PASSWORD = dbConfig.dbPassword;
+        }
         if (parsed.deletedCameraIds && Array.isArray(parsed.deletedCameraIds)) {
           parsed.deletedCameraIds.forEach((id: string) => deletedCameraIds.add(id));
         }
@@ -1573,22 +1595,29 @@ async function startServer() {
   const initPostgresAndSync = async () => {
     // Load local JSON state first
     loadFromLocalFile();
-    const dbHost = process.env.DB_HOST || '127.0.0.1';
-    const dbPort = parseInt(process.env.DB_PORT || '5432', 10);
-    const dbUser = process.env.DB_USER || 'itl_user';
-    const dbPassword = process.env.DB_PASSWORD !== undefined ? process.env.DB_PASSWORD : 'itl_pass_2026';
-    const dbName = process.env.DB_NAME || 'itl_cameras';
+    const targetHost = dbConfig.dbHost || process.env.DB_HOST || '127.0.0.1';
+    const targetPort = dbConfig.dbPort || parseInt(process.env.DB_PORT || '5432', 10);
+    const targetUser = dbConfig.dbUser || process.env.DB_USER || 'itl_user';
+    const targetPassword = dbConfig.dbPassword !== undefined ? dbConfig.dbPassword : 'itl123.789';
+    const targetName = dbConfig.dbName || process.env.DB_NAME || 'itl_cameras';
 
-    const hostsToTry = [dbHost, '127.0.0.1', 'localhost'];
-    const credentials = [
-      { user: dbUser, pass: dbPassword },
-      { user: dbUser, pass: 'itl_pass_2026' },
-      { user: dbUser, pass: '' },
-      { user: 'postgres', pass: dbPassword },
-      { user: 'postgres', pass: 'itl_pass_2026' },
-      { user: 'postgres', pass: 'postgres' },
-      { user: 'postgres', pass: '' },
-    ];
+    const hostsToTry = [targetHost, '127.0.0.1', 'localhost'];
+    const candidatesPass = [
+      targetPassword,
+      'itl123.789',
+      'itl_pass_2026',
+      'postgres',
+      ''
+    ].filter((p, index, self) => p !== undefined && self.indexOf(p) === index);
+
+    const candidatesUser = [targetUser, 'itl_user', 'postgres'].filter((u, index, self) => self.indexOf(u) === index);
+
+    const credentials: Array<{ user: string; pass: string }> = [];
+    for (const u of candidatesUser) {
+      for (const p of candidatesPass) {
+        credentials.push({ user: u, pass: p });
+      }
+    }
 
     let connectedHost = '';
 
@@ -1598,10 +1627,10 @@ async function startServer() {
         try {
           const testPool = new pg.Pool({
             host: hostCandidate,
-            port: dbPort,
+            port: targetPort,
             user: cred.user,
             password: cred.pass,
-            database: dbName,
+            database: targetName,
             max: 10,
             idleTimeoutMillis: 30000,
             connectionTimeoutMillis: 800,
@@ -1614,7 +1643,22 @@ async function startServer() {
           pool = testPool;
           isPgActive = true;
           connectedHost = hostCandidate;
-          console.log(`[PostgreSQL ITL] Conectado com SUCESSO ao PostgreSQL em ${connectedHost}:${dbPort} (banco '${dbName}', usuário '${cred.user}')`);
+
+          dbConfig = {
+            dbHost: hostCandidate,
+            dbPort: targetPort,
+            dbName: targetName,
+            dbUser: cred.user,
+            dbPassword: cred.pass,
+          };
+          process.env.DB_HOST = hostCandidate;
+          process.env.DB_PORT = String(targetPort);
+          process.env.DB_NAME = targetName;
+          process.env.DB_USER = cred.user;
+          process.env.DB_PASSWORD = cred.pass;
+          saveToLocalFile();
+
+          console.log(`[PostgreSQL ITL] Conectado com SUCESSO ao PostgreSQL em ${connectedHost}:${targetPort} (banco '${targetName}', usuário '${cred.user}')`);
           break;
         } catch (err: any) {
           // If database doesn't exist, try creating it via root database 'postgres'
@@ -1622,23 +1666,23 @@ async function startServer() {
             try {
               const rootPool = new pg.Pool({
                 host: hostCandidate,
-                port: dbPort,
+                port: targetPort,
                 user: cred.user,
                 password: cred.pass,
                 database: 'postgres',
                 connectionTimeoutMillis: 3000,
               });
               const rootClient = await rootPool.connect();
-              await rootClient.query(`CREATE DATABASE "${dbName}"`);
+              await rootClient.query(`CREATE DATABASE "${targetName}"`);
               rootClient.release();
               await rootPool.end();
 
               const targetPool = new pg.Pool({
                 host: hostCandidate,
-                port: dbPort,
+                port: targetPort,
                 user: cred.user,
                 password: cred.pass,
-                database: dbName,
+                database: targetName,
                 max: 10,
                 connectionTimeoutMillis: 3000,
               });
@@ -1649,7 +1693,22 @@ async function startServer() {
               pool = targetPool;
               isPgActive = true;
               connectedHost = hostCandidate;
-              console.log(`[PostgreSQL ITL] Banco de dados '${dbName}' criado e conectado em ${connectedHost}:${dbPort}`);
+
+              dbConfig = {
+                dbHost: hostCandidate,
+                dbPort: targetPort,
+                dbName: targetName,
+                dbUser: cred.user,
+                dbPassword: cred.pass,
+              };
+              process.env.DB_HOST = hostCandidate;
+              process.env.DB_PORT = String(targetPort);
+              process.env.DB_NAME = targetName;
+              process.env.DB_USER = cred.user;
+              process.env.DB_PASSWORD = cred.pass;
+              saveToLocalFile();
+
+              console.log(`[PostgreSQL ITL] Banco de dados '${targetName}' criado e conectado em ${connectedHost}:${targetPort}`);
               break;
             } catch (e2) {}
           }
@@ -2586,10 +2645,11 @@ async function startServer() {
     }
     res.json({
       isPgActive,
-      dbName: process.env.DB_NAME || 'itl_cameras',
-      host: process.env.DB_HOST || '127.0.0.1',
-      port: parseInt(process.env.DB_PORT || '5432', 10),
-      user: process.env.DB_USER || 'itl_user',
+      dbName: dbConfig.dbName || process.env.DB_NAME || 'itl_cameras',
+      host: dbConfig.dbHost || process.env.DB_HOST || '127.0.0.1',
+      port: dbConfig.dbPort || parseInt(process.env.DB_PORT || '5432', 10),
+      user: dbConfig.dbUser || process.env.DB_USER || 'itl_user',
+      dbPassword: dbConfig.dbPassword,
       memoryCounts: {
         cameras: cameras.length,
         users: users.length,
@@ -2732,11 +2792,11 @@ async function startServer() {
       return res.status(400).json({ error: 'Host, Nome do Banco e Usuário são obrigatórios.' });
     }
 
-    process.env.DB_HOST = dbHost;
-    process.env.DB_PORT = String(dbPort || 5432);
-    process.env.DB_NAME = dbName;
-    process.env.DB_USER = dbUser;
-    process.env.DB_PASSWORD = dbPassword !== undefined ? dbPassword : '';
+    const host = dbHost.trim();
+    const port = parseInt(String(dbPort || 5432), 10);
+    const name = dbName.trim();
+    const user = dbUser.trim();
+    const pass = dbPassword !== undefined ? dbPassword : '';
 
     if (pool) {
       try { await pool.end(); } catch (e) {}
@@ -2746,11 +2806,11 @@ async function startServer() {
 
     try {
       const testPool = new pg.Pool({
-        host: dbHost,
-        port: parseInt(String(dbPort), 10),
-        user: dbUser,
-        password: dbPassword,
-        database: dbName,
+        host,
+        port,
+        user,
+        password: pass,
+        database: name,
         max: 10,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 5000,
@@ -2763,12 +2823,27 @@ async function startServer() {
       pool = testPool;
       isPgActive = true;
 
+      dbConfig = {
+        dbHost: host,
+        dbPort: port,
+        dbName: name,
+        dbUser: user,
+        dbPassword: pass,
+      };
+      process.env.DB_HOST = host;
+      process.env.DB_PORT = String(port);
+      process.env.DB_NAME = name;
+      process.env.DB_USER = user;
+      process.env.DB_PASSWORD = pass;
+
+      saveToLocalFile();
+
       // Ensure tables exist on newly connected database
-      await initPostgresAndSync();
+      initPostgresAndSync().catch((e) => console.error('[Init Post DB Config Error]', e));
 
       res.json({
         success: true,
-        message: `Conexão estabelecida com sucesso ao PostgreSQL em ${dbHost}:${dbPort} (banco '${dbName}')!`,
+        message: `Conexão estabelecida com sucesso ao PostgreSQL em ${host}:${port} (banco '${name}')!`,
         isPgActive: true,
       });
     } catch (err: any) {
@@ -2821,7 +2896,7 @@ async function startServer() {
     };
     plans.push(newPlan);
     saveToLocalFile();
-    await syncPlanToMysql(newPlan);
+    syncPlanToMysql(newPlan).catch((e) => console.error('[Pg Sync Plan Error]:', e));
     addLog('Sistema ITL', `Criou novo plano financeiro '${newPlan.name}'`, 'FINANCIAL', `ID: ${newPlan.id}, Valor: R$ ${newPlan.monthlyPrice}`);
     res.json(newPlan);
   });
@@ -2832,7 +2907,7 @@ async function startServer() {
     if (idx !== -1) {
       plans[idx] = { ...plans[idx], ...req.body };
       saveToLocalFile();
-      await syncPlanToMysql(plans[idx]);
+      syncPlanToMysql(plans[idx]).catch((e) => console.error('[Pg Sync Plan Error]:', e));
       addLog('Sistema ITL', `Atualizou plano financeiro '${plans[idx].name}'`, 'FINANCIAL', `ID: ${id}`);
       return res.json(plans[idx]);
     }
@@ -2843,7 +2918,7 @@ async function startServer() {
     const { id } = req.params;
     plans = plans.filter((p) => p.id !== id);
     saveToLocalFile();
-    await deletePlanFromMysql(id);
+    deletePlanFromMysql(id).catch((e) => console.error('[Pg Delete Plan Error]:', e));
     addLog('Sistema ITL', `Removeu plano financeiro`, 'FINANCIAL', `ID: ${id}`);
     res.json({ success: true });
   });
@@ -2873,7 +2948,7 @@ async function startServer() {
     };
     invoices.unshift(newInvoice);
     saveToLocalFile();
-    await syncInvoiceToMysql(newInvoice);
+    syncInvoiceToMysql(newInvoice).catch((e) => console.error('[Pg Sync Invoice Error]:', e));
     addLog('Sistema ITL', `Gerou nova fatura para '${newInvoice.userName}'`, 'FINANCIAL', `Fatura ID: ${newInvoice.id}, Valor: R$ ${newInvoice.amount}`);
     res.json(newInvoice);
   });
@@ -2884,7 +2959,7 @@ async function startServer() {
     if (idx !== -1) {
       invoices[idx] = { ...invoices[idx], ...req.body };
       saveToLocalFile();
-      await syncInvoiceToMysql(invoices[idx]);
+      syncInvoiceToMysql(invoices[idx]).catch((e) => console.error('[Pg Sync Invoice Error]:', e));
       addLog('Sistema ITL', `Atualizou fatura '${id}' (${invoices[idx].status})`, 'FINANCIAL', `Usuário: ${invoices[idx].userName}`);
       return res.json(invoices[idx]);
     }
@@ -2895,7 +2970,7 @@ async function startServer() {
     const { id } = req.params;
     invoices = invoices.filter((i) => i.id !== id);
     saveToLocalFile();
-    await deleteInvoiceFromMysql(id);
+    deleteInvoiceFromMysql(id).catch((e) => console.error('[Pg Delete Invoice Error]:', e));
     addLog('Sistema ITL', `Removeu fatura`, 'FINANCIAL', `ID: ${id}`);
     res.json({ success: true });
   });
@@ -2908,7 +2983,7 @@ async function startServer() {
   app.put('/api/mercadopago/config', async (req, res) => {
     mpConfig = { ...mpConfig, ...req.body };
     saveToLocalFile();
-    await syncMpConfigToMysql(mpConfig);
+    syncMpConfigToMysql(mpConfig).catch((e) => console.error('[Pg Sync MP Error]:', e));
     addLog('Super Admin Unity', 'Atualizou configurações de integração com Mercado Pago', 'SETTINGS', `Sandbox: ${mpConfig.isSandbox}`);
     res.json(mpConfig);
   });
@@ -2980,7 +3055,7 @@ async function startServer() {
     syncCameraToSqlite(newCamera);
     saveToLocalFile();
 
-    await syncCameraToMysql(newCamera);
+    syncCameraToMysql(newCamera).catch((e) => console.error('[Pg Sync Cam Error]:', e));
     startCameraRtspStream(newCamera);
     addLog('ITL Admin', `Nova câmera adicionada (${newCamera.protocol}): ${newCamera.name}`, 'SYSTEM', `URL: ${newCamera.fullRtmpUrl || newCamera.rtspUrl}`);
     res.status(201).json(newCamera);
@@ -2994,7 +3069,7 @@ async function startServer() {
     cameras[index] = { ...cameras[index], ...req.body };
     syncCameraToSqlite(cameras[index]);
     saveToLocalFile();
-    await syncCameraToMysql(cameras[index]);
+    syncCameraToMysql(cameras[index]).catch((e) => console.error('[Pg Sync Cam Error]:', e));
     startCameraRtspStream(cameras[index]);
     addLog('ITL Admin', `Câmera atualizada: ${cameras[index].name}`, 'SYSTEM');
     res.json(cameras[index]);
@@ -3180,7 +3255,7 @@ async function startServer() {
   app.delete('/api/recordings/:id', async (req, res) => {
     const { id } = req.params;
     deleteRecordingFromSqlite(id);
-    await deleteRecordingFromMysql(id);
+    deleteRecordingFromMysql(id).catch((e) => console.error('[Pg Delete Rec Error]:', e));
     const target = recordings.find((r) => r.id === id);
     if (target && target.streamUrl && target.streamUrl.startsWith('/recordings/')) {
       const fileName = path.basename(target.streamUrl);
@@ -3206,7 +3281,7 @@ async function startServer() {
       const idSet = new Set(ids);
       for (const id of ids) {
         deleteRecordingFromSqlite(id);
-        await deleteRecordingFromMysql(id);
+        deleteRecordingFromMysql(id).catch((e) => console.error('[Pg Delete Rec Error]:', e));
         const target = recordings.find((r) => r.id === id);
         if (target && target.streamUrl && target.streamUrl.startsWith('/recordings/')) {
           const fileName = path.basename(target.streamUrl);
@@ -3262,7 +3337,7 @@ async function startServer() {
     users.push(newUser);
     syncUserToSqlite(newUser);
     saveToLocalFile();
-    await syncUserToMysql(newUser);
+    syncUserToMysql(newUser).catch((e) => console.error('[Pg Sync User Error]:', e));
     addLog('ITL Admin', `Novo usuário cadastrado: ${newUser.name} (${newUser.role})`, 'AUTH');
     res.status(201).json(newUser);
   });
@@ -3275,7 +3350,7 @@ async function startServer() {
     users[index] = { ...users[index], ...req.body };
     syncUserToSqlite(users[index]);
     saveToLocalFile();
-    await syncUserToMysql(users[index]);
+    syncUserToMysql(users[index]).catch((e) => console.error('[Pg Sync User Error]:', e));
     addLog('ITL Admin', `Permissões/dados do usuário ${users[index].name} atualizados`, 'AUTH');
     res.json(users[index]);
   });
@@ -3285,7 +3360,7 @@ async function startServer() {
     users = users.filter((u) => u.id !== id);
     deleteUserFromSqlite(id);
     saveToLocalFile();
-    await deleteUserFromMysql(id);
+    deleteUserFromMysql(id).catch((e) => console.error('[Pg Delete User Error]:', e));
     addLog('ITL Admin', `Usuário removido: ${id}`, 'AUTH');
     res.json({ success: true });
   });

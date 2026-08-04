@@ -68,7 +68,7 @@ export const DatabaseDiagnosticsPanel: React.FC<DatabaseDiagnosticsPanelProps> =
     dbPort: 5432,
     dbName: 'itl_cameras',
     dbUser: 'itl_user',
-    dbPassword: 'itl_pass_2026',
+    dbPassword: 'itl123.789',
   });
   const [savingConfig, setSavingConfig] = useState(false);
   const [configMessage, setConfigMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -86,7 +86,16 @@ export const DatabaseDiagnosticsPanel: React.FC<DatabaseDiagnosticsPanelProps> =
       if (res.ok) {
         const data: DbStatusResponse = await res.json();
         setDbStatus(data);
-        if (data.host) setConfig((prev) => ({ ...prev, dbHost: data.host || prev.dbHost, dbPort: data.port || prev.dbPort, dbName: data.dbName || prev.dbName, dbUser: data.user || prev.dbUser }));
+        if (data.host) {
+          setConfig((prev) => ({
+            ...prev,
+            dbHost: data.host || prev.dbHost,
+            dbPort: data.port || prev.dbPort,
+            dbName: data.dbName || prev.dbName,
+            dbUser: data.user || prev.dbUser,
+            dbPassword: (data as any).dbPassword !== undefined ? (data as any).dbPassword : prev.dbPassword,
+          }));
+        }
         addLog(`Status obtido: ${data.status} (${data.isPgActive ? 'Conectado no Postgres' : 'Modo Backup JSON Local'})`);
       } else {
         addLog(`Erro ao obter status: HTTP ${res.status}`);
