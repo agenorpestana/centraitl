@@ -19,6 +19,7 @@ import { FinancialAlertBanner } from './components/FinancialAlertBanner';
 import { MercadoPagoSettingsModal } from './components/MercadoPagoSettingsModal';
 import { ArchitectureConfigPanel } from './components/ArchitectureConfigPanel';
 import { EventMapPanel } from './components/EventMapPanel';
+import { DatabaseDiagnosticsPanel } from './components/DatabaseDiagnosticsPanel';
 
 import {
   Camera,
@@ -585,6 +586,10 @@ export default function App() {
               }}
               onUpdateConfig={(newCfg) => setBackupConfig((prev) => ({ ...prev, ...newCfg }))}
             />
+          )}
+
+          {activeTab === 'db-diagnostics' && (
+            <DatabaseDiagnosticsPanel activeUser={activeUser} />
           )}
 
           {activeTab === 'push-notifications' && (

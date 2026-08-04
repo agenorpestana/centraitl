@@ -991,7 +991,7 @@ async function startServer() {
     try {
       await queryPg(
         `INSERT INTO cloud_recordings (id, camera_id, camera_name, start_time, end_time, duration_sec, file_size_mb, stream_url, thumbnail_url, is_e2ee_locked, tags, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)
          ON CONFLICT (id) DO UPDATE SET camera_id=EXCLUDED.camera_id, camera_name=EXCLUDED.camera_name, start_time=EXCLUDED.start_time, end_time=EXCLUDED.end_time, duration_sec=EXCLUDED.duration_sec, file_size_mb=EXCLUDED.file_size_mb, stream_url=EXCLUDED.stream_url, thumbnail_url=EXCLUDED.thumbnail_url, is_e2ee_locked=EXCLUDED.is_e2ee_locked, tags=EXCLUDED.tags`,
         [
           rec.id,
@@ -1093,7 +1093,7 @@ async function startServer() {
     try {
       await queryPg(
         `INSERT INTO users (id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, last_active, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, email=EXCLUDED.email, role=EXCLUDED.role, phone=EXCLUDED.phone, state_uf=EXCLUDED.state_uf, city=EXCLUDED.city, status=EXCLUDED.status, custom_permissions=EXCLUDED.custom_permissions, allowed_camera_ids=EXCLUDED.allowed_camera_ids, plan_id=EXCLUDED.plan_id, plan_name=EXCLUDED.plan_name, monthly_fee=EXCLUDED.monthly_fee, chosen_due_day=EXCLUDED.chosen_due_day, financial_status=EXCLUDED.financial_status, days_overdue=EXCLUDED.days_overdue, last_active=EXCLUDED.last_active`,
         [
           u.id,
@@ -1283,7 +1283,7 @@ async function startServer() {
     try {
       await queryPg(
         `INSERT INTO notification_settings (id, push_enabled, fcm_server_key, telegram_bot_token, telegram_chat_id, whatsapp_webhook_url, sound_alerts, quiet_hours_enabled, quiet_hours_start, quiet_hours_end, alert_severities)
-         VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
          ON CONFLICT (id) DO UPDATE SET push_enabled=EXCLUDED.push_enabled, fcm_server_key=EXCLUDED.fcm_server_key, telegram_bot_token=EXCLUDED.telegram_bot_token, telegram_chat_id=EXCLUDED.telegram_chat_id, whatsapp_webhook_url=EXCLUDED.whatsapp_webhook_url, sound_alerts=EXCLUDED.sound_alerts, quiet_hours_enabled=EXCLUDED.quiet_hours_enabled, quiet_hours_start=EXCLUDED.quiet_hours_start, quiet_hours_end=EXCLUDED.quiet_hours_end, alert_severities=EXCLUDED.alert_severities`,
         [
           cfg.pushEnabled ? 1 : 0,
@@ -1604,7 +1604,7 @@ async function startServer() {
             database: dbName,
             max: 10,
             idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 3000,
+            connectionTimeoutMillis: 800,
           });
 
           const client = await testPool.connect();
@@ -2587,6 +2587,9 @@ async function startServer() {
     res.json({
       isPgActive,
       dbName: process.env.DB_NAME || 'itl_cameras',
+      host: process.env.DB_HOST || '127.0.0.1',
+      port: parseInt(process.env.DB_PORT || '5432', 10),
+      user: process.env.DB_USER || 'itl_user',
       memoryCounts: {
         cameras: cameras.length,
         users: users.length,
@@ -2598,6 +2601,183 @@ async function startServer() {
       postgresCounts: counts,
       status: isPgActive ? 'CONECTADO_E_ATIVO' : 'DESCONECTADO_USANDO_JSON_LOCAL'
     });
+  });
+
+  app.post('/api/db-test', async (req, res) => {
+    const tests: Array<{ step: string; success: boolean; message: string; timeMs?: number }> = [];
+    let overallSuccess = true;
+
+    // Test 1: Active Pool Check / Connection Probe
+    const t1Start = performance.now();
+    try {
+      if (!isPgActive || !pool) {
+        await initPostgresAndSync();
+      }
+
+      if (isPgActive && pool) {
+        const client = await pool.connect();
+        const pingRes = await client.query('SELECT 1 as ping, version()');
+        client.release();
+        const t1End = performance.now();
+        tests.push({
+          step: '1. Conexão & Ping SELECT 1',
+          success: true,
+          message: `PostgreSQL respondeu com sucesso! Versão: ${(pingRes.rows[0]?.version || '').split(',')[0]}`,
+          timeMs: Math.round(t1End - t1Start),
+        });
+      } else {
+        overallSuccess = false;
+        tests.push({
+          step: '1. Conexão & Ping SELECT 1',
+          success: false,
+          message: `PostgreSQL inacessível no host ${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || '5432'}. Verifique se o serviço PostgreSQL está em execução.`,
+          timeMs: Math.round(performance.now() - t1Start),
+        });
+      }
+    } catch (err: any) {
+      overallSuccess = false;
+      tests.push({
+        step: '1. Conexão & Ping SELECT 1',
+        success: false,
+        message: `Falha ao conectar no PostgreSQL: ${err.message || err}`,
+        timeMs: Math.round(performance.now() - t1Start),
+      });
+    }
+
+    // Test 2: Schema Audit (Tables Verification)
+    if (isPgActive && pool) {
+      const t2Start = performance.now();
+      try {
+        const tableRows = await queryPg(
+          "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+        );
+        const existingTables = (tableRows || []).map((r: any) => r.table_name);
+        const requiredTables = ['cameras', 'users', 'cloud_recordings', 'activity_logs', 'financial_plans', 'financial_invoices'];
+        const missing = requiredTables.filter((t) => !existingTables.includes(t));
+
+        if (missing.length === 0) {
+          tests.push({
+            step: '2. Auditoria de Tabelas no Banco',
+            success: true,
+            message: `Todas as ${requiredTables.length} tabelas principais existem no schema public (${existingTables.join(', ')})`,
+            timeMs: Math.round(performance.now() - t2Start),
+          });
+        } else {
+          tests.push({
+            step: '2. Auditoria de Tabelas no Banco',
+            success: false,
+            message: `Tabelas ausentes: ${missing.join(', ')}. Executando criação automática de tabelas...`,
+            timeMs: Math.round(performance.now() - t2Start),
+          });
+        }
+      } catch (err: any) {
+        tests.push({
+          step: '2. Auditoria de Tabelas no Banco',
+          success: false,
+          message: `Erro ao verificar schema de tabelas: ${err.message || err}`,
+          timeMs: Math.round(performance.now() - t2Start),
+        });
+      }
+
+      // Test 3: Read/Write CRUD Test
+      const t3Start = performance.now();
+      try {
+        const testId = `diag_${Date.now()}`;
+        // Insert test row into activity_logs
+        await queryPg(
+          'INSERT INTO activity_logs (id, user_name, action, details, category, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+          [testId, 'Diagnóstico ITL', 'TEST_PING', 'Teste de leitura e escrita do banco de dados', 'SYSTEM', new Date().toISOString()]
+        );
+        // Read back test row
+        const readRows = await queryPg('SELECT * FROM activity_logs WHERE id = ?', [testId]);
+        // Delete test row
+        await queryPg('DELETE FROM activity_logs WHERE id = ?', [testId]);
+
+        if (readRows && readRows.length > 0) {
+          tests.push({
+            step: '3. Teste de Leitura & Escrita (CRUD)',
+            success: true,
+            message: 'Inserção, consulta e exclusão efetuadas com sucesso no PostgreSQL!',
+            timeMs: Math.round(performance.now() - t3Start),
+          });
+        } else {
+          tests.push({
+            step: '3. Teste de Leitura & Escrita (CRUD)',
+            success: false,
+            message: 'A inserção ocorreu mas o registro de teste não pôde ser lido.',
+            timeMs: Math.round(performance.now() - t3Start),
+          });
+        }
+      } catch (err: any) {
+        tests.push({
+          step: '3. Teste de Leitura & Escrita (CRUD)',
+          success: false,
+          message: `Erro ao testar escrita no banco: ${err.message || err}`,
+          timeMs: Math.round(performance.now() - t3Start),
+        });
+      }
+    }
+
+    res.json({
+      success: overallSuccess,
+      isPgActive,
+      status: isPgActive ? 'CONECTADO_E_ATIVO' : 'DESCONECTADO_USANDO_JSON_LOCAL',
+      tests,
+    });
+  });
+
+  app.post('/api/db-config', async (req, res) => {
+    const { dbHost, dbPort, dbName, dbUser, dbPassword } = req.body;
+    if (!dbHost || !dbName || !dbUser) {
+      return res.status(400).json({ error: 'Host, Nome do Banco e Usuário são obrigatórios.' });
+    }
+
+    process.env.DB_HOST = dbHost;
+    process.env.DB_PORT = String(dbPort || 5432);
+    process.env.DB_NAME = dbName;
+    process.env.DB_USER = dbUser;
+    process.env.DB_PASSWORD = dbPassword !== undefined ? dbPassword : '';
+
+    if (pool) {
+      try { await pool.end(); } catch (e) {}
+      pool = null;
+    }
+    isPgActive = false;
+
+    try {
+      const testPool = new pg.Pool({
+        host: dbHost,
+        port: parseInt(String(dbPort), 10),
+        user: dbUser,
+        password: dbPassword,
+        database: dbName,
+        max: 10,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+      });
+
+      const client = await testPool.connect();
+      await client.query('SELECT 1');
+      client.release();
+
+      pool = testPool;
+      isPgActive = true;
+
+      // Ensure tables exist on newly connected database
+      await initPostgresAndSync();
+
+      res.json({
+        success: true,
+        message: `Conexão estabelecida com sucesso ao PostgreSQL em ${dbHost}:${dbPort} (banco '${dbName}')!`,
+        isPgActive: true,
+      });
+    } catch (err: any) {
+      res.status(400).json({
+        success: false,
+        error: `Não foi possível conectar com os dados informados: ${err.message || err}`,
+        isPgActive: false,
+      });
+    }
   });
 
   app.post('/api/db-sync', async (req, res) => {

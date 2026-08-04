@@ -12,6 +12,7 @@ import {
   DollarSign,
   Network,
   MapPin,
+  Server,
 } from 'lucide-react';
 
 import { User } from '../types';
@@ -46,6 +47,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'financial-management', label: 'Financeiro & Planos', icon: DollarSign },
     { id: 'activity-reports', label: 'Relatórios Diários', icon: FileText },
     { id: 'backup-manager', label: 'Backup Automático', icon: Database },
+    { id: 'db-diagnostics', label: 'Teste & Diagnóstico BD', icon: Server },
     { id: 'push-notifications', label: 'Notificações Push', icon: Smartphone },
     { id: 'e2ee-vault', label: 'Criptografia E2EE', icon: Lock },
   ];
