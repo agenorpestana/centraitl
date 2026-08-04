@@ -184,6 +184,8 @@ import {
   INITIAL_LOGS,
   INITIAL_BACKUP_CONFIG,
   INITIAL_NOTIFICATION_CONFIG,
+  INITIAL_ARCHITECTURE_CONFIG,
+  INITIAL_STREAMS,
 } from './src/data/mockData';
 import { INITIAL_PLANS, INITIAL_MP_CONFIG } from './src/lib/financial';
 import {
@@ -196,6 +198,8 @@ import {
   FinancialPlan,
   Invoice,
   MercadoPagoConfig,
+  ArchitectureConfig,
+  StreamInfo,
 } from './src/types';
 
 const LOCAL_STORE_FILE = path.join(process.cwd(), 'itl_database_store.json');
@@ -271,6 +275,7 @@ async function startServer() {
   let plans: FinancialPlan[] = [...INITIAL_PLANS];
   let invoices: Invoice[] = [];
   let mpConfig: MercadoPagoConfig = { ...INITIAL_MP_CONFIG };
+  let architectureConfig: ArchitectureConfig = { ...INITIAL_ARCHITECTURE_CONFIG };
 
   // Real Active Recording Sessions Tracker
   interface ActiveRecordingSession {
@@ -303,6 +308,7 @@ async function startServer() {
         plans,
         invoices,
         mpConfig,
+        architectureConfig,
         deletedCameraIds: Array.from(deletedCameraIds),
         deletedRecordingIds: Array.from(deletedRecordingIds),
       };
@@ -345,6 +351,7 @@ async function startServer() {
         if (parsed.plans && Array.isArray(parsed.plans)) plans = parsed.plans;
         if (parsed.invoices && Array.isArray(parsed.invoices)) invoices = parsed.invoices;
         if (parsed.mpConfig && parsed.mpConfig.accessToken) mpConfig = parsed.mpConfig;
+        if (parsed.architectureConfig) architectureConfig = parsed.architectureConfig;
         console.log(`[ITL Storage] ${cameras.length} câmeras e ${users.length} usuários carregados do arquivo local.`);
         return true;
       }
@@ -2814,18 +2821,23 @@ async function startServer() {
   });
 
   app.delete('/api/cameras/:id', async (req, res) => {
-    const { id } = req.params;
-    deletedCameraIds.add(id);
-    const cam = cameras.find((c) => c.id === id);
-    if (cam && cam.streamKey) {
-      stopCameraRtspStream(cam.streamKey);
+    try {
+      const { id } = req.params;
+      deletedCameraIds.add(id);
+      const cam = cameras.find((c) => c.id === id);
+      if (cam && cam.streamKey) {
+        try { stopCameraRtspStream(cam.streamKey); } catch (e) {}
+      }
+      cameras = cameras.filter((c) => c.id !== id);
+      try { deleteCameraFromSqlite(id); } catch (e) {}
+      saveToLocalFile();
+      deleteCameraFromMysql(id).catch((err) => console.error('[Pg Delete Cam Error]:', err));
+      if (cam) addLog('ITL Admin', `Câmera removida: ${cam.name}`, 'SYSTEM');
+      return res.status(200).json({ success: true, message: 'Câmera removida com sucesso' });
+    } catch (err: any) {
+      console.error('Erro ao remover câmera:', err);
+      return res.status(500).json({ success: false, error: err.message || 'Erro ao remover câmera' });
     }
-    cameras = cameras.filter((c) => c.id !== id);
-    deleteCameraFromSqlite(id);
-    saveToLocalFile();
-    await deleteCameraFromMysql(id);
-    if (cam) addLog('ITL Admin', `Câmera removida: ${cam.name}`, 'SYSTEM');
-    res.json({ success: true, message: 'Câmera removida com sucesso' });
   });
 
 
@@ -3271,6 +3283,43 @@ async function startServer() {
       timestamp: new Date().toISOString(),
     });
   });
+
+  // Architecture Fibra & Topology Endpoints
+  const getArchConfigHandler = (req: any, res: any) => res.json(architectureConfig);
+  const postArchConfigHandler = (req: any, res: any) => {
+    architectureConfig = { ...architectureConfig, ...req.body };
+    saveToLocalFile();
+    addLog('ITL Admin', 'Configuração de Arquitetura de Fibra & Topologia atualizada', 'SYSTEM');
+    res.json(architectureConfig);
+  };
+
+  app.get('/api/v1/architecture/config', getArchConfigHandler);
+  app.get('/api/architecture/config', getArchConfigHandler);
+  app.post('/api/v1/architecture/config', postArchConfigHandler);
+  app.post('/api/architecture/config', postArchConfigHandler);
+
+  // Active Streams Endpoints
+  const getActiveStreamsHandler = (req: any, res: any) => {
+    const activeStreamsList: StreamInfo[] = cameras.map((c) => ({
+      cameraId: c.id,
+      cameraName: c.name,
+      rtspUrl: c.rtspUrl || '',
+      hlsUrl: c.fullRtmpUrl || c.rtspUrl || '',
+      webrtcUrl: `webrtc://${c.streamKey || c.id}`,
+      status: c.status === 'ONLINE' ? 'ONLINE' : 'OFFLINE',
+      bitrateKbps: 2500,
+      codecs: 'H.264 / AAC',
+      ingestGateway: 'MediaMTX-Fiber',
+    }));
+    res.json(activeStreamsList);
+  };
+
+  app.get('/api/v1/streams', getActiveStreamsHandler);
+  app.get('/api/streams', getActiveStreamsHandler);
+
+  // Health check endpoints
+  app.get('/api/v1/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+  app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 
 

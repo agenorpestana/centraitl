@@ -161,17 +161,17 @@ export default function App() {
           archCfgRes,
           streamsRes,
         ] = await Promise.all([
-          fetch('/api/cameras').then((r) => r.json()),
-          fetch('/api/recordings').then((r) => r.json()),
-          fetch('/api/users').then((r) => r.json()),
-          fetch('/api/logs').then((r) => r.json()),
-          fetch('/api/backup').then((r) => r.json()),
-          fetch('/api/notifications').then((r) => r.json()),
-          fetch('/api/financial/plans').then((r) => r.json()),
-          fetch('/api/financial/invoices').then((r) => r.json()),
-          fetch('/api/mercadopago/config').then((r) => r.json()),
-          fetch('/api/v1/architecture/config').then((r) => r.json()).catch(() => null),
-          fetch('/api/v1/streams').then((r) => r.json()).catch(() => null),
+          fetch('/api/cameras').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/recordings').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/users').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/logs').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/backup').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/notifications').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/financial/plans').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/financial/invoices').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/mercadopago/config').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/v1/architecture/config').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/v1/streams').then((r) => r.ok ? r.json() : null).catch(() => null),
         ]);
 
         if (Array.isArray(cRes)) setCameras(cRes);
