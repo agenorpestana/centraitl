@@ -512,7 +512,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({
         <div className="divide-y divide-slate-800">
           {users.map((user) => {
             const isSuperUser =
-              user.email === 'suporte@unityautomacoes.com.br' ||
               user.id === 'user-superadmin-01' ||
               (user.role as string) === 'SUPER_ADMIN';
 

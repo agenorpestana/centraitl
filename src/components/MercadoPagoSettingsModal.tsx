@@ -34,9 +34,7 @@ export const MercadoPagoSettingsModal: React.FC<MercadoPagoSettingsModalProps> =
 
   if (!isOpen) return null;
 
-  const isSuperAdmin =
-    currentUser.email === 'suporte@unityautomacoes.com.br' ||
-    currentUser.role === 'ADMIN';
+  const isSuperAdmin = currentUser.role === 'ADMIN';
 
   if (!isSuperAdmin) {
     return (

@@ -127,7 +127,7 @@ export default function App() {
       id: 'inv-1001',
       userId: 'user-superadmin-01',
       userName: 'Super Admin Unity',
-      userEmail: 'suporte@unityautomacoes.com.br',
+      userEmail: 'admin@sistema.com.br',
       planName: 'Plano Vizinhança Protegida ITL',
       amount: 149.90,
       originalAmount: 149.90,

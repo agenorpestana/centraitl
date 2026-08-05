@@ -74,7 +74,7 @@ export const FinancialManagement: React.FC<FinancialManagementProps> = ({
     contractDateStr
   );
 
-  const isAdmin = currentUser.role === 'ADMIN' || currentUser.email === 'suporte@unityautomacoes.com.br';
+  const isAdmin = currentUser.role === 'ADMIN';
 
   // KPI Metrics
   const totalRevenuePaid = invoices
