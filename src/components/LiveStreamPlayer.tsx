@@ -29,6 +29,7 @@ interface LiveStreamPlayerProps {
   isMuted?: boolean;
   onSelectCamera?: (cam: Camera) => void;
   showOverlayControls?: boolean;
+  hideBottomCard?: boolean;
 }
 
 const cleanDoubleUrl = (url: string | undefined | null): string => {
@@ -58,6 +59,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   isMuted = true,
   onSelectCamera,
   showOverlayControls = true,
+  hideBottomCard = false,
 }) => {
   const streamKey = camera.streamKey || (camera.id ? (camera.id.startsWith('cam-') ? `cam_${camera.id.replace('cam-', '')}` : camera.id) : 'stream');
   const cleanKey = streamKey.replace(/^cam-/, '').replace(/^cam_/, '');
@@ -329,14 +331,16 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   };
 
   return (
-    <div className={`w-full flex flex-col space-y-2.5 ${className}`}>
+    <div className={`w-full flex flex-col ${hideBottomCard ? 'h-full' : 'space-y-2.5'} ${className}`}>
       {/* 1. CLEAN VIDEO CONTAINER (ZERO OVERLAYS COVERING THE IMAGE) */}
       <div
         ref={containerRef}
-        className={`relative w-full bg-slate-950 rounded-2xl overflow-hidden border border-slate-800/90 shadow-2xl flex items-center justify-center transition-all ${
+        className={`relative w-full bg-slate-950 overflow-hidden flex items-center justify-center transition-all ${
+          hideBottomCard ? 'h-full rounded-none border-none' : 'rounded-2xl border border-slate-800/90 shadow-2xl aspect-video'
+        } ${
           isFullscreen
             ? 'fixed inset-0 z-[100] w-screen h-screen rounded-none bg-black p-0 border-none'
-            : 'aspect-video'
+            : ''
         }`}
       >
         {/* Stream Content */}
@@ -454,79 +458,81 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       </div>
 
       {/* 2. INFORMATION & CONTROLS CARDS (POSITIONS BELOW THE VIDEO IMAGE) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 space-y-2 shadow-xl">
-        {/* Header Bar below video */}
-        <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
-          <div className="flex items-center space-x-2 truncate">
-            <span
-              className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                connectionState === 'OFFLINE'
-                  ? 'bg-rose-500'
-                  : connectionState === 'LOADING'
-                  ? 'bg-amber-400 animate-ping'
-                  : 'bg-emerald-400 animate-pulse'
-              }`}
-            />
-            <h4 className="font-bold text-sm text-slate-100 truncate">{camera.name}</h4>
-            <span
-              className={`px-2 py-0.5 rounded text-[10px] font-bold border shrink-0 ${
-                camera.protocol === 'RTSP'
-                  ? 'bg-cyan-950/90 text-cyan-300 border-cyan-800'
-                  : 'bg-emerald-950/90 text-emerald-400 border-emerald-800'
-              }`}
-            >
-              {camera.protocol || 'RTMP'}
-            </span>
-          </div>
-
-          <div className="flex items-center space-x-1.5 shrink-0">
-            <span
-              className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
-                connectionState === 'OFFLINE'
-                  ? 'text-rose-400 bg-rose-950/80 border-rose-800'
-                  : connectionState === 'LOADING'
-                  ? 'text-amber-300 bg-amber-950/80 border-amber-800'
-                  : 'text-emerald-400 bg-emerald-950/80 border-emerald-500/30'
-              }`}
-            >
-              {connectionState === 'OFFLINE'
-                ? 'OFF-LINE'
-                : connectionState === 'LOADING'
-                ? 'CARREGANDO'
-                : 'ON-LINE / AO VIVO'}
-            </span>
-          </div>
-        </div>
-
-        {/* Toolbar Controls */}
-        {showOverlayControls && (
-          <div className="flex items-center justify-between gap-2 pt-1">
-            <div className="flex items-center space-x-1.5 truncate">
-              <span className="text-xs text-slate-300 font-semibold truncate">
-                Local: {camera.location || `${camera.city || 'Itamaraju'} - ${camera.stateUf || 'BA'}`}
+      {!hideBottomCard && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 space-y-2 shadow-xl">
+          {/* Header Bar below video */}
+          <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+            <div className="flex items-center space-x-2 truncate">
+              <span
+                className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                  connectionState === 'OFFLINE'
+                    ? 'bg-rose-500'
+                    : connectionState === 'LOADING'
+                    ? 'bg-amber-400 animate-ping'
+                    : 'bg-emerald-400 animate-pulse'
+                }`}
+              />
+              <h4 className="font-bold text-sm text-slate-100 truncate">{camera.name}</h4>
+              <span
+                className={`px-2 py-0.5 rounded text-[10px] font-bold border shrink-0 ${
+                  camera.protocol === 'RTSP'
+                    ? 'bg-cyan-950/90 text-cyan-300 border-cyan-800'
+                    : 'bg-emerald-950/90 text-emerald-400 border-emerald-800'
+                }`}
+              >
+                {camera.protocol || 'RTMP'}
               </span>
             </div>
 
-            <div className="flex items-center space-x-2 shrink-0">
-              <button
-                onClick={runPlayerDiag}
-                className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 rounded-xl text-xs font-bold transition flex items-center space-x-1"
+            <div className="flex items-center space-x-1.5 shrink-0">
+              <span
+                className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                  connectionState === 'OFFLINE'
+                    ? 'text-rose-400 bg-rose-950/80 border-rose-800'
+                    : connectionState === 'LOADING'
+                    ? 'text-amber-300 bg-amber-950/80 border-amber-800'
+                    : 'text-emerald-400 bg-emerald-950/80 border-emerald-500/30'
+                }`}
               >
-                <Activity className="w-3.5 h-3.5" />
-                <span>Teste / Diagnóstico</span>
-              </button>
-
-              <button
-                onClick={toggleFullscreen}
-                className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-emerald-500/20 transition flex items-center space-x-1"
-              >
-                <Maximize2 className="w-3.5 h-3.5" />
-                <span>Tela Cheia</span>
-              </button>
+                {connectionState === 'OFFLINE'
+                  ? 'OFF-LINE'
+                  : connectionState === 'LOADING'
+                  ? 'CARREGANDO'
+                  : 'ON-LINE / AO VIVO'}
+              </span>
             </div>
           </div>
-        )}
-      </div>
+
+          {/* Toolbar Controls */}
+          {showOverlayControls && (
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <div className="flex items-center space-x-1.5 truncate">
+                <span className="text-xs text-slate-300 font-semibold truncate">
+                  Local: {camera.location || `${camera.city || 'Itamaraju'} - ${camera.stateUf || 'BA'}`}
+                </span>
+              </div>
+
+              <div className="flex items-center space-x-2 shrink-0">
+                <button
+                  onClick={runPlayerDiag}
+                  className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 rounded-xl text-xs font-bold transition flex items-center space-x-1"
+                >
+                  <Activity className="w-3.5 h-3.5" />
+                  <span>Teste / Diagnóstico</span>
+                </button>
+
+                <button
+                  onClick={toggleFullscreen}
+                  className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-emerald-500/20 transition flex items-center space-x-1"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                  <span>Tela Cheia</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Custom Stream URL Editor */}
       {isEditingUrl && (

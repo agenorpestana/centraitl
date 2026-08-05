@@ -269,23 +269,19 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                 </div>
 
                 {/* Video Stream Player */}
-                <div className="flex-1 relative bg-black flex items-center justify-center">
+                <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
                   <LiveStreamPlayer
                     key={`${camera.id}-dvr-${autoRefreshKey}`}
                     camera={camera}
                     isMuted={isMuted}
                     onSelectCamera={() => onSelectCamera(camera)}
                     showOverlayControls={false}
+                    hideBottomCard={true}
                   />
-
-                  {/* Intelbras Brand Overlay watermark */}
-                  <div className="absolute bottom-6 left-2 pointer-events-none opacity-40 text-[9px] font-bold text-white tracking-widest uppercase">
-                    intelbras
-                  </div>
                 </div>
 
                 {/* DVR Bottom Label Bar (Name of Camera) */}
-                <div className="bg-slate-900/90 border-t border-slate-800 px-2 py-1 flex items-center justify-between text-xs">
+                <div className="bg-slate-900/90 border-t border-slate-800 px-2.5 py-1 flex items-center justify-between text-xs">
                   <span className="font-semibold text-slate-200 truncate text-[11px]">{camera.name}</span>
                   <span className="text-[10px] font-mono text-slate-400 shrink-0 ml-1">
                     {camera.location || camera.city || 'Ao Vivo'}
@@ -295,7 +291,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
             );
           })}
 
-          {/* Empty DVR Slots with Intelbras Logo placeholder */}
+          {/* Empty DVR Slots */}
           {Array.from({ length: emptySlotsCount }).map((_, slotIdx) => {
             const slotNum = (dvrPage - 1) * dvrGridSize + dvrPageCameras.length + slotIdx + 1;
             return (
@@ -307,11 +303,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                   CH{slotNum.toString().padStart(2, '0')}
                 </div>
 
-                {/* Intelbras Logo Placeholder as seen in Image 2 */}
-                <div className="text-slate-700 font-extrabold tracking-widest text-lg sm:text-2xl uppercase">
-                  intelbras
-                </div>
-                <span className="text-[10px] text-slate-700 mt-1 font-mono">Sem Sinal / Canal Livre</span>
+                <span className="text-xs text-slate-600 font-mono">Sem Sinal / Canal Livre</span>
               </div>
             );
           })}
