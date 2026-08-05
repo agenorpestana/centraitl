@@ -14,6 +14,8 @@ import {
   MapPin,
   Server,
   Code,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 import { User } from '../types';
@@ -23,6 +25,8 @@ interface SidebarProps {
   setActiveTab: (tab: string) => void;
   totalCameras: number;
   activeUser?: User;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -30,6 +34,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setActiveTab,
   totalCameras,
   activeUser,
+  isCollapsed = false,
+  onToggleCollapse,
 }) => {
   const isAdmin = activeUser
     ? activeUser.role === 'ADMIN' ||
@@ -56,11 +62,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const navItems = rawNavItems.filter((item) => !item.adminOnly || isAdmin);
 
   return (
-    <aside className="w-64 bg-slate-900 border-r border-slate-800 text-slate-300 flex flex-col justify-between shrink-0 hidden md:flex min-h-[calc(100vh-65px)] p-3">
+    <aside
+      className={`${
+        isCollapsed ? 'w-16' : 'w-64'
+      } bg-slate-900 border-r border-slate-800 text-slate-300 flex flex-col justify-between shrink-0 hidden md:flex min-h-[calc(100vh-65px)] p-3 transition-all duration-300`}
+    >
       <div className="space-y-1">
-        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-3 py-2">
-          Painel de Controle ITL
-        </p>
+        <div className="flex items-center justify-between px-2 py-2">
+          {!isCollapsed && (
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+              Painel de Controle ITL
+            </p>
+          )}
+          {onToggleCollapse && (
+            <button
+              onClick={onToggleCollapse}
+              className={`p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-emerald-400 transition ${
+                isCollapsed ? 'mx-auto' : ''
+              }`}
+              title={isCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
+            >
+              {isCollapsed ? (
+                <ChevronRight className="w-4 h-4" />
+              ) : (
+                <ChevronLeft className="w-4 h-4" />
+              )}
+            </button>
+          )}
+        </div>
+
         <nav className="space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
@@ -69,23 +99,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-medium text-xs transition-all ${
+                title={isCollapsed ? item.label : undefined}
+                className={`w-full flex items-center ${
+                  isCollapsed ? 'justify-center px-2 py-2.5' : 'justify-between px-3 py-2.5'
+                } rounded-xl font-medium text-xs transition-all ${
                   isActive
                     ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/10 text-emerald-400 border border-emerald-500/30 font-semibold shadow-sm'
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                 }`}
               >
-                <div className="flex items-center space-x-3 truncate">
+                <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'space-x-3'} truncate`}>
                   <Icon className={`w-4 h-4 ${isActive ? 'text-emerald-400' : 'text-slate-400'}`} />
-                  <span className="truncate">{item.label}</span>
+                  {!isCollapsed && <span className="truncate">{item.label}</span>}
                 </div>
 
-                {item.badge !== undefined && item.badge > 0 && (
-                  <span
-                    className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-emerald-400 border border-emerald-500/20"
-                  >
+                {!isCollapsed && item.badge !== undefined && item.badge > 0 && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-emerald-400 border border-emerald-500/20">
                     {item.badge}
                   </span>
+                )}
+                {isCollapsed && item.badge !== undefined && item.badge > 0 && (
+                  <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 )}
               </button>
             );
@@ -95,8 +129,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Footer Branding Info */}
       <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-3 space-y-1 text-[11px] text-slate-400">
-        <div className="font-bold text-slate-200">Central ITL Fibra</div>
-        <div>Segurança & Gravação em Nuvem</div>
+        {!isCollapsed ? (
+          <>
+            <div className="font-bold text-slate-200">Central ITL Fibra</div>
+            <div>Segurança & Gravação em Nuvem</div>
+          </>
+        ) : (
+          <div className="text-center font-bold text-emerald-400 text-xs">ITL</div>
+        )}
       </div>
     </aside>
   );

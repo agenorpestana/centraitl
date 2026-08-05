@@ -107,6 +107,8 @@ export default function App() {
     } catch {}
   }, [activeTab]);
 
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+
   // Application Data States
   const [cameras, setCameras] = useState<Camera[]>(INITIAL_CAMERAS);
   const [recordings, setRecordings] = useState<CloudRecording[]>(INITIAL_RECORDINGS);
@@ -463,12 +465,14 @@ export default function App() {
       />
 
       {/* Main Body Layout */}
-      <div className="flex flex-1 max-w-7xl w-full mx-auto">
+      <div className={`flex flex-1 ${isSidebarCollapsed ? 'max-w-[1920px]' : 'max-w-7xl'} w-full mx-auto transition-all duration-300`}>
         <Sidebar
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           totalCameras={cameras.length}
           activeUser={activeUser}
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
         />
 
         {/* Mobile Tab Navigation */}
@@ -498,6 +502,7 @@ export default function App() {
               onSelectCamera={setInspectingCamera}
               onTriggerTestAlert={() => {}}
               onUpdateCamera={handleUpdateCamera}
+              onDvrModeChange={(isDvr) => setIsSidebarCollapsed(isDvr)}
             />
           )}
 
