@@ -165,6 +165,94 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
   const loadingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Auto-capture frame from active stream every 30 minutes to replace camera thumbnail
+  const captureAndUploadSnapshot = React.useCallback(async () => {
+    try {
+      let sourceEl: HTMLVideoElement | HTMLImageElement | null = null;
+      if (streamMode === 'WEBCAM' && webcamVideoRef.current) {
+        sourceEl = webcamVideoRef.current;
+      } else if (useMjpegStream) {
+        const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
+        if (imgEl && imgEl.complete && imgEl.naturalWidth > 0) sourceEl = imgEl;
+      } else if (videoRef.current && videoRef.current.readyState >= 2) {
+        sourceEl = videoRef.current;
+      }
+
+      if (!sourceEl) return;
+
+      let width = 0;
+      let height = 0;
+      if (sourceEl instanceof HTMLVideoElement) {
+        width = sourceEl.videoWidth;
+        height = sourceEl.videoHeight;
+      } else if (sourceEl instanceof HTMLImageElement) {
+        width = sourceEl.naturalWidth || sourceEl.width;
+        height = sourceEl.naturalHeight || sourceEl.height;
+      }
+
+      if (!width || !height || width < 10) return;
+
+      const maxDim = 800;
+      let targetW = width;
+      let targetH = height;
+      if (targetW > maxDim) {
+        targetH = Math.round((targetH * maxDim) / targetW);
+        targetW = maxDim;
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.drawImage(sourceEl, 0, 0, targetW, targetH);
+      const imageBase64 = canvas.toDataURL('image/jpeg', 0.8);
+
+      const res = await fetch(`/api/cameras/${camera.id}/snapshot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64 }),
+      });
+
+      if (res.ok) {
+        localStorage.setItem(`last_snap_ts_${camera.id}`, String(Date.now()));
+        console.log(`[Auto Snapshot 30m] Captura de frame atualizada com sucesso para câmera '${camera.name}'`);
+      }
+    } catch (err) {
+      console.warn('[Auto Snapshot Error]:', err);
+    }
+  }, [camera.id, camera.name, streamMode, useMjpegStream]);
+
+  // Trigger 30-minute auto snapshot logic when player is ONLINE
+  useEffect(() => {
+    if (connectionState !== 'ONLINE') return;
+
+    // Wait 3 seconds after stream becomes ONLINE so video frame is fully rendered
+    const initialCaptureTimer = setTimeout(() => {
+      const lastSnap = localStorage.getItem(`last_snap_ts_${camera.id}`);
+      const now = Date.now();
+      const intervalMs = 30 * 60 * 1000; // 30 minutes
+
+      const isUnsplash = camera.thumbnailUrl && camera.thumbnailUrl.includes('unsplash');
+      const isStale = !lastSnap || (now - Number(lastSnap)) > intervalMs;
+
+      if (isUnsplash || isStale) {
+        captureAndUploadSnapshot();
+      }
+    }, 3000);
+
+    // Set recurring 30-min capture interval while stream is open
+    const recurringTimer = setInterval(() => {
+      captureAndUploadSnapshot();
+    }, 30 * 60 * 1000);
+
+    return () => {
+      clearTimeout(initialCaptureTimer);
+      clearInterval(recurringTimer);
+    };
+  }, [connectionState, camera.id, camera.thumbnailUrl, captureAndUploadSnapshot]);
+
   // Connect stream
   const connectStream = () => {
     setConnectionState('LOADING');

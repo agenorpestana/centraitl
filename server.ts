@@ -276,6 +276,12 @@ async function startServer() {
 
   app.use('/recordings', express.static(recordingsDir));
 
+  const snapshotsDir = path.join(process.cwd(), 'snapshots');
+  if (!fs.existsSync(snapshotsDir)) {
+    try { fs.mkdirSync(snapshotsDir, { recursive: true }); } catch (e) {}
+  }
+  app.use('/snapshots', express.static(snapshotsDir));
+
   // Database Connection Pool Setup
   let pool: InstanceType<typeof Pool> | null = null;
   let isPgActive = false;
@@ -1485,7 +1491,7 @@ async function startServer() {
             twoWayAudioEnabled: Boolean(row.two_way_audio_enabled),
             lat: parseFloat(row.lat || -17.0397),
             lng: parseFloat(row.lng || -39.5312),
-            thumbnailUrl: row.thumbnail_url || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80',
+            thumbnailUrl: (row.thumbnail_url && !row.thumbnail_url.includes('unsplash')) ? row.thumbnail_url : `/api/cameras/${row.id}/snapshot`,
             videoStreamUrl: row.video_stream_url || '',
             isLiveWebcam: Boolean(row.is_live_webcam),
             isDemo: Boolean(row.is_demo),
@@ -2277,7 +2283,7 @@ async function startServer() {
         const hasThumb = fs.existsSync(thumbPath);
         const thumbUrl = hasThumb
           ? `/recordings/${thumbFileName}`
-          : (cam.thumbnailUrl || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800');
+          : (cam.thumbnailUrl && !cam.thumbnailUrl.includes('unsplash') ? cam.thumbnailUrl : `/api/cameras/${cam.id}/snapshot`);
 
         const newRec: CloudRecording = {
           id: `rec-auto-${cam.id}-${timestamp}`,
@@ -3264,7 +3270,7 @@ async function startServer() {
         twoWayAudioEnabled: twoWayAudioEnabled !== undefined ? twoWayAudioEnabled : true,
         lat: lat ? parseFloat(lat) : -17.0397 + (Math.random() - 0.5) * 0.02,
         lng: lng ? parseFloat(lng) : -39.5312 + (Math.random() - 0.5) * 0.02,
-        thumbnailUrl: 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80',
+        thumbnailUrl: `/api/cameras/cam-${Date.now().toString().slice(-4)}/snapshot`,
         createdAt: new Date().toISOString().split('T')[0],
       };
 
@@ -3335,6 +3341,120 @@ async function startServer() {
       return res.status(500).json({ success: false, error: err.message || 'Erro ao remover câmera' });
     }
   });
+
+  // ---------------- CAMERA SNAPSHOT CAPTURE ENDPOINTS ----------------
+  // Saves or updates a camera's snapshot (keeps only the single latest file per camera to save space and performance)
+  app.post('/api/cameras/:id/snapshot', express.json({ limit: '10mb' }), async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { imageBase64 } = req.body || {};
+
+      const camIndex = cameras.findIndex((c) => c.id === id || c.streamKey === id);
+      const cam = camIndex !== -1 ? cameras[camIndex] : null;
+      const targetId = cam ? cam.id : id;
+      const cleanId = targetId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const snapFileName = `snap_${cleanId}.jpg`;
+      const snapPath = path.join(snapshotsDir, snapFileName);
+
+      if (imageBase64 && typeof imageBase64 === 'string') {
+        const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Buffer.from(base64Data, 'base64');
+        if (buffer.length > 100) {
+          // Overwrite file directly on disk - keeping ONLY the latest capture
+          fs.writeFileSync(snapPath, buffer);
+        }
+      } else if (cam) {
+        // Fallback: extract snapshot via FFmpeg if camera has RTSP/RTMP stream URL
+        const streamUrl = getValidStreamSource(cam);
+        if (streamUrl) {
+          try {
+            const ffmpegArgs = [];
+            if (streamUrl.startsWith('rtsp://')) ffmpegArgs.push('-rtsp_transport', 'tcp');
+            ffmpegArgs.push('-y', '-ss', '00:00:01', '-i', streamUrl, '-vframes', '1', '-q:v', '3', snapPath);
+            execSync(`ffmpeg ${ffmpegArgs.join(' ')}`, { stdio: 'ignore', timeout: 5000 });
+          } catch (e) {}
+        }
+      }
+
+      const timestamp = Date.now();
+      const newThumbUrl = `/snapshots/${snapFileName}?t=${timestamp}`;
+
+      if (cam) {
+        cameras[camIndex] = {
+          ...cam,
+          thumbnailUrl: newThumbUrl,
+        };
+        try { syncCameraToSqlite(cameras[camIndex]); } catch (e) {}
+        syncCameraToMysql(cameras[camIndex]).catch(() => {});
+        saveToLocalFile();
+      }
+
+      return res.json({
+        success: true,
+        cameraId: targetId,
+        thumbnailUrl: newThumbUrl,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.error('[POST /api/cameras/:id/snapshot Error]:', err);
+      return res.status(500).json({ success: false, error: err.message || 'Erro ao capturar snapshot' });
+    }
+  });
+
+  // Serve the latest camera snapshot image file or dynamic fallback
+  app.get('/api/cameras/:id/snapshot', (req, res) => {
+    const { id } = req.params;
+    const cleanId = id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const snapPath = path.join(snapshotsDir, `snap_${cleanId}.jpg`);
+
+    if (fs.existsSync(snapPath)) {
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=60');
+      return res.sendFile(snapPath);
+    }
+
+    // Check if camera exists and has a non-unsplash thumbnailUrl
+    const cam = cameras.find((c) => c.id === id || c.streamKey === id);
+    if (cam && cam.thumbnailUrl && !cam.thumbnailUrl.includes('unsplash') && !cam.thumbnailUrl.includes('/api/cameras/')) {
+      return res.redirect(cam.thumbnailUrl);
+    }
+
+    // Dynamic SVG Placeholder for camera snapshot
+    const camName = cam ? cam.name : `Câmera ${id}`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450">
+      <rect width="800" height="450" fill="#0f172a"/>
+      <circle cx="400" cy="180" r="45" fill="#1e293b" stroke="#334155" stroke-width="4"/>
+      <circle cx="400" cy="180" r="18" fill="#10b981"/>
+      <text x="400" y="270" fill="#f8fafc" font-family="sans-serif" font-size="22" font-weight="bold" text-anchor="middle">${camName}</text>
+      <text x="400" y="305" fill="#64748b" font-family="monospace" font-size="14" text-anchor="middle">Aguardando Captura da Câmera (Atualização a cada 30 min)</text>
+    </svg>`;
+
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'public, max-age=30');
+    return res.send(svg);
+  });
+
+  // Background 30-minute auto frame extraction for active streaming cameras
+  setInterval(() => {
+    cameras.forEach((cam) => {
+      if (!cam.id || cam.status === 'OFFLINE') return;
+      const streamUrl = getValidStreamSource(cam);
+      if (!streamUrl || streamUrl.includes('placeholder')) return;
+
+      const cleanId = cam.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const snapPath = path.join(snapshotsDir, `snap_${cleanId}.jpg`);
+      try {
+        const ffmpegArgs = [];
+        if (streamUrl.startsWith('rtsp://')) ffmpegArgs.push('-rtsp_transport', 'tcp');
+        ffmpegArgs.push('-y', '-ss', '00:00:01', '-i', streamUrl, '-vframes', '1', '-q:v', '3', snapPath);
+        execSync(`ffmpeg ${ffmpegArgs.join(' ')}`, { stdio: 'ignore', timeout: 5000 });
+
+        if (fs.existsSync(snapPath)) {
+          cam.thumbnailUrl = `/snapshots/snap_${cleanId}.jpg?t=${Date.now()}`;
+        }
+      } catch (e) {}
+    });
+  }, 30 * 60 * 1000);
 
 
 
@@ -3423,7 +3543,7 @@ async function startServer() {
       const endTime = new Date();
       const durationSec = Math.max(1, Math.round((endTime.getTime() - now.getTime()) / 1000));
       let fileSizeMB = 0.5;
-      let thumbUrl = cam.thumbnailUrl || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800';
+      let thumbUrl = (cam.thumbnailUrl && !cam.thumbnailUrl.includes('unsplash')) ? cam.thumbnailUrl : `/api/cameras/${cam.id}/snapshot`;
 
       try {
         if (fs.existsSync(outputPath)) {

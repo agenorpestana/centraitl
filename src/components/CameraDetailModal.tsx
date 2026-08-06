@@ -80,9 +80,55 @@ export const CameraDetailModal: React.FC<CameraDetailModalProps> = ({
     setIsMicTransmitting(!isMicTransmitting);
   };
 
-  const handleTakeSnapshot = () => {
+  const handleTakeSnapshot = async () => {
     setSnapshotSuccess(true);
     setTimeout(() => setSnapshotSuccess(false), 2500);
+
+    try {
+      const mediaEl = (document.querySelector('video') || document.querySelector('img[src*="/api/cameras/"]')) as HTMLVideoElement | HTMLImageElement | null;
+      if (mediaEl) {
+        let width = 0;
+        let height = 0;
+        if (mediaEl instanceof HTMLVideoElement) {
+          width = mediaEl.videoWidth;
+          height = mediaEl.videoHeight;
+        } else if (mediaEl instanceof HTMLImageElement) {
+          width = mediaEl.naturalWidth || mediaEl.width;
+          height = mediaEl.naturalHeight || mediaEl.height;
+        }
+
+        if (width && height) {
+          const maxDim = 800;
+          let targetW = width;
+          let targetH = height;
+          if (targetW > maxDim) {
+            targetH = Math.round((targetH * maxDim) / targetW);
+            targetW = maxDim;
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(mediaEl as any, 0, 0, targetW, targetH);
+            const imageBase64 = canvas.toDataURL('image/jpeg', 0.85);
+            const res = await fetch(`/api/cameras/${camera.id}/snapshot`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ imageBase64 }),
+            });
+
+            if (res.ok && onUpdateCamera) {
+              const data = await res.json();
+              onUpdateCamera(camera.id, { thumbnailUrl: data.thumbnailUrl });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Manual Snapshot Error]:', e);
+    }
   };
 
   return (
