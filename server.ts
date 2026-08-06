@@ -3952,6 +3952,154 @@ async function startServer() {
     res.json({ success: true, count: recordings.length, recordings });
   });
 
+  // ---------------- MAPA VIZINHANÇA API ENDPOINTS ----------------
+  // Geolocalização, Coordenadas (lat, lng) e Atributos Completos dos Pontos e Câmeras do Mapa
+  app.get(['/api/v1/map/cameras', '/api/map/cameras'], (req, res) => {
+    const { status, isDemo, city } = req.query;
+    let filtered = cameras;
+
+    if (status && status !== 'ALL') {
+      if (status === 'DEMO') {
+        filtered = filtered.filter((c) => c.isDemo || c.isLiveWebcam);
+      } else {
+        filtered = filtered.filter((c) => c.status === status);
+      }
+    }
+
+    if (isDemo === 'true') {
+      filtered = filtered.filter((c) => c.isDemo || c.isLiveWebcam);
+    } else if (isDemo === 'false') {
+      filtered = filtered.filter((c) => !c.isDemo && !c.isLiveWebcam);
+    }
+
+    if (city && typeof city === 'string') {
+      filtered = filtered.filter((c) => (c.city || '').toLowerCase().includes(city.toLowerCase()));
+    }
+
+    const host = req.headers.host || 'localhost:3000';
+    const proto = (req.headers['x-forwarded-proto'] as string) || 'http';
+    const origin = `${proto}://${host}`;
+
+    const mapCameras = filtered.map((c) => ({
+      id: c.id,
+      name: c.name,
+      coordinates: {
+        lat: Number(c.lat) || -17.0397,
+        lng: Number(c.lng) || -39.5312,
+      },
+      lat: Number(c.lat) || -17.0397,
+      lng: Number(c.lng) || -39.5312,
+      location: c.location || 'Localização Geral',
+      city: c.city || 'Itamaraju',
+      stateUf: c.stateUf || 'BA',
+      neighborhood: c.location || 'Bairro Central',
+      status: c.status || 'ONLINE',
+      isDemo: Boolean(c.isDemo || c.isLiveWebcam),
+      isLiveWebcam: Boolean(c.isLiveWebcam),
+      protocol: c.protocol || 'RTMP',
+      resolution: c.resolution || '1080p',
+      fps: c.fps || 30,
+      isE2EEEncrypted: c.isE2EEEncrypted ?? true,
+      cloudRecordingsActive: c.cloudRecordingsActive ?? true,
+      aiDetectionEnabled: c.aiDetectionEnabled ?? true,
+      motionSensitivity: c.motionSensitivity ?? 80,
+      twoWayAudioEnabled: Boolean(c.twoWayAudioEnabled),
+      streamKey: c.streamKey || (c.id.startsWith('cam-') ? `cam_${c.id.replace('cam-', '')}` : c.id),
+      rtspUrl: c.rtspUrl || `rtsp://${host}:554/live/${c.id}`,
+      hlsUrl: c.fullRtmpUrl || `${origin}/live/${c.streamKey || c.id}.m3u8`,
+      mjpegUrl: `${origin}/api/stream?id=${c.id}`,
+      snapshotUrl: `${origin}/api/cameras/${c.id}/snapshot`,
+    }));
+
+    res.json({
+      success: true,
+      count: mapCameras.length,
+      totalRegistered: cameras.length,
+      mapProvider: 'OpenStreetMap / Leaflet GeoJSON',
+      boundingCenter: {
+        lat: mapCameras.length ? mapCameras.reduce((acc, c) => acc + c.lat, 0) / mapCameras.length : -17.0397,
+        lng: mapCameras.length ? mapCameras.reduce((acc, c) => acc + c.lng, 0) / mapCameras.length : -39.5312,
+      },
+      cameras: mapCameras,
+    });
+  });
+
+  app.get(['/api/v1/map/cameras/:id', '/api/map/cameras/:id'], (req, res) => {
+    const cam = cameras.find((c) => c.id === req.params.id);
+    if (!cam) {
+      return res.status(404).json({ success: false, error: 'Câmera não encontrada no mapa da vizinhança' });
+    }
+
+    const host = req.headers.host || 'localhost:3000';
+    const proto = (req.headers['x-forwarded-proto'] as string) || 'http';
+    const origin = `${proto}://${host}`;
+
+    res.json({
+      success: true,
+      camera: {
+        id: cam.id,
+        name: cam.name,
+        coordinates: {
+          lat: Number(cam.lat) || -17.0397,
+          lng: Number(cam.lng) || -39.5312,
+        },
+        lat: Number(cam.lat) || -17.0397,
+        lng: Number(cam.lng) || -39.5312,
+        location: cam.location || 'Localização Geral',
+        city: cam.city || 'Itamaraju',
+        stateUf: cam.stateUf || 'BA',
+        neighborhood: cam.location || 'Bairro Central',
+        status: cam.status || 'ONLINE',
+        isDemo: Boolean(cam.isDemo || cam.isLiveWebcam),
+        isLiveWebcam: Boolean(cam.isLiveWebcam),
+        protocol: cam.protocol || 'RTMP',
+        resolution: cam.resolution || '1080p',
+        fps: cam.fps || 30,
+        isE2EEEncrypted: cam.isE2EEEncrypted ?? true,
+        cloudRecordingsActive: cam.cloudRecordingsActive ?? true,
+        aiDetectionEnabled: cam.aiDetectionEnabled ?? true,
+        motionSensitivity: cam.motionSensitivity ?? 80,
+        twoWayAudioEnabled: Boolean(cam.twoWayAudioEnabled),
+        streamKey: cam.streamKey || (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id),
+        rtspUrl: cam.rtspUrl || `rtsp://${host}:554/live/${cam.id}`,
+        hlsUrl: cam.fullRtmpUrl || `${origin}/live/${cam.streamKey || cam.id}.m3u8`,
+        mjpegUrl: `${origin}/api/stream?id=${cam.id}`,
+        snapshotUrl: `${origin}/api/cameras/${cam.id}/snapshot`,
+      },
+    });
+  });
+
+  app.get(['/api/v1/map/summary', '/api/map/summary'], (req, res) => {
+    const total = cameras.length;
+    const demoCount = cameras.filter((c) => c.isDemo || c.isLiveWebcam).length;
+    const onlineCount = cameras.filter((c) => c.status === 'ONLINE').length;
+    const alertCount = cameras.filter((c) => c.status === 'ALERT').length;
+    const recordingCount = cameras.filter((c) => c.cloudRecordingsActive || c.status === 'RECORDING').length;
+    const cities = Array.from(new Set(cameras.map((c) => c.city || 'Itamaraju')));
+
+    const validCams = cameras.filter((c) => c.lat && c.lng);
+    const centerLat = validCams.length ? validCams.reduce((a, c) => a + Number(c.lat), 0) / validCams.length : -17.0397;
+    const centerLng = validCams.length ? validCams.reduce((a, c) => a + Number(c.lng), 0) / validCams.length : -39.5312;
+
+    res.json({
+      success: true,
+      summary: {
+        totalCamerasOnMap: total,
+        demoPublicCameras: demoCount,
+        onlineCameras: onlineCount,
+        alertCameras: alertCount,
+        recordingCameras: recordingCount,
+        coveredCities: cities,
+        centerCoordinates: {
+          lat: centerLat,
+          lng: centerLng,
+        },
+        defaultZoom: 9,
+        mapTileProvider: 'OpenStreetMap',
+      },
+    });
+  });
+
 
 
 

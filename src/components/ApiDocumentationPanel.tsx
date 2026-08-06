@@ -19,11 +19,12 @@ import {
   FileCode,
   Layers,
   RefreshCw,
+  MapPin,
 } from 'lucide-react';
 
 interface EndpointDefinition {
   id: string;
-  category: 'Autenticação' | 'Painel Admin' | 'Câmeras RTSP' | 'LPR / Placas' | 'Alertas' | 'Sistema & GPU';
+  category: 'Autenticação' | 'Painel Admin' | 'Câmeras RTSP' | 'Mapa Vizinhança' | 'LPR / Placas' | 'Alertas' | 'Sistema & GPU';
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: string;
   title: string;
@@ -382,6 +383,128 @@ export const ApiDocumentationPanel: React.FC = () => {
         ],
       },
     },
+    {
+      id: 'map-cameras-list',
+      category: 'Mapa Vizinhança',
+      method: 'GET',
+      path: '/api/v1/map/cameras',
+      title: 'Obter Coordenadas & Atributos dos Pontos do Mapa',
+      security: 'Público',
+      description: 'Retorna a lista completa de pontos geolocalizados no Mapa da Vizinhança com coordenadas (lat, lng), status de transmissão, protocolo, degustação pública (isDemo), cidade, UF e links diretos para fluxos de mídia HLS/RTSP.',
+      headers: [
+        { name: 'Accept', value: 'application/json', description: 'Formato da resposta (JSON)' },
+      ],
+      sampleResponse: {
+        success: true,
+        count: 3,
+        totalRegistered: 12,
+        mapProvider: 'OpenStreetMap / Leaflet GeoJSON',
+        boundingCenter: {
+          lat: -17.5312,
+          lng: -39.7421,
+        },
+        cameras: [
+          {
+            id: 'cam-01',
+            name: 'Câmera Portaria Principal',
+            coordinates: { lat: -17.5312, lng: -39.7421 },
+            lat: -17.5312,
+            lng: -39.7421,
+            location: 'Entrada Principal - Av. Brasil',
+            city: 'Itamaraju',
+            stateUf: 'BA',
+            neighborhood: 'Bairro Central',
+            status: 'ONLINE',
+            isDemo: true,
+            isLiveWebcam: false,
+            protocol: 'RTMP',
+            resolution: '1080p',
+            fps: 30,
+            isE2EEEncrypted: true,
+            cloudRecordingsActive: true,
+            aiDetectionEnabled: true,
+            motionSensitivity: 80,
+            twoWayAudioEnabled: false,
+            streamKey: 'cam_01',
+            rtspUrl: 'rtsp://monitoramento.unityautomacoes.com.br:554/live/cam-01',
+            hlsUrl: 'https://monitoramento.unityautomacoes.com.br/live/cam_01.m3u8',
+            mjpegUrl: 'https://monitoramento.unityautomacoes.com.br/api/stream?id=cam-01',
+            snapshotUrl: 'https://monitoramento.unityautomacoes.com.br/api/cameras/cam-01/snapshot',
+          },
+        ],
+      },
+    },
+    {
+      id: 'map-camera-detail',
+      category: 'Mapa Vizinhança',
+      method: 'GET',
+      path: '/api/v1/map/cameras/cam-01',
+      title: 'Obter Atributos de um Ponto Específico do Mapa',
+      security: 'Público',
+      description: 'Retorna os detalhes e coordenadas exatas (lat, lng) de um único ponto/câmera do mapa informado pelo ID.',
+      headers: [
+        { name: 'Accept', value: 'application/json', description: 'Formato da resposta (JSON)' },
+      ],
+      sampleResponse: {
+        success: true,
+        camera: {
+          id: 'cam-01',
+          name: 'Câmera Portaria Principal',
+          coordinates: { lat: -17.5312, lng: -39.7421 },
+          lat: -17.5312,
+          lng: -39.7421,
+          location: 'Entrada Principal - Av. Brasil',
+          city: 'Itamaraju',
+          stateUf: 'BA',
+          neighborhood: 'Bairro Central',
+          status: 'ONLINE',
+          isDemo: true,
+          isLiveWebcam: false,
+          protocol: 'RTMP',
+          resolution: '1080p',
+          fps: 30,
+          isE2EEEncrypted: true,
+          cloudRecordingsActive: true,
+          aiDetectionEnabled: true,
+          motionSensitivity: 80,
+          twoWayAudioEnabled: false,
+          streamKey: 'cam_01',
+          rtspUrl: 'rtsp://monitoramento.unityautomacoes.com.br:554/live/cam-01',
+          hlsUrl: 'https://monitoramento.unityautomacoes.com.br/live/cam_01.m3u8',
+          mjpegUrl: 'https://monitoramento.unityautomacoes.com.br/api/stream?id=cam-01',
+          snapshotUrl: 'https://monitoramento.unityautomacoes.com.br/api/cameras/cam-01/snapshot',
+        },
+      },
+    },
+    {
+      id: 'map-summary',
+      category: 'Mapa Vizinhança',
+      method: 'GET',
+      path: '/api/v1/map/summary',
+      title: 'Resumo de Geolocalização e Cobertura do Mapa',
+      security: 'Público',
+      description: 'Fornece métricas agregadas do mapa da vizinhança: total de câmeras geolocalizadas, quantidade de canais abertos de degustação pública, estatísticas de status, municípios cobertos e centro de coordenadas padrão.',
+      headers: [
+        { name: 'Accept', value: 'application/json', description: 'Formato da resposta (JSON)' },
+      ],
+      sampleResponse: {
+        success: true,
+        summary: {
+          totalCamerasOnMap: 12,
+          demoPublicCameras: 4,
+          onlineCameras: 10,
+          alertCameras: 1,
+          recordingCameras: 8,
+          coveredCities: ['Itamaraju', 'Porto Seguro', 'Teixeira de Freitas'],
+          centerCoordinates: {
+            lat: -17.0397,
+            lng: -39.5312,
+          },
+          defaultZoom: 9,
+          mapTileProvider: 'OpenStreetMap',
+        },
+      },
+    },
   ];
 
   const selectedEndpoint = endpoints.find((e) => e.id === selectedEndpointId) || endpoints[0];
@@ -397,7 +520,7 @@ export const ApiDocumentationPanel: React.FC = () => {
   }, [selectedEndpointId]);
 
   // Categories list
-  const categories = ['Todos', 'Autenticação', 'Painel Admin', 'Câmeras RTSP', 'LPR / Placas', 'Alertas', 'Sistema & GPU'];
+  const categories = ['Todos', 'Autenticação', 'Painel Admin', 'Câmeras RTSP', 'Mapa Vizinhança', 'LPR / Placas', 'Alertas', 'Sistema & GPU'];
 
   const filteredEndpoints = endpoints.filter((ep) => {
     const matchesCategory = selectedCategory === 'Todos' || ep.category === selectedCategory;
