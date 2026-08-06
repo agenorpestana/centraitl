@@ -39,6 +39,7 @@ const deletedRecordingIds = new Set<string>();
 const deletedUserIds = new Set<string>();
 const deletedPlanIds = new Set<string>();
 const deletedInvoiceIds = new Set<string>();
+const activeTokensMap: Record<string, string> = {};
 
 function getValidStreamSource(cam: any): string {
   if (!cam) return '';
@@ -331,6 +332,115 @@ async function startServer() {
   let invoices: Invoice[] = [];
   let mpConfig: MercadoPagoConfig = { ...INITIAL_MP_CONFIG };
   let architectureConfig: ArchitectureConfig = { ...INITIAL_ARCHITECTURE_CONFIG };
+
+  function getUserFromReq(req: any): User | null {
+    try {
+      const userIdHeader = req.headers['x-user-id'] || req.headers['user-id'] || req.headers['x-userid'];
+      const userEmailHeader = req.headers['x-user-email'] || req.headers['user-email'];
+      const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+
+      const qUserId = req.query?.userId || req.query?.userid || req.query?.user_id;
+      const qEmail = req.query?.email || req.query?.userEmail || req.query?.user;
+
+      let searchId = userIdHeader || qUserId;
+      let searchEmail = userEmailHeader || qEmail;
+
+      if (authHeader && typeof authHeader === 'string') {
+        const tokenVal = authHeader.replace(/^Bearer\s+/i, '').trim();
+        if (tokenVal) {
+          if (activeTokensMap[tokenVal]) {
+            const u = users.find((usr) => usr.id === activeTokensMap[tokenVal]);
+            if (u) return u;
+          }
+          const tokenUser = users.find(
+            (u) =>
+              u.id.toLowerCase() === tokenVal.toLowerCase() ||
+              u.email.toLowerCase() === tokenVal.toLowerCase()
+          );
+          if (tokenUser) return tokenUser;
+        }
+      }
+
+      if (searchId) {
+        const u = users.find((usr) => usr.id.toLowerCase() === String(searchId).toLowerCase());
+        if (u) return u;
+      }
+
+      if (searchEmail) {
+        const u = users.find((usr) => usr.email.toLowerCase() === String(searchEmail).toLowerCase());
+        if (u) return u;
+      }
+    } catch (e) {}
+
+    return null;
+  }
+
+  function filterCamerasForUser(user: User | null, cameraList: Camera[]): Camera[] {
+    if (!user) return cameraList;
+    if (user.role === 'ADMIN') return cameraList;
+
+    const allowed = user.allowedCameraIds;
+    if (!allowed || allowed.includes('ALL')) return cameraList;
+
+    return cameraList.filter((c) => {
+      const cleanId = c.id.replace(/^cam-/, '').replace(/^cam_/, '');
+      const cleanStreamKey = (c.streamKey || '').replace(/^cam-/, '').replace(/^cam_/, '');
+      return allowed.some((aId) => {
+        if (aId === 'ALL') return true;
+        const cleanAId = aId.replace(/^cam-/, '').replace(/^cam_/, '');
+        return (
+          c.id === aId ||
+          c.streamKey === aId ||
+          cleanId === cleanAId ||
+          cleanStreamKey === cleanAId ||
+          c.id.includes(aId) ||
+          (c.streamKey && c.streamKey.includes(aId))
+        );
+      });
+    });
+  }
+
+  function filterStreamsForUser(user: User | null, streamList: StreamInfo[]): StreamInfo[] {
+    if (!user) return streamList;
+    if (user.role === 'ADMIN') return streamList;
+
+    const allowed = user.allowedCameraIds;
+    if (!allowed || allowed.includes('ALL')) return streamList;
+
+    return streamList.filter((s) => {
+      const cleanId = s.cameraId.replace(/^cam-/, '').replace(/^cam_/, '');
+      return allowed.some((aId) => {
+        if (aId === 'ALL') return true;
+        const cleanAId = aId.replace(/^cam-/, '').replace(/^cam_/, '');
+        return (
+          s.cameraId === aId ||
+          cleanId === cleanAId ||
+          s.cameraId.includes(aId)
+        );
+      });
+    });
+  }
+
+  function filterRecordingsForUser(user: User | null, recordingList: CloudRecording[]): CloudRecording[] {
+    if (!user) return recordingList;
+    if (user.role === 'ADMIN') return recordingList;
+
+    const allowed = user.allowedCameraIds;
+    if (!allowed || allowed.includes('ALL')) return recordingList;
+
+    return recordingList.filter((r) => {
+      const cleanId = (r.cameraId || '').replace(/^cam-/, '').replace(/^cam_/, '');
+      return allowed.some((aId) => {
+        if (aId === 'ALL') return true;
+        const cleanAId = aId.replace(/^cam-/, '').replace(/^cam_/, '');
+        return (
+          r.cameraId === aId ||
+          cleanId === cleanAId ||
+          (r.cameraId && r.cameraId.includes(aId))
+        );
+      });
+    });
+  }
 
   // Real Active Recording Sessions Tracker
   interface ActiveRecordingSession {
@@ -893,6 +1003,7 @@ async function startServer() {
   const syncUserToSqlite = (u: User) => {
     if (!sqliteDb) return;
     try {
+      const uHash = (u as any).password_hash || (u as any).passwordHash || (u.password ? hashPasswordPBKDF2(u.password) : '$2b$10$itlpasswordhash2026');
       sqliteDb.run(
         `INSERT OR REPLACE INTO users (
           id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, last_active, created_at
@@ -901,7 +1012,7 @@ async function startServer() {
           u.id,
           u.name,
           u.email,
-          '$2b$10$itlpasswordhash2026',
+          uHash,
           u.role || 'RESIDENT',
           u.phone || '',
           u.stateUf || '',
@@ -1180,6 +1291,7 @@ async function startServer() {
       const safeAllowedCams = typeof u.allowedCameraIds === 'string'
         ? u.allowedCameraIds
         : JSON.stringify(u.allowedCameraIds || ['ALL']);
+      const uHash = (u as any).password_hash || (u as any).passwordHash || (u.password ? hashPasswordPBKDF2(u.password) : '$2b$10$itlpasswordhash2026');
 
       await queryPg(
         `INSERT INTO users (id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, last_active, created_at)
@@ -1189,7 +1301,7 @@ async function startServer() {
           u.id,
           u.name,
           u.email,
-          '$2b$10$itlpasswordhash2026',
+          uHash,
           u.role || 'RESIDENT',
           u.phone || '',
           u.stateUf || '',
@@ -2413,6 +2525,7 @@ async function startServer() {
     }
 
     const token = `bearer_${crypto.randomBytes(32).toString('hex')}`;
+    activeTokensMap[token] = foundUser.id;
     addLog(foundUser.name, `Login efetuado com sucesso (${foundUser.role})`, 'AUTH');
 
     return res.json({
@@ -2427,9 +2540,20 @@ async function startServer() {
   // Endpoint de Stream Direto MJPEG / HTTP Stream (Zero Latência - modo aerocam)
   app.get(['/api/stream', '/stream', '/api/cameras/:id/stream'], (req, res) => {
     const key = (req.params?.id || req.query.key || req.query.camId || req.query.streamKey || '').toString();
-    let queryUrl = (req.query.url || req.query.rtspUrl || req.query.rtmpUrl || '').toString();
-
     const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
+
+    const reqUser = getUserFromReq(req);
+    if (reqUser && reqUser.role !== 'ADMIN' && reqUser.allowedCameraIds && !reqUser.allowedCameraIds.includes('ALL')) {
+      const isAllowed = reqUser.allowedCameraIds.some((aId) => {
+        const cleanAId = aId.replace(/^cam-/, '').replace(/^cam_/, '');
+        return aId === key || cleanAId === cleanKey || key.includes(aId);
+      });
+      if (!isAllowed) {
+        return res.status(403).send('Acesso negado: Câmera não autorizada para o seu usuário.');
+      }
+    }
+
+    let queryUrl = (req.query.url || req.query.rtspUrl || req.query.rtmpUrl || '').toString();
 
     const matchedCam = cameras.find(
       (c) =>
@@ -3220,8 +3344,10 @@ async function startServer() {
   });
 
   // Cameras
-  app.get('/api/cameras', (req, res) => {
-    res.json(cameras);
+  app.get(['/api/cameras', '/api/v1/cameras'], (req, res) => {
+    const reqUser = getUserFromReq(req);
+    const filtered = filterCamerasForUser(reqUser, cameras);
+    res.json(filtered);
   });
 
   app.post('/api/cameras', async (req, res) => {
@@ -3425,6 +3551,17 @@ async function startServer() {
     const cleanId = id.replace(/[^a-zA-Z0-9_-]/g, '_');
     const rawId = id.replace(/^cam[-_]/i, '');
 
+    const reqUser = getUserFromReq(req);
+    if (reqUser && reqUser.role !== 'ADMIN' && reqUser.allowedCameraIds && !reqUser.allowedCameraIds.includes('ALL')) {
+      const isAllowed = reqUser.allowedCameraIds.some((aId) => {
+        const cleanAId = aId.replace(/^cam-/, '').replace(/^cam_/, '');
+        return aId === id || cleanAId === rawId || id.includes(aId);
+      });
+      if (!isAllowed) {
+        return res.status(403).json({ error: 'Acesso não autorizado para esta câmera' });
+      }
+    }
+
     const candidates = [
       path.join(snapshotsDir, `snap_${cleanId}.jpg`),
       path.join(snapshotsDir, `snap_${id}.jpg`),
@@ -3497,17 +3634,25 @@ async function startServer() {
 
   // Recordings Endpoints (Real Stream Capture Engine for RTMP, RTSP & HLS)
   app.get('/api/recordings', (req, res) => {
-    res.json(recordings);
+    const reqUser = getUserFromReq(req);
+    const filtered = filterRecordingsForUser(reqUser, recordings);
+    res.json(filtered);
   });
 
   app.get('/api/recordings/active', (req, res) => {
-    const list = Array.from(activeRecordings.values()).map((s) => ({
-      sessionId: s.sessionId,
-      cameraId: s.cameraId,
-      cameraName: s.cameraName,
-      startTime: s.startTimeStr,
-      elapsedSeconds: Math.round((Date.now() - s.startTime.getTime()) / 1000),
-    }));
+    const reqUser = getUserFromReq(req);
+    const allowedCams = filterCamerasForUser(reqUser, cameras);
+    const allowedSet = new Set(allowedCams.map((c) => c.id));
+
+    const list = Array.from(activeRecordings.values())
+      .filter((s) => allowedSet.has(s.cameraId))
+      .map((s) => ({
+        sessionId: s.sessionId,
+        cameraId: s.cameraId,
+        cameraName: s.cameraName,
+        startTime: s.startTimeStr,
+        elapsedSeconds: Math.round((Date.now() - s.startTime.getTime()) / 1000),
+      }));
     res.json(list);
   });
 
@@ -3720,16 +3865,24 @@ async function startServer() {
 
   app.post('/api/users', async (req, res) => {
     try {
-      const { name, email, role, phone, customPermissions } = req.body;
+      const { name, email, password, role, phone, stateUf, city, allowedCameraIds, customPermissions } = req.body;
       if (!name || !email) return res.status(400).json({ error: 'Nome e email são obrigatórios' });
+
+      const userPass = (password || '').toString().trim() || '123456';
+      const passHash = hashPasswordPBKDF2(userPass);
 
       const newUser: User = {
         id: `user-${Date.now().toString().slice(-4)}`,
         name,
         email,
+        password: userPass,
+        passwordHash: passHash,
         role: role || 'RESIDENT',
         phone: phone || '',
+        stateUf: stateUf || 'BA',
+        city: city || 'Itamaraju',
         status: 'ACTIVE',
+        allowedCameraIds: allowedCameraIds && allowedCameraIds.length > 0 ? allowedCameraIds : ['ALL'],
         customPermissions: customPermissions || {
           canViewLive: true,
           canViewRecordings: true,
@@ -3744,6 +3897,7 @@ async function startServer() {
         lastActive: 'Nunca',
         createdAt: new Date().toISOString().split('T')[0],
       };
+      (newUser as any).password_hash = passHash;
 
       users.push(newUser);
       deletedUserIds.delete(newUser.id);
@@ -3764,7 +3918,15 @@ async function startServer() {
       const index = users.findIndex((u) => u.id === id);
       if (index === -1) return res.status(404).json({ error: 'Usuário não encontrado' });
 
-      users[index] = { ...users[index], ...req.body };
+      const updatedUser = { ...users[index], ...req.body };
+      if (req.body.password && req.body.password.trim()) {
+        const p = req.body.password.trim();
+        updatedUser.password = p;
+        updatedUser.passwordHash = hashPasswordPBKDF2(p);
+        (updatedUser as any).password_hash = updatedUser.passwordHash;
+      }
+
+      users[index] = updatedUser;
       try { syncUserToSqlite(users[index]); } catch (e) {}
       saveToLocalFile();
       syncUserToMysql(users[index]).catch((e) => console.error('[Pg Sync User Error]:', e));
@@ -3982,7 +4144,9 @@ async function startServer() {
 
   // Active Streams Endpoints
   const getActiveStreamsHandler = (req: any, res: any) => {
-    const activeStreamsList: StreamInfo[] = cameras.map((c) => ({
+    const reqUser = getUserFromReq(req);
+    const filteredCams = filterCamerasForUser(reqUser, cameras);
+    const activeStreamsList: StreamInfo[] = filteredCams.map((c) => ({
       cameraId: c.id,
       cameraName: c.name,
       rtspUrl: c.rtspUrl || '',
@@ -4043,7 +4207,9 @@ async function startServer() {
   });
 
   app.get('/api/v1/admin/cameras', (req, res) => {
-    res.json({ success: true, count: cameras.length, cameras });
+    const reqUser = getUserFromReq(req);
+    const filteredCams = filterCamerasForUser(reqUser, cameras);
+    res.json({ success: true, count: filteredCams.length, cameras: filteredCams });
   });
 
   app.post('/api/v1/admin/cameras', (req, res) => {
@@ -4106,14 +4272,17 @@ async function startServer() {
   });
 
   app.get('/api/v1/recordings', (req, res) => {
-    res.json({ success: true, count: recordings.length, recordings });
+    const reqUser = getUserFromReq(req);
+    const filteredRecs = filterRecordingsForUser(reqUser, recordings);
+    res.json({ success: true, count: filteredRecs.length, recordings: filteredRecs });
   });
 
   // ---------------- MAPA VIZINHANÇA API ENDPOINTS ----------------
   // Geolocalização, Coordenadas (lat, lng) e Atributos Completos dos Pontos e Câmeras do Mapa
   app.get(['/api/v1/map/cameras', '/api/map/cameras'], (req, res) => {
     const { status, isDemo, city } = req.query;
-    let filtered = cameras;
+    const reqUser = getUserFromReq(req);
+    let filtered = filterCamerasForUser(reqUser, cameras);
 
     if (status && status !== 'ALL') {
       if (status === 'DEMO') {

@@ -152,6 +152,12 @@ export default function App() {
   useEffect(() => {
     const fetchBackendData = async () => {
       try {
+        const authHeaders = {
+          'x-user-id': activeUser.id,
+          'x-user-email': activeUser.email,
+          'Authorization': `Bearer ${activeUser.id}`,
+        };
+
         const [
           cRes,
           rRes,
@@ -165,8 +171,8 @@ export default function App() {
           archCfgRes,
           streamsRes,
         ] = await Promise.all([
-          fetch('/api/cameras').then((r) => r.ok ? r.json() : null).catch(() => null),
-          fetch('/api/recordings').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/cameras', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/recordings', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/users').then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/logs').then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/backup').then((r) => r.ok ? r.json() : null).catch(() => null),
@@ -175,7 +181,7 @@ export default function App() {
           fetch('/api/financial/invoices').then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/mercadopago/config').then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/v1/architecture/config').then((r) => r.ok ? r.json() : null).catch(() => null),
-          fetch('/api/v1/streams').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/v1/streams', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
         ]);
 
         if (Array.isArray(cRes)) setCameras(cRes);
@@ -195,7 +201,7 @@ export default function App() {
     };
 
     fetchBackendData();
-  }, []);
+  }, [activeUser.id]);
 
   // Periodic recordings sync
   useEffect(() => {
