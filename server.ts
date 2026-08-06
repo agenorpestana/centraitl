@@ -280,7 +280,11 @@ async function startServer() {
   if (!fs.existsSync(snapshotsDir)) {
     try { fs.mkdirSync(snapshotsDir, { recursive: true }); } catch (e) {}
   }
-  app.use('/snapshots', express.static(snapshotsDir));
+  app.use('/snapshots', (req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    next();
+  }, express.static(snapshotsDir));
 
   // Database Connection Pool Setup
   let pool: InstanceType<typeof Pool> | null = null;
@@ -3349,7 +3353,7 @@ async function startServer() {
       const { id } = req.params;
       const { imageBase64 } = req.body || {};
 
-      const camIndex = cameras.findIndex((c) => c.id === id || c.streamKey === id);
+      const camIndex = cameras.findIndex((c) => c.id === id || c.streamKey === id || c.id === `cam-${id}`);
       const cam = camIndex !== -1 ? cameras[camIndex] : null;
       const targetId = cam ? cam.id : id;
       const cleanId = targetId.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -3377,7 +3381,7 @@ async function startServer() {
       }
 
       const timestamp = Date.now();
-      const newThumbUrl = `/snapshots/${snapFileName}?t=${timestamp}`;
+      const newThumbUrl = `/api/cameras/${targetId}/snapshot?t=${timestamp}`;
 
       if (cam) {
         cameras[camIndex] = {
@@ -3393,6 +3397,7 @@ async function startServer() {
         success: true,
         cameraId: targetId,
         thumbnailUrl: newThumbUrl,
+        filePath: `/snapshots/${snapFileName}`,
         updatedAt: new Date().toISOString(),
       });
     } catch (err: any) {
@@ -3405,17 +3410,27 @@ async function startServer() {
   app.get('/api/cameras/:id/snapshot', (req, res) => {
     const { id } = req.params;
     const cleanId = id.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const snapPath = path.join(snapshotsDir, `snap_${cleanId}.jpg`);
+    const rawId = id.replace(/^cam[-_]/i, '');
 
-    if (fs.existsSync(snapPath)) {
+    const candidates = [
+      path.join(snapshotsDir, `snap_${cleanId}.jpg`),
+      path.join(snapshotsDir, `snap_${id}.jpg`),
+      path.join(snapshotsDir, `snap_cam-${rawId}.jpg`),
+      path.join(snapshotsDir, `snap_cam_${rawId}.jpg`),
+    ];
+
+    let foundPath = candidates.find((p) => fs.existsSync(p));
+
+    if (foundPath) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Content-Type', 'image/jpeg');
-      res.setHeader('Cache-Control', 'public, max-age=60');
-      return res.sendFile(snapPath);
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return res.sendFile(foundPath);
     }
 
-    // Check if camera exists and has a non-unsplash thumbnailUrl
-    const cam = cameras.find((c) => c.id === id || c.streamKey === id);
-    if (cam && cam.thumbnailUrl && !cam.thumbnailUrl.includes('unsplash') && !cam.thumbnailUrl.includes('/api/cameras/')) {
+    // Check if camera exists and has a custom non-unsplash thumbnailUrl
+    const cam = cameras.find((c) => c.id === id || c.streamKey === id || c.id === `cam-${id}`);
+    if (cam && cam.thumbnailUrl && !cam.thumbnailUrl.includes('unsplash') && !cam.thumbnailUrl.includes('/api/cameras/') && !cam.thumbnailUrl.includes('/snapshots/')) {
       return res.redirect(cam.thumbnailUrl);
     }
 
@@ -3429,8 +3444,9 @@ async function startServer() {
       <text x="400" y="305" fill="#64748b" font-family="monospace" font-size="14" text-anchor="middle">Aguardando Captura da Câmera (Atualização a cada 30 min)</text>
     </svg>`;
 
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'image/svg+xml');
-    res.setHeader('Cache-Control', 'public, max-age=30');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     return res.send(svg);
   });
 
@@ -3450,7 +3466,7 @@ async function startServer() {
         execSync(`ffmpeg ${ffmpegArgs.join(' ')}`, { stdio: 'ignore', timeout: 5000 });
 
         if (fs.existsSync(snapPath)) {
-          cam.thumbnailUrl = `/snapshots/snap_${cleanId}.jpg?t=${Date.now()}`;
+          cam.thumbnailUrl = `/api/cameras/${cam.id}/snapshot?t=${Date.now()}`;
         }
       } catch (e) {}
     });
