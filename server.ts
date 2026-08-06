@@ -280,11 +280,16 @@ async function startServer() {
   if (!fs.existsSync(snapshotsDir)) {
     try { fs.mkdirSync(snapshotsDir, { recursive: true }); } catch (e) {}
   }
-  app.use('/snapshots', (req, res, next) => {
+  const publicSnapshotsDir = path.join(process.cwd(), 'public', 'snapshots');
+  if (!fs.existsSync(publicSnapshotsDir)) {
+    try { fs.mkdirSync(publicSnapshotsDir, { recursive: true }); } catch (e) {}
+  }
+
+  app.use(['/snapshots', '/public/snapshots'], (req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     next();
-  }, express.static(snapshotsDir));
+  }, express.static(snapshotsDir), express.static(publicSnapshotsDir));
 
   // Database Connection Pool Setup
   let pool: InstanceType<typeof Pool> | null = null;
@@ -3366,6 +3371,10 @@ async function startServer() {
         if (buffer.length > 100) {
           // Overwrite file directly on disk - keeping ONLY the latest capture
           fs.writeFileSync(snapPath, buffer);
+          try {
+            const pubSnapPath = path.join(publicSnapshotsDir, snapFileName);
+            fs.writeFileSync(pubSnapPath, buffer);
+          } catch (e) {}
         }
       } else if (cam) {
         // Fallback: extract snapshot via FFmpeg if camera has RTSP/RTMP stream URL
@@ -3376,6 +3385,10 @@ async function startServer() {
             if (streamUrl.startsWith('rtsp://')) ffmpegArgs.push('-rtsp_transport', 'tcp');
             ffmpegArgs.push('-y', '-ss', '00:00:01', '-i', streamUrl, '-vframes', '1', '-q:v', '3', snapPath);
             execSync(`ffmpeg ${ffmpegArgs.join(' ')}`, { stdio: 'ignore', timeout: 5000 });
+            try {
+              const pubSnapPath = path.join(publicSnapshotsDir, snapFileName);
+              if (fs.existsSync(snapPath)) fs.copyFileSync(snapPath, pubSnapPath);
+            } catch (e) {}
           } catch (e) {}
         }
       }
@@ -3417,6 +3430,10 @@ async function startServer() {
       path.join(snapshotsDir, `snap_${id}.jpg`),
       path.join(snapshotsDir, `snap_cam-${rawId}.jpg`),
       path.join(snapshotsDir, `snap_cam_${rawId}.jpg`),
+      path.join(publicSnapshotsDir, `snap_${cleanId}.jpg`),
+      path.join(publicSnapshotsDir, `snap_${id}.jpg`),
+      path.join(publicSnapshotsDir, `snap_cam-${rawId}.jpg`),
+      path.join(publicSnapshotsDir, `snap_cam_${rawId}.jpg`),
     ];
 
     let foundPath = candidates.find((p) => fs.existsSync(p));
@@ -3466,6 +3483,10 @@ async function startServer() {
         execSync(`ffmpeg ${ffmpegArgs.join(' ')}`, { stdio: 'ignore', timeout: 5000 });
 
         if (fs.existsSync(snapPath)) {
+          try {
+            const pubSnapPath = path.join(publicSnapshotsDir, `snap_${cleanId}.jpg`);
+            fs.copyFileSync(snapPath, pubSnapPath);
+          } catch (e) {}
           cam.thumbnailUrl = `/api/cameras/${cam.id}/snapshot?t=${Date.now()}`;
         }
       } catch (e) {}
@@ -4243,7 +4264,10 @@ async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: ['.unityautomacoes.com.br', 'centralitl.unityautomacoes.com.br'],
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
