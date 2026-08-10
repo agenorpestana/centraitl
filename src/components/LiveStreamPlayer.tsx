@@ -68,8 +68,10 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO'
   );
 
-  // Default to false so all RTSP & RTMP streams use fast HLS playback
-  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(false);
+  // Default RTSP to direct stream MJPEG, RTMP to HLS video
+  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(
+    camera.protocol === 'RTSP' ? true : false
+  );
 
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');
@@ -102,6 +104,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     const initialUrl = cleanDoubleUrl(getInitialVideoUrl(camera));
     setVideoUrl(initialUrl);
     setStreamMode(camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO');
+    setUseMjpegStream(camera.protocol === 'RTSP');
     setTempUrlInput(cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || initialUrl));
     if (camera.status === 'OFFLINE') {
       setConnectionState('OFFLINE');
@@ -284,7 +287,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const handleVideoError = () => {
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
     if (!useMjpegStream) {
-      console.log(`[Stream Player] Falha HLS para ${camera.protocol} (${camera.name}). Alternando para MJPEG...`);
+      console.log(`[Stream Player] HLS indisponível para ${camera.protocol} (${camera.name}). Alternando para MJPEG...`);
       setUseMjpegStream(true);
       setConnectionState('LOADING');
       return;
@@ -298,10 +301,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   };
 
   const handleRetryConnection = () => {
-    setUseMjpegStream(false);
-    setConnectionState('LOADING');
-    setRetryCount((prev) => prev + 1);
     connectStream();
+    setRetryCount((prev) => prev + 1);
     if (videoRef.current) {
       videoRef.current.load();
     }
@@ -323,6 +324,17 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       videoElement.removeAttribute('src');
       videoElement.load();
 
+      // Quick fallback timer: If HLS manifest isn't parsed in 1.5s, switch to MJPEG for instant picture!
+      const fastFallbackTimer = setTimeout(() => {
+        setUseMjpegStream((current) => {
+          if (!current) {
+            console.log(`[Stream Player] HLS demorando para responder (${camera.name}). Alternando para fluxo direto instantâneo MJPEG...`);
+            return true;
+          }
+          return current;
+        });
+      }, 1500);
+
       const initHls = () => {
         if ((window as any).Hls && (window as any).Hls.isSupported()) {
           const HlsClass = (window as any).Hls;
@@ -330,36 +342,30 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             enableWorker: true,
             lowLatencyMode: true,
             backBufferLength: 10,
-            liveSyncDurationCount: 3,
-            liveMaxLatencyDurationCount: 6,
-            manifestLoadingTimeOut: 10000,
-            levelLoadingTimeOut: 10000,
+            manifestLoadingTimeOut: 2000,
+            levelLoadingTimeOut: 2000,
           });
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);
           hlsInstance.on(HlsClass.Events.MANIFEST_PARSED, () => {
+            clearTimeout(fastFallbackTimer);
             setConnectionState('ONLINE');
             videoElement.play().catch(() => {});
           });
           hlsInstance.on(HlsClass.Events.ERROR, (_: any, data: any) => {
             if (data.fatal) {
-              if (data.type === HlsClass.ErrorTypes.NETWORK_ERROR) {
-                console.log(`[HLS Net Recovery] Tentando reconectar HLS para ${camera.name}...`);
-                try { hlsInstance.startLoad(); } catch (e) { handleVideoError(); }
-              } else if (data.type === HlsClass.ErrorTypes.MEDIA_ERROR) {
-                console.log(`[HLS Media Recovery] Recuperando mídia HLS para ${camera.name}...`);
-                try { hlsInstance.recoverMediaError(); } catch (e) { handleVideoError(); }
-              } else {
-                handleVideoError();
-              }
+              clearTimeout(fastFallbackTimer);
+              handleVideoError();
             }
           });
         } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
           videoElement.src = videoUrl;
           videoElement.play().then(() => {
+            clearTimeout(fastFallbackTimer);
             setConnectionState('ONLINE');
           }).catch(() => {});
         } else {
+          clearTimeout(fastFallbackTimer);
           setUseMjpegStream(true);
         }
       };
@@ -371,12 +377,14 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
         script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest';
         script.onload = initHls;
         script.onerror = () => {
+          clearTimeout(fastFallbackTimer);
           setUseMjpegStream(true);
         };
         document.head.appendChild(script);
       }
 
       return () => {
+        clearTimeout(fastFallbackTimer);
         if (hlsInstance) {
           try { hlsInstance.destroy(); } catch (e) {}
         }

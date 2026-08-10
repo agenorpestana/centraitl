@@ -219,20 +219,20 @@ export const UserManagement: React.FC<UserManagementProps> = ({
 
   const handleToggleFormCamera = (camId: string) => {
     let current = [...formState.allowedCameraIds];
-    const isAll = current.includes('ALL');
 
     if (camId === 'ALL') {
-      if (isAll) {
-        setFormState({ ...formState, allowedCameraIds: [] });
+      if (current.includes('ALL')) {
+        // Uncheck ALL -> switch to all camera IDs or first camera so user can unselect
+        setFormState({ ...formState, allowedCameraIds: cameras.map((c) => c.id) });
       } else {
         setFormState({ ...formState, allowedCameraIds: ['ALL'] });
       }
       return;
     }
 
-    if (isAll) {
-      // First click on a camera when ALL was selected -> select ONLY this camera
-      current = [camId];
+    if (current.includes('ALL')) {
+      // Convert ALL to list of all cameras except the toggled one
+      current = cameras.map((c) => c.id).filter((id) => id !== camId);
     } else if (current.includes(camId)) {
       current = current.filter((id) => id !== camId);
     } else {
@@ -248,7 +248,9 @@ export const UserManagement: React.FC<UserManagementProps> = ({
 
     if (camId === 'ALL') {
       if (isAll) {
-        onUpdateUser(user.id, { allowedCameraIds: [] });
+        // Uncheck ALL -> switch to list of all cameras so user can select/deselect individually
+        const updated = cameras.map((c) => c.id);
+        onUpdateUser(user.id, { allowedCameraIds: updated });
       } else {
         onUpdateUser(user.id, { allowedCameraIds: ['ALL'] });
       }
@@ -256,8 +258,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
     }
 
     if (isAll) {
-      // First click on a camera when ALL was selected -> select ONLY this camera
-      current = [camId];
+      current = cameras.map((c) => c.id).filter((id) => id !== camId);
     } else if (current.includes(camId)) {
       current = current.filter((id) => id !== camId);
     } else {
@@ -274,14 +275,13 @@ export const UserManagement: React.FC<UserManagementProps> = ({
 
     if (camId === 'ALL') {
       if (isAll) {
-        current = [];
+        current = cameras.map((c) => c.id);
       } else {
         current = ['ALL'];
       }
     } else {
       if (isAll) {
-        // First click on a camera when ALL was selected -> select ONLY this camera
-        current = [camId];
+        current = cameras.map((c) => c.id).filter((id) => id !== camId);
       } else if (current.includes(camId)) {
         current = current.filter((id) => id !== camId);
       } else {
