@@ -515,6 +515,7 @@ export default function App() {
               activeUser={activeUser}
               onSelectCamera={setInspectingCamera}
               onNavigateTab={(tab) => setActiveTab(tab)}
+              onUpdateCameras={(updatedCams) => setCameras(updatedCams)}
             />
           )}
 

@@ -28,7 +28,7 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { Camera, CloudRecording, User, ActivityLog, Invoice } from '../types';
+import { Camera, CameraStatus, CloudRecording, User, ActivityLog, Invoice } from '../types';
 
 interface DashboardProps {
   cameras: Camera[];
@@ -39,6 +39,7 @@ interface DashboardProps {
   activeUser: User;
   onSelectCamera?: (cam: Camera) => void;
   onNavigateTab: (tabId: string) => void;
+  onUpdateCameras?: (updatedCameras: Camera[]) => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -50,12 +51,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
   activeUser,
   onSelectCamera,
   onNavigateTab,
+  onUpdateCameras,
 }) => {
   const [dbStatus, setDbStatus] = useState<any>(null);
   const [loadingDb, setLoadingDb] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<string>(new Date().toLocaleTimeString('pt-BR'));
   const [testingCamId, setTestingCamId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; success: boolean; message: string } | null>(null);
+  const [isHealthChecking, setIsHealthChecking] = useState(false);
+  const [lastHealthCheckTime, setLastHealthCheckTime] = useState<string>('');
 
   // Compute camera metrics
   const totalCameras = cameras.length;
@@ -79,12 +83,66 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const paidInvoicesCount = invoices.filter((i) => i.status === 'PAID').length;
   const overdueInvoicesCount = invoices.filter((i) => i.status === 'OVERDUE').length;
 
-  // Compute recordings & storage metrics
+  // Compute storage and recording days span
   const totalRecordings = recordings.length;
-  // Estimate retention & storage: average 150MB per clip
-  const estimatedStorageMb = totalRecordings * 150;
-  const estimatedStorageGb = (estimatedStorageMb / 1024).toFixed(1);
-  const estimatedDaysRetention = totalRecordings > 0 ? Math.max(7, Math.ceil(totalRecordings / (totalCameras || 1))) : 7;
+  const totalMbRecordings = recordings.reduce((acc, r) => acc + (r.fileSizeMB || 0), 0);
+  const totalStorageGb = totalMbRecordings > 0
+    ? (totalMbRecordings / 1024).toFixed(1)
+    : (cameras.reduce((acc, c) => acc + (c.storageUsedGB || 0), 0)).toFixed(1);
+
+  let recordingDaysCount = 0;
+  let lastRecordingDateStr = 'Sem gravações recentes';
+  let firstRecordingDateStr = 'Sem gravações';
+
+  if (recordings.length > 0) {
+    const validTimestamps = recordings
+      .map((r) => {
+        const raw = r.startTime || r.endTime;
+        if (!raw) return NaN;
+        return new Date(raw.replace(' ', 'T')).getTime();
+      })
+      .filter((t) => !isNaN(t));
+
+    if (validTimestamps.length > 0) {
+      const minTimestamp = Math.min(...validTimestamps);
+      const maxTimestamp = Math.max(...validTimestamps);
+      const nowTimestamp = Date.now();
+
+      // Days elapsed between earliest recording and today
+      const diffMs = Math.abs(nowTimestamp - minTimestamp);
+      recordingDaysCount = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+
+      firstRecordingDateStr = new Date(minTimestamp).toLocaleDateString('pt-BR');
+      lastRecordingDateStr = new Date(maxTimestamp).toLocaleDateString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    }
+  } else {
+    recordingDaysCount = 30; // default standard retention
+  }
+
+  // Batch health diagnostic check for all cameras
+  const runBatchHealthCheck = async () => {
+    setIsHealthChecking(true);
+    try {
+      const res = await fetch('/api/cameras/health-check');
+      if (res.ok) {
+        const updatedCams: Camera[] = await res.json();
+        if (Array.isArray(updatedCams) && updatedCams.length > 0 && onUpdateCameras) {
+          onUpdateCameras(updatedCams);
+        }
+      }
+    } catch (e) {
+      console.warn('[Dashboard] Erro ao realizar health check em lote:', e);
+    } finally {
+      setIsHealthChecking(false);
+      setLastHealthCheckTime(new Date().toLocaleTimeString('pt-BR'));
+    }
+  };
 
   // Fetch real database status from backend
   const fetchDbStatus = async () => {
@@ -105,10 +163,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   useEffect(() => {
     fetchDbStatus();
-    const interval = setInterval(() => {
+    runBatchHealthCheck();
+
+    const dbInterval = setInterval(() => {
       fetchDbStatus();
     }, 30000); // refresh every 30s
-    return () => clearInterval(interval);
+
+    const camInterval = setInterval(() => {
+      runBatchHealthCheck();
+    }, 45000); // automatic camera health check every 45s
+
+    return () => {
+      clearInterval(dbInterval);
+      clearInterval(camInterval);
+    };
   }, []);
 
   const handleRunSingleTest = async (cam: Camera) => {
@@ -126,17 +194,33 @@ export const Dashboard: React.FC<DashboardProps> = ({
         }),
       });
       const data = await res.json();
+      const isOnline = data.success === true;
+      
       setTestResult({
         id: cam.id,
-        success: data.success,
-        message: data.message || (data.success ? 'Conexão Estabelecida' : 'Sem Sinal'),
+        success: isOnline,
+        message: data.message || (isOnline ? 'Conexão Estabelecida' : 'Sem Sinal'),
       });
+
+      // Update parent camera state
+      if (onUpdateCameras) {
+        const updated = cameras.map((c) =>
+          c.id === cam.id ? { ...c, status: (isOnline ? 'ONLINE' : 'OFFLINE') as CameraStatus } : c
+        );
+        onUpdateCameras(updated);
+      }
     } catch (e: any) {
       setTestResult({
         id: cam.id,
         success: false,
         message: 'Erro ao testar conexão',
       });
+      if (onUpdateCameras) {
+        const updated = cameras.map((c) =>
+          c.id === cam.id ? { ...c, status: 'OFFLINE' as CameraStatus } : c
+        );
+        onUpdateCameras(updated);
+      }
     } finally {
       setTestingCamId(null);
     }
@@ -317,30 +401,32 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
 
-        {/* CARD 4: ARMAZENAMENTO & GRAVAÇÕES */}
+        {/* CARD 4: ARMAZENAMENTO & DIAS DE GRAVAÇÃO */}
         <div className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-2xl p-5 space-y-3 shadow-xl transition">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-              Gravações & Storage
+              Armazenamento & Dias
             </span>
             <div className="p-2 bg-purple-500/10 border border-purple-500/20 rounded-xl text-purple-400">
-              <Film className="w-5 h-5" />
+              <HardDrive className="w-5 h-5" />
             </div>
           </div>
 
           <div className="flex items-baseline space-x-2">
-            <span className="text-3xl font-black text-slate-100">{totalRecordings}</span>
-            <span className="text-xs text-slate-400 font-medium">clipes gravados</span>
+            <span className="text-3xl font-black text-slate-100">{totalStorageGb}</span>
+            <span className="text-sm font-bold text-purple-400">GB Utilizados</span>
           </div>
 
           <div className="space-y-1.5 pt-1 border-t border-slate-800/80 text-xs">
             <div className="flex items-center justify-between">
-              <span className="text-slate-400">Espaço Utilizado:</span>
-              <span className="font-mono font-bold text-purple-300">{estimatedStorageGb} GB</span>
+              <span className="text-slate-400">Dias de Gravação:</span>
+              <span className="font-bold text-slate-100">{recordingDaysCount} Dias</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-slate-400">Retenção Estimada:</span>
-              <span className="font-bold text-slate-200">{estimatedDaysRetention} Dias de Histórico</span>
+              <span className="text-slate-400">Última Gravação:</span>
+              <span className="font-mono text-slate-300 text-[11px] truncate max-w-[140px]" title={lastRecordingDateStr}>
+                {lastRecordingDateStr}
+              </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Qualidade Padrão:</span>
@@ -354,7 +440,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* LEFT 2 COLS: MONITOR DE CÂMERAS & DIAGNÓSTICO EM TEMPO REAL */}
         <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-xl">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 gap-2">
             <div className="flex items-center space-x-2">
               <Radio className="w-5 h-5 text-emerald-400" />
               <h3 className="font-bold text-slate-100 text-sm">
@@ -362,13 +448,32 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </h3>
             </div>
 
-            <button
-              onClick={() => onNavigateTab('camera-admin')}
-              className="text-xs font-bold text-emerald-400 hover:underline flex items-center space-x-1"
-            >
-              <span>Gerenciar Câmeras</span>
-              <ArrowUpRight className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center space-x-3">
+              {lastHealthCheckTime && (
+                <span className="text-[10px] text-slate-400 flex items-center space-x-1 bg-slate-950 px-2 py-1 rounded border border-slate-800">
+                  <Clock className="w-3 h-3 text-emerald-400" />
+                  <span>Diagnóstico Auto (45s): {lastHealthCheckTime}</span>
+                </span>
+              )}
+
+              <button
+                onClick={runBatchHealthCheck}
+                disabled={isHealthChecking}
+                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 disabled:opacity-50"
+                title="Executar Diagnóstico Automático em Todas as Câmeras"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isHealthChecking ? 'animate-spin' : ''}`} />
+                <span>{isHealthChecking ? 'Verificando...' : 'Testar Todas'}</span>
+              </button>
+
+              <button
+                onClick={() => onNavigateTab('camera-admin')}
+                className="text-xs font-bold text-emerald-400 hover:underline flex items-center space-x-1"
+              >
+                <span>Gerenciar</span>
+                <ArrowUpRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
 
           {/* Camera Status List */}

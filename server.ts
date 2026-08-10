@@ -2723,6 +2723,63 @@ async function startServer() {
     });
   });
 
+  // Helper to update memory status of camera
+  const updateMemoryCamStatus = (key: string, isSuccess: boolean) => {
+    const cam = cameras.find((c) => (c.streamKey || c.id) === key || c.id === key || c.id === `cam-${key}`);
+    if (cam) {
+      cam.status = isSuccess ? 'ONLINE' : 'OFFLINE';
+      saveToLocalFile();
+    }
+  };
+
+  // Endpoint para Diagnóstico Automático em Lote de Todas as Câmeras
+  app.get('/api/cameras/health-check', async (req, res) => {
+    try {
+      const reqUser = getUserFromReq(req);
+      const userCams = filterCamerasForUser(reqUser, cameras);
+
+      await Promise.all(userCams.map(async (cam) => {
+        const key = cam.streamKey || cam.id;
+        const cleanKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const hlsFile = path.join('/tmp/hls', `${cleanKey}.m3u8`);
+
+        let isOnline = false;
+        if (fs.existsSync(hlsFile)) {
+          try {
+            const stat = fs.statSync(hlsFile);
+            if (Date.now() - stat.mtimeMs < 25000) {
+              isOnline = true;
+            }
+          } catch (e) {}
+        }
+
+        if (!isOnline) {
+          const logs = lastFfmpegLogs.get(cleanKey) || lastFfmpegLogs.get(key) || [];
+          const logsJoined = logs.join(' ');
+          if (
+            logsJoined.includes('Stream mapping') ||
+            logsJoined.includes('Press [q] to stop') ||
+            logsJoined.includes('Output #0, hls') ||
+            logsJoined.includes('frame=')
+          ) {
+            isOnline = true;
+          }
+        }
+
+        if (cam.isLiveWebcam || (cam.videoStreamUrl && !cam.rtspUrl && !cam.rtmpUrl)) {
+          isOnline = true;
+        }
+
+        cam.status = isOnline ? 'ONLINE' : 'OFFLINE';
+      }));
+
+      saveToLocalFile();
+      return res.json(userCams);
+    } catch (err: any) {
+      return res.status(500).json({ error: 'Erro no diagnóstico em lote' });
+    }
+  });
+
   // Endpoint para Teste / Diagnóstico de Conexão da Câmera (RTSP/RTMP)
   app.post('/api/cameras/test-connection', async (req, res) => {
     const { protocol, rtspUrl, streamKey } = req.body;
@@ -2748,6 +2805,7 @@ async function startServer() {
     if (targetProtocol === 'RTSP') {
       const targetRtsp = rtspUrl ? rtspUrl.trim() : '';
       if (!targetRtsp) {
+        updateMemoryCamStatus(key, false);
         return res.json({
           success: false,
           protocol: 'RTSP',
@@ -2772,6 +2830,7 @@ async function startServer() {
       const isFfmpegConnected = logsJoined.includes('Stream mapping') || logsJoined.includes('Press [q] to stop') || logsJoined.includes('Output #0, hls') || logsJoined.includes('frame=');
 
       if (isHlsActive || isFfmpegConnected) {
+        updateMemoryCamStatus(key, true);
         return res.json({
           success: true,
           protocol: 'RTSP',
@@ -2798,6 +2857,7 @@ async function startServer() {
         ]);
       } catch (e: any) {
         console.error('[FFprobe Spawn Error]:', e.message || e);
+        updateMemoryCamStatus(key, true);
         return res.json({
           status: 'ONLINE',
           message: 'Câmera respondendo via ping IP local/RTSP.',
@@ -2821,6 +2881,7 @@ async function startServer() {
           const currentLogs = lastFfmpegLogs.get(key) || logs;
           const currentLogsJoined = currentLogs.join(' ');
           if (currentLogsJoined.includes('Stream mapping') || currentLogsJoined.includes('Press [q] to stop') || fs.existsSync(hlsFile)) {
+            updateMemoryCamStatus(key, true);
             return res.json({
               success: true,
               protocol: 'RTSP',
@@ -2832,6 +2893,7 @@ async function startServer() {
             });
           }
 
+          updateMemoryCamStatus(key, false);
           return res.json({
             success: false,
             protocol: 'RTSP',
@@ -2856,6 +2918,7 @@ async function startServer() {
         const currentLogsJoined = currentLogs.join(' ');
 
         if (code === 0 || currentLogsJoined.includes('Stream mapping') || currentLogsJoined.includes('Press [q] to stop') || fs.existsSync(hlsFile)) {
+          updateMemoryCamStatus(key, true);
           return res.json({
             success: true,
             protocol: 'RTSP',
@@ -2867,6 +2930,7 @@ async function startServer() {
             logs: currentLogs,
           });
         } else {
+          updateMemoryCamStatus(key, false);
           return res.json({
             success: false,
             protocol: 'RTSP',
@@ -2911,6 +2975,8 @@ async function startServer() {
         currentLogsJoined.includes('Press [q] to stop') ||
         currentLogsJoined.includes('Output #0, hls') ||
         currentLogsJoined.includes('frame=');
+
+      updateMemoryCamStatus(key, isConnected);
 
       if (isConnected) {
         return res.json({
