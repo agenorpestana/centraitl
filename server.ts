@@ -7,7 +7,18 @@ import crypto from 'crypto';
 import pg from 'pg';
 const { Pool } = pg;
 import initSqlJs from 'sql.js';
-import { spawn, ChildProcess, execSync } from 'child_process';
+import { spawn, exec, ChildProcess } from 'child_process';
+
+function execAsync(cmd: string, timeoutMs = 5000): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const proc = exec(cmd, { timeout: timeoutMs }, () => resolve());
+      proc.on('error', () => resolve());
+    } catch (e) {
+      resolve();
+    }
+  });
+}
 import { createServer as createViteServer } from 'vite';
 
 // Helper function to hash passwords securely using PBKDF2 SHA-256 with salt
@@ -46,37 +57,16 @@ function getValidStreamSource(cam: any): string {
   const key = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
 
-  // If protocol is RTMP, or if cam has rtmpUrl/fullRtmpUrl and no rtspUrl, prioritize RTMP
-  if (cam.protocol === 'RTMP' || (!cam.rtspUrl && (cam.rtmpUrl || cam.fullRtmpUrl))) {
-    const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
-    for (const candidate of rtmpCandidates) {
-      let str = candidate.trim();
-      if (str.startsWith('rtmp://')) {
-        if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
-          str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
-        }
-        return str;
-      }
-      if (str.startsWith('http://') || str.startsWith('https://')) {
-        let rtmpConverted = str
-          .replace(/^https?:\/\//, 'rtmp://')
-          .replace(/\.m3u8$/, '');
-        if (!rtmpConverted.includes(':1935') && !rtmpConverted.includes(':80')) {
-          rtmpConverted = rtmpConverted.replace(/(rtmp:\/\/[^/:]+)(\/.*)?$/, '$1:1935$2');
-        }
-        return rtmpConverted;
-      }
+  // Prioritize RTSP if camera protocol is RTSP or has rtspUrl starting with rtsp://
+  if (cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'))) {
+    if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
+      return cam.rtspUrl.trim();
     }
-    return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/cam_${cleanKey}`;
   }
 
-  if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
-    return cam.rtspUrl.trim();
-  }
-
-  const candidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
-
-  for (const candidate of candidates) {
+  // Prioritize RTMP if camera protocol is RTMP or has rtmpUrl
+  const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
+  for (const candidate of rtmpCandidates) {
     let str = candidate.trim();
     if (str.startsWith('rtmp://')) {
       if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
@@ -85,20 +75,22 @@ function getValidStreamSource(cam: any): string {
       return str;
     }
     if (str.startsWith('http://') || str.startsWith('https://')) {
-      let rtmpConverted = str
-        .replace(/^https?:\/\//, 'rtmp://')
-        .replace(/\.m3u8$/, '');
-      if (!rtmpConverted.includes(':1935') && !rtmpConverted.includes(':80')) {
-        rtmpConverted = rtmpConverted.replace(/(rtmp:\/\/[^/:]+)(\/.*)?$/, '$1:1935$2');
-      }
-      return rtmpConverted;
+      return str;
     }
   }
 
-  if (cam.rtspUrl) return cam.rtspUrl.trim();
+  if (cam.videoStreamUrl && cam.videoStreamUrl.trim()) {
+    return cam.videoStreamUrl.trim();
+  }
+
+  if (cam.rtspUrl && cam.rtspUrl.trim()) {
+    return cam.rtspUrl.trim();
+  }
 
   return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/cam_${cleanKey}`;
 }
+
+const cameraProcessStartTimes = new Map<string, number>();
 
 function startCameraRtspStream(cam: Camera, forceRestart = false) {
   if (!cam) return;
@@ -121,7 +113,6 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
   if (!forceRestart && activeFfmpegProcesses.has(key) && activeRtspUrls.get(key) === streamSource) {
     const existingProc = activeFfmpegProcesses.get(key);
     if (existingProc && existingProc.exitCode === null && !existingProc.killed) {
-      console.log(`[FFmpeg ITL] Câmera '${cam.name}' (${key}) já possui processo FFmpeg ativo. Mantendo fluxo.`);
       return;
     }
   }
@@ -139,10 +130,17 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
   const logList: string[] = [`[${new Date().toLocaleTimeString()}] Conectando ao fluxo: ${streamSource}`];
   lastFfmpegLogs.set(key, logList);
   activeRtspUrls.set(key, streamSource);
+  cameraProcessStartTimes.set(key, Date.now());
 
   const ffmpegArgs: string[] = [];
+  ffmpegArgs.push('-fflags', '+nobuffer+discardcorrupt', '-flags', 'low_delay');
+
   if (streamSource.startsWith('rtsp://')) {
-    ffmpegArgs.push('-rtsp_transport', 'tcp', '-stimeout', '10000000');
+    ffmpegArgs.push(
+      '-rtsp_transport', 'tcp',
+      '-stimeout', '10000000',
+      '-use_wallclock_as_timestamps', '1'
+    );
   } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
     ffmpegArgs.push(
       '-reconnect', '1',
@@ -150,13 +148,11 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5'
     );
-  } else if (streamSource.startsWith('rtmp://')) {
-    ffmpegArgs.push('-rw_timeout', '10000000');
   }
 
   ffmpegArgs.push(
-    '-analyzeduration', '2000000',
-    '-probesize', '2000000',
+    '-analyzeduration', '1000000',
+    '-probesize', '1000000',
     '-i', streamSource,
     '-map', '0:v:0?',
     '-c:v', 'copy',
@@ -170,56 +166,58 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
     hlsPath
   );
 
-    let proc: ReturnType<typeof spawn> | null = null;
-    try {
-      proc = spawn('ffmpeg', ffmpegArgs);
+  let proc: ReturnType<typeof spawn> | null = null;
+  try {
+    proc = spawn('ffmpeg', ffmpegArgs);
 
-      proc.stderr.on('data', (data) => {
-        const line = data.toString().trim();
-        if (line) {
-          logList.push(line);
-          if (logList.length > 30) logList.shift();
-        }
-      });
+    proc.stderr.on('data', (data) => {
+      const line = data.toString().trim();
+      if (line) {
+        logList.push(line);
+        if (logList.length > 30) logList.shift();
+      }
+    });
 
-      proc.on('exit', (code) => {
-        console.log(`[FFmpeg ITL] Processo da câmera '${key}' finalizou com código ${code}`);
-        logList.push(`Processo finalizado com código ${code}`);
-        activeFfmpegProcesses.delete(key);
-        activeRtspUrls.delete(key);
+    proc.on('exit', (code) => {
+      const runTimeMs = Date.now() - (cameraProcessStartTimes.get(key) || Date.now());
+      console.log(`[FFmpeg ITL] Processo da câmera '${key}' finalizou com código ${code} após ${Math.round(runTimeMs / 1000)}s`);
+      logList.push(`Processo finalizado com código ${code}`);
+      activeFfmpegProcesses.delete(key);
+      activeRtspUrls.delete(key);
 
-        // Auto-reconnect supervisor for camera streams experiencing temporary lag or disconnection
-        if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
-          setTimeout(() => {
-            if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
-            const currentProc = activeFfmpegProcesses.get(key);
-            if (!currentProc || currentProc.exitCode !== null || currentProc.killed) {
-              console.log(`[FFmpeg ITL Auto-Reconnect] Reconectando transmissão HLS da câmera '${cam.name}' (${key}) após lag/queda...`);
-              startCameraRtspStream(cam);
-            }
-          }, 2000);
-        }
-      });
-
-      proc.on('error', (err) => {
-        console.log(`[FFmpeg ITL Warning] Falha na inicialização FFmpeg para '${key}': ${err.message}`);
-        logList.push(`Erro FFmpeg: ${err.message}`);
-        activeFfmpegProcesses.delete(key);
-        activeRtspUrls.delete(key);
-
-        if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
-          setTimeout(() => {
-            if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
+      // Auto-reconnect supervisor only if camera wasn't deleted
+      if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
+        const delay = runTimeMs < 4000 ? 8000 : 2500; // Wait longer if process failed quickly to prevent loop
+        setTimeout(() => {
+          if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
+          const currentProc = activeFfmpegProcesses.get(key);
+          if (!currentProc || currentProc.exitCode !== null || currentProc.killed) {
+            console.log(`[FFmpeg ITL Auto-Reconnect] Reconectando transmissão HLS da câmera '${cam.name}' (${key})...`);
             startCameraRtspStream(cam);
-          }, 3000);
-        }
-      });
+          }
+        }, delay);
+      }
+    });
 
-      activeFfmpegProcesses.set(key, proc);
-    } catch (spawnErr: any) {
-      console.error(`[FFmpeg ITL Spawn Error] Não foi possível executar FFmpeg para '${key}':`, spawnErr.message || spawnErr);
-    }
+    proc.on('error', (err) => {
+      console.log(`[FFmpeg ITL Warning] Falha na inicialização FFmpeg para '${key}': ${err.message}`);
+      logList.push(`Erro FFmpeg: ${err.message}`);
+      activeFfmpegProcesses.delete(key);
+      activeRtspUrls.delete(key);
+
+      if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
+        setTimeout(() => {
+          if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
+          startCameraRtspStream(cam);
+        }, 8000);
+      }
+    });
+
+    activeFfmpegProcesses.set(key, proc);
+  } catch (spawnErr: any) {
+    console.error(`[FFmpeg ITL Spawn Error] Não foi possível executar FFmpeg para '${key}':`, spawnErr.message || spawnErr);
   }
+}
 
 function stopCameraRtspStream(streamKey: string) {
   if (!streamKey) return;
@@ -2425,9 +2423,7 @@ async function startServer() {
 
       if (validFile) {
         // Extract real snapshot image from the captured MP4 video!
-        try {
-          execSync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`, { stdio: 'ignore' });
-        } catch (e) {}
+        execAsync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`).catch(() => {});
 
         const hasThumb = fs.existsSync(thumbPath);
         const thumbUrl = hasThumb
@@ -2738,33 +2734,29 @@ async function startServer() {
         (c.streamKey && c.streamKey.endsWith(cleanKey))
     );
 
-    // If file doesn't exist and camera is found, ensure FFmpeg process is started on demand
-    if (!fs.existsSync(targetFile) && matchedCam) {
-      startCameraRtspStream(matchedCam);
+    // Check alternate dash/underscore
+    if (!fs.existsSync(targetFile)) {
+      const altSubPath = subPath.includes('cam-')
+        ? subPath.replace('cam-', 'cam_')
+        : (subPath.includes('cam_') ? subPath.replace('cam_', 'cam-') : subPath);
+      const altFile = path.join(hlsDir, altSubPath);
+      if (fs.existsSync(altFile)) {
+        targetFile = altFile;
+      }
     }
 
-    // Se o arquivo ainda não existe (primeiro segmento sendo gerado em ~1-2s), aguarda até 3.5s
-    if (!fs.existsSync(targetFile)) {
-      for (let i = 0; i < 14; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        if (fs.existsSync(targetFile)) break;
-        // Check alternate dash/underscore
-        const altSubPath = subPath.includes('cam-')
-          ? subPath.replace('cam-', 'cam_')
-          : (subPath.includes('cam_') ? subPath.replace('cam_', 'cam-') : subPath);
-        const altFile = path.join(hlsDir, altSubPath);
-        if (fs.existsSync(altFile)) {
-          targetFile = altFile;
-          break;
-        }
-      }
+    // Ensure FFmpeg process is started on demand if file doesn't exist
+    if (!fs.existsSync(targetFile) && matchedCam) {
+      startCameraRtspStream(matchedCam);
     }
 
     if (fs.existsSync(targetFile) && fs.statSync(targetFile).isFile()) {
       if (targetFile.endsWith('.ts')) {
         res.setHeader('Content-Type', 'video/mp2t');
+        res.setHeader('Cache-Control', 'max-age=10');
       } else if (targetFile.endsWith('.m3u8')) {
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       }
       if (req.method === 'HEAD') {
         return res.status(200).end();
@@ -2772,9 +2764,9 @@ async function startServer() {
       return res.sendFile(targetFile);
     }
 
-    // Se a câmera não estiver transmitindo no momento (arquivo HLS ausente):
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     return res.status(404).json({
-      error: 'Câmera offline ou sem transmissão ativa no momento',
+      error: 'Câmera offline ou gerando segmento HLS',
       streamKey: cleanKey,
     });
   });
@@ -3040,8 +3032,8 @@ async function startServer() {
 
       startCameraRtspStream(matchedCam as Camera, true);
 
-      // Wait up to 3.5s to see if HLS is generated or FFmpeg receives frames
-      for (let i = 0; i < 14; i++) {
+      // Wait up to 1.5s to see if HLS is generated or FFmpeg receives frames
+      for (let i = 0; i < 6; i++) {
         if (fs.existsSync(hlsFile)) {
           isHlsActive = true;
           break;
@@ -3147,8 +3139,32 @@ async function startServer() {
 
   // Endpoint para Métricas de CPU, Memória e Desempenho do Servidor ITL
   let lastCpuTimes: { user: number; system: number; idle: number } | null = null;
-  let lastCpuCheckTime = 0;
-  let cachedCpuPercent = 14.2;
+  let cachedCpuPercent = 12.4;
+
+  setInterval(() => {
+    try {
+      const cpus = os.cpus();
+      if (cpus && cpus.length > 0) {
+        let totalUser = 0, totalSystem = 0, totalIdle = 0;
+        for (const cpu of cpus) {
+          totalUser += cpu.times.user;
+          totalSystem += cpu.times.sys;
+          totalIdle += cpu.times.idle;
+        }
+        if (lastCpuTimes) {
+          const deltaUser = totalUser - lastCpuTimes.user;
+          const deltaSystem = totalSystem - lastCpuTimes.system;
+          const deltaIdle = totalIdle - lastCpuTimes.idle;
+          const deltaTotal = deltaUser + deltaSystem + deltaIdle;
+          if (deltaTotal > 0) {
+            const rawPerc = ((deltaUser + deltaSystem) / deltaTotal) * 100;
+            cachedCpuPercent = Math.min(100, Math.max(0.5, Math.round(rawPerc * 10) / 10));
+          }
+        }
+        lastCpuTimes = { user: totalUser, system: totalSystem, idle: totalIdle };
+      }
+    } catch (e) {}
+  }, 1500);
 
   app.get('/api/system/metrics', (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -3764,7 +3780,7 @@ async function startServer() {
             const ffmpegArgs = [];
             if (streamUrl.startsWith('rtsp://')) ffmpegArgs.push('-rtsp_transport', 'tcp');
             ffmpegArgs.push('-y', '-ss', '00:00:01', '-i', streamUrl, '-vframes', '1', '-q:v', '3', snapPath);
-            execSync(`ffmpeg ${ffmpegArgs.join(' ')}`, { stdio: 'ignore', timeout: 5000 });
+            await execAsync(`ffmpeg ${ffmpegArgs.join(' ')}`);
             try {
               const pubSnapPath = path.join(publicSnapshotsDir, snapFileName);
               if (fs.existsSync(snapPath)) fs.copyFileSync(snapPath, pubSnapPath);
@@ -3860,7 +3876,7 @@ async function startServer() {
 
   // Background 30-minute auto frame extraction for active streaming cameras
   setInterval(() => {
-    cameras.forEach((cam) => {
+    cameras.forEach(async (cam) => {
       if (!cam.id || cam.status === 'OFFLINE') return;
       const streamUrl = getValidStreamSource(cam);
       if (!streamUrl || streamUrl.includes('placeholder')) return;
@@ -3871,7 +3887,7 @@ async function startServer() {
         const ffmpegArgs = [];
         if (streamUrl.startsWith('rtsp://')) ffmpegArgs.push('-rtsp_transport', 'tcp');
         ffmpegArgs.push('-y', '-ss', '00:00:01', '-i', streamUrl, '-vframes', '1', '-q:v', '3', snapPath);
-        execSync(`ffmpeg ${ffmpegArgs.join(' ')}`, { stdio: 'ignore', timeout: 5000 });
+        await execAsync(`ffmpeg ${ffmpegArgs.join(' ')}`);
 
         if (fs.existsSync(snapPath)) {
           try {
@@ -3988,7 +4004,7 @@ async function startServer() {
           const thumbFileName = `thumb_real_${cleanCamId}_${timestamp}.jpg`;
           const thumbPath = path.join(recordingsDir, thumbFileName);
           try {
-            execSync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`, { stdio: 'ignore' });
+            execAsync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`).catch(() => {});
             if (fs.existsSync(thumbPath)) {
               thumbUrl = `/recordings/${thumbFileName}`;
             }
