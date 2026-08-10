@@ -46,6 +46,30 @@ function getValidStreamSource(cam: any): string {
   const key = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
 
+  // If protocol is RTMP, or if cam has rtmpUrl/fullRtmpUrl and no rtspUrl, prioritize RTMP
+  if (cam.protocol === 'RTMP' || (!cam.rtspUrl && (cam.rtmpUrl || cam.fullRtmpUrl))) {
+    const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
+    for (const candidate of rtmpCandidates) {
+      let str = candidate.trim();
+      if (str.startsWith('rtmp://')) {
+        if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
+          str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
+        }
+        return str;
+      }
+      if (str.startsWith('http://') || str.startsWith('https://')) {
+        let rtmpConverted = str
+          .replace(/^https?:\/\//, 'rtmp://')
+          .replace(/\.m3u8$/, '');
+        if (!rtmpConverted.includes(':1935') && !rtmpConverted.includes(':80')) {
+          rtmpConverted = rtmpConverted.replace(/(rtmp:\/\/[^/:]+)(\/.*)?$/, '$1:1935$2');
+        }
+        return rtmpConverted;
+      }
+    }
+    return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/cam_${cleanKey}`;
+  }
+
   if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
     return cam.rtspUrl.trim();
   }
@@ -70,6 +94,8 @@ function getValidStreamSource(cam: any): string {
       return rtmpConverted;
     }
   }
+
+  if (cam.rtspUrl) return cam.rtspUrl.trim();
 
   return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/cam_${cleanKey}`;
 }
@@ -117,13 +143,15 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
   const ffmpegArgs: string[] = [];
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push('-rtsp_transport', 'tcp', '-stimeout', '10000000');
-  } else if (streamSource.startsWith('rtmp://') || streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
+  } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
     ffmpegArgs.push(
       '-reconnect', '1',
       '-reconnect_at_eof', '1',
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5'
     );
+  } else if (streamSource.startsWith('rtmp://')) {
+    ffmpegArgs.push('-rw_timeout', '10000000');
   }
 
   ffmpegArgs.push(
@@ -2820,15 +2848,9 @@ async function startServer() {
           }
         }
 
-        if (!isOnline && (cam.rtspUrl || cam.rtmpUrl || cam.videoStreamUrl || cam.isLiveWebcam || cam.isDemo)) {
-          if (cam.rtspUrl && cam.rtspUrl.startsWith('rtsp://')) {
-            startCameraRtspStream(cam);
-            isOnline = true;
-          } else if (cam.isLiveWebcam || cam.isDemo || (cam.videoStreamUrl && !cam.rtspUrl && !cam.rtmpUrl)) {
-            isOnline = true;
-          } else if (cam.rtmpUrl || cam.fullRtmpUrl) {
-            isOnline = true;
-          }
+        if (!isOnline && (cam.rtspUrl || cam.rtmpUrl || cam.fullRtmpUrl || cam.videoStreamUrl || cam.isLiveWebcam || cam.isDemo)) {
+          startCameraRtspStream(cam);
+          isOnline = true;
         }
 
         cam.status = isOnline ? 'ONLINE' : 'OFFLINE';
@@ -3129,6 +3151,9 @@ async function startServer() {
   let cachedCpuPercent = 14.2;
 
   app.get('/api/system/metrics', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     try {
       const cpus = os.cpus();
       const totalMem = os.totalmem();
