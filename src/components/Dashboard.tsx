@@ -1,5 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from 'recharts';
+import {
   Activity,
   Video,
   Users,
@@ -29,6 +38,21 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { Camera, CameraStatus, CloudRecording, User, ActivityLog, Invoice } from '../types';
+
+interface SystemMetrics {
+  cpuPercent: number;
+  cpuCores: number;
+  cpuModel: string;
+  memTotalGb: number;
+  memUsedGb: number;
+  memFreeGb: number;
+  memPercent: number;
+  processRssMb: number;
+  processHeapMb: number;
+  uptimeSec: number;
+  activeStreams: number;
+  timestamp: string;
+}
 
 interface DashboardProps {
   cameras: Camera[];
@@ -60,6 +84,62 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [testResult, setTestResult] = useState<{ id: string; success: boolean; message: string } | null>(null);
   const [isHealthChecking, setIsHealthChecking] = useState(false);
   const [lastHealthCheckTime, setLastHealthCheckTime] = useState<string>('');
+
+  const [sysMetrics, setSysMetrics] = useState<SystemMetrics>({
+    cpuPercent: 0,
+    cpuCores: typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 8,
+    cpuModel: 'Processador de Servidor ITL Cloud',
+    memTotalGb: 16.0,
+    memUsedGb: 0,
+    memFreeGb: 0,
+    memPercent: 0,
+    processRssMb: 0,
+    processHeapMb: 0,
+    uptimeSec: 3600,
+    activeStreams: cameras.filter((c) => c.status === 'ONLINE').length,
+    timestamp: new Date().toLocaleTimeString('pt-BR'),
+  });
+
+  const [sysHistory, setSysHistory] = useState<
+    Array<{ time: string; cpu: number; ram: number; processRam: number }>
+  >([]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchSystemMetrics = async () => {
+      try {
+        const res = await fetch(`/api/system/metrics?t=${Date.now()}`, { cache: 'no-store' });
+        if (res.ok) {
+          const data: SystemMetrics = await res.json();
+          if (isMounted && data && typeof data.cpuPercent === 'number') {
+            setSysMetrics(data);
+            const timeLabel =
+              data.timestamp ||
+              new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            setSysHistory((prev) => {
+              const updated = [
+                ...prev,
+                {
+                  time: timeLabel,
+                  cpu: data.cpuPercent || 0,
+                  ram: data.memPercent || 0,
+                  processRam: data.processRssMb || 0,
+                },
+              ];
+              return updated.slice(-16);
+            });
+          }
+        }
+      } catch (e) {}
+    };
+
+    fetchSystemMetrics();
+    const sysInterval = setInterval(fetchSystemMetrics, 3500);
+    return () => {
+      isMounted = false;
+      clearInterval(sysInterval);
+    };
+  }, []);
 
   // Compute camera metrics
   const totalCameras = cameras.length;
@@ -432,6 +512,185 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <span className="text-slate-400">Qualidade Padrão:</span>
               <span className="font-bold text-emerald-400">Full HD 1080p</span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* SEÇÃO DE PROCESSAMENTO & DESEMPENHO EM TEMPO REAL (CPU & MEMÓRIA) */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 gap-2">
+          <div className="flex items-center space-x-2.5">
+            <div className="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400">
+              <Cpu className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
+                Processamento do Servidor (CPU & Memória RAM)
+                <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-mono px-2 py-0.5 rounded-full">
+                  Ao Vivo
+                </span>
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                Monitoramento contínuo de recursos computacionais e transcodificação FFmpeg
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-3 text-xs font-mono text-slate-400">
+            <div className="flex items-center space-x-1.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+              <span className="text-slate-300">Atualizando a cada 4s</span>
+            </div>
+          </div>
+        </div>
+
+        {/* METRICS SUMMARY STRIP */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 space-y-1">
+            <div className="flex items-center justify-between text-[11px] text-slate-400 font-medium">
+              <span>Uso da CPU</span>
+              <Cpu className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
+            <div className="flex items-baseline space-x-2">
+              <span className="text-2xl font-black text-emerald-400">
+                {sysMetrics ? `${sysMetrics.cpuPercent}%` : '---'}
+              </span>
+              <span className="text-[10px] font-mono text-slate-400">
+                ({sysMetrics?.cpuCores || 4} Cores)
+              </span>
+            </div>
+            <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden">
+              <div
+                className="bg-emerald-500 h-full transition-all duration-500"
+                style={{ width: `${Math.min(100, sysMetrics?.cpuPercent || 0)}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 space-y-1">
+            <div className="flex items-center justify-between text-[11px] text-slate-400 font-medium">
+              <span>Uso da Memória RAM</span>
+              <HardDrive className="w-3.5 h-3.5 text-cyan-400" />
+            </div>
+            <div className="flex items-baseline space-x-2">
+              <span className="text-2xl font-black text-cyan-400">
+                {sysMetrics ? `${sysMetrics.memPercent}%` : '---'}
+              </span>
+              <span className="text-[10px] font-mono text-slate-400">
+                ({sysMetrics?.memUsedGb || 0} / {sysMetrics?.memTotalGb || 0} GB)
+              </span>
+            </div>
+            <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden">
+              <div
+                className="bg-cyan-500 h-full transition-all duration-500"
+                style={{ width: `${Math.min(100, sysMetrics?.memPercent || 0)}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 space-y-1">
+            <div className="flex items-center justify-between text-[11px] text-slate-400 font-medium">
+              <span>Memória do Processo</span>
+              <Zap className="w-3.5 h-3.5 text-purple-400" />
+            </div>
+            <div className="flex items-baseline space-x-2">
+              <span className="text-2xl font-black text-purple-400">
+                {sysMetrics ? `${sysMetrics.processRssMb}` : '---'}
+              </span>
+              <span className="text-[10px] font-mono text-purple-300">MB (RSS)</span>
+            </div>
+            <p className="text-[10px] text-slate-400 truncate font-mono">
+              Heap: {sysMetrics?.processHeapMb || 0} MB
+            </p>
+          </div>
+
+          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 space-y-1">
+            <div className="flex items-center justify-between text-[11px] text-slate-400 font-medium">
+              <span>Transmissões Ativas</span>
+              <Video className="w-3.5 h-3.5 text-amber-400" />
+            </div>
+            <div className="flex items-baseline space-x-2">
+              <span className="text-2xl font-black text-amber-400">
+                {sysMetrics ? sysMetrics.activeStreams : onlineCameras.length}
+              </span>
+              <span className="text-[10px] font-mono text-amber-300">FFmpeg / HLS</span>
+            </div>
+            <p className="text-[10px] text-slate-400 truncate font-mono">
+              Uptime: {sysMetrics ? `${Math.floor(sysMetrics.uptimeSec / 3600)}h ${Math.floor((sysMetrics.uptimeSec % 3600) / 60)}m` : '---'}
+            </p>
+          </div>
+        </div>
+
+        {/* REALTIME AREA CHART */}
+        <div className="pt-2">
+          <div className="flex items-center justify-between mb-2 text-xs text-slate-400">
+            <span className="font-bold text-slate-300 flex items-center gap-2">
+              <Activity className="w-4 h-4 text-emerald-400" /> Histórico de Processamento em Tempo Real
+            </span>
+            <div className="flex items-center space-x-4">
+              <span className="flex items-center space-x-1.5 text-emerald-400 font-medium">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
+                <span>CPU (%)</span>
+              </span>
+              <span className="flex items-center space-x-1.5 text-cyan-400 font-medium">
+                <span className="w-2.5 h-2.5 rounded-full bg-cyan-500 inline-block" />
+                <span>RAM (%)</span>
+              </span>
+            </div>
+          </div>
+
+          <div className="h-52 w-full bg-slate-950/60 p-2 rounded-xl border border-slate-800/60">
+            {sysHistory.length < 2 ? (
+              <div className="h-full flex items-center justify-center text-slate-500 text-xs font-mono space-x-2">
+                <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+                <span>Coletando métricas do servidor...</span>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={sysHistory} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                    </linearGradient>
+                    <linearGradient id="ramGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.4} />
+                      <stop offset="95%" stopColor="#06b6d4" stopOpacity={0.0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                  <XAxis dataKey="time" stroke="#64748b" fontSize={10} tickLine={false} />
+                  <YAxis domain={[0, 100]} stroke="#64748b" fontSize={10} tickLine={false} unit="%" />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#020617',
+                      borderColor: '#334155',
+                      borderRadius: '0.75rem',
+                      color: '#f8fafc',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="cpu"
+                    name="CPU (%)"
+                    stroke="#10b981"
+                    strokeWidth={2}
+                    fillOpacity={1}
+                    fill="url(#cpuGradient)"
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="ram"
+                    name="Memória RAM (%)"
+                    stroke="#06b6d4"
+                    strokeWidth={2}
+                    fillOpacity={1}
+                    fill="url(#ramGradient)"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
       </div>
