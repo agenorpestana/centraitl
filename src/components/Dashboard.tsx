@@ -86,15 +86,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [lastHealthCheckTime, setLastHealthCheckTime] = useState<string>('');
 
   const [sysMetrics, setSysMetrics] = useState<SystemMetrics>({
-    cpuPercent: 14.2,
-    cpuCores: 4,
-    cpuModel: 'Processador de Servidor ITL',
-    memTotalGb: 8.0,
-    memUsedGb: 2.1,
-    memFreeGb: 5.9,
-    memPercent: 26.2,
-    processRssMb: 185.4,
-    processHeapMb: 72.8,
+    cpuPercent: 0,
+    cpuCores: typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 8,
+    cpuModel: 'Processador de Servidor ITL Cloud',
+    memTotalGb: 16.0,
+    memUsedGb: 0,
+    memFreeGb: 0,
+    memPercent: 0,
+    processRssMb: 0,
+    processHeapMb: 0,
     uptimeSec: 3600,
     activeStreams: cameras.filter((c) => c.status === 'ONLINE').length,
     timestamp: new Date().toLocaleTimeString('pt-BR'),
@@ -102,11 +102,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const [sysHistory, setSysHistory] = useState<
     Array<{ time: string; cpu: number; ram: number; processRam: number }>
-  >([
-    { time: '12:00:00', cpu: 12.1, ram: 25.4, processRam: 180.2 },
-    { time: '12:00:04', cpu: 14.5, ram: 26.0, processRam: 182.1 },
-    { time: '12:00:08', cpu: 13.8, ram: 26.2, processRam: 185.4 },
-  ]);
+  >([]);
 
   useEffect(() => {
     let isMounted = true;

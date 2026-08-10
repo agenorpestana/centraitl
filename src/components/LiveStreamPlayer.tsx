@@ -284,7 +284,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const handleVideoError = () => {
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
     if (!useMjpegStream) {
-      console.log(`[Stream Player] HLS indisponível para ${camera.protocol} (${camera.name}). Alternando para MJPEG...`);
+      console.log(`[Stream Player] Falha HLS para ${camera.protocol} (${camera.name}). Alternando para MJPEG...`);
       setUseMjpegStream(true);
       setConnectionState('LOADING');
       return;
@@ -298,8 +298,10 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   };
 
   const handleRetryConnection = () => {
-    connectStream();
+    setUseMjpegStream(false);
+    setConnectionState('LOADING');
     setRetryCount((prev) => prev + 1);
+    connectStream();
     if (videoRef.current) {
       videoRef.current.load();
     }
@@ -341,7 +343,15 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           });
           hlsInstance.on(HlsClass.Events.ERROR, (_: any, data: any) => {
             if (data.fatal) {
-              handleVideoError();
+              if (data.type === HlsClass.ErrorTypes.NETWORK_ERROR) {
+                console.log(`[HLS Net Recovery] Tentando reconectar HLS para ${camera.name}...`);
+                try { hlsInstance.startLoad(); } catch (e) { handleVideoError(); }
+              } else if (data.type === HlsClass.ErrorTypes.MEDIA_ERROR) {
+                console.log(`[HLS Media Recovery] Recuperando mídia HLS para ${camera.name}...`);
+                try { hlsInstance.recoverMediaError(); } catch (e) { handleVideoError(); }
+              } else {
+                handleVideoError();
+              }
             }
           });
         } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
