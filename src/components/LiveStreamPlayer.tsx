@@ -78,7 +78,23 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const [tempUrlInput, setTempUrlInput] = useState(() => cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || videoUrl));
 
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isVisible, setIsVisible] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // IntersectionObserver to pause/stop stream when scrolled out of view
+  useEffect(() => {
+    if (!containerRef.current || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          setIsVisible(entry.isIntersecting);
+        });
+      },
+      { threshold: 0.05 }
+    );
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
 
   const rawStreamUrl = camera.rtspUrl || camera.rtmpUrl || camera.fullRtmpUrl || videoUrl || '';
   const mjpegUrl = `/api/cameras/${camera.id}/stream?key=cam_${cleanKey}&url=${encodeURIComponent(rawStreamUrl)}&t=${retryCount}`;
@@ -270,25 +286,22 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     }
 
     setConnectionState('LOADING');
+    // Allow up to 16s for HLS segment generation when many cameras load concurrently
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
-          console.log(`[Stream Player] Timeout de carregamento atingido para ${camera.name}. Definindo como OFF-LINE.`);
+          console.log(`[Stream Player] Tempo limite de carregamento para ${camera.name}. Tentando reconectar HLS...`);
           return 'OFFLINE';
         }
         return curr;
       });
-    }, 6000);
+    }, 16000);
   };
 
   const handleVideoError = () => {
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
-    if (!useMjpegStream) {
-      console.log(`[Stream Player] Falha HLS para ${camera.protocol} (${camera.name}). Alternando para MJPEG...`);
-      setUseMjpegStream(true);
-      setConnectionState('LOADING');
-      return;
-    }
+    // Do not automatically switch to MJPEG streaming in grid view as MJPEG holds a persistent HTTP connection open
+    // which exhausts browser's 6-connection limit per domain. Keep HLS or retry connection.
     setConnectionState('OFFLINE');
   };
 
@@ -309,7 +322,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
   // Video playback and Hls.js initialization
   useEffect(() => {
-    if (streamMode !== 'VIDEO' || !videoUrl) return;
+    if (streamMode !== 'VIDEO' || !videoUrl || !isVisible) return;
 
     const videoElement = videoRef.current;
     if (!videoElement) return;
@@ -330,14 +343,19 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             enableWorker: true,
             lowLatencyMode: true,
             backBufferLength: 10,
-            liveSyncDurationCount: 3,
-            liveMaxLatencyDurationCount: 6,
-            manifestLoadingTimeOut: 10000,
-            levelLoadingTimeOut: 10000,
+            liveSyncDurationCount: 2,
+            liveMaxLatencyDurationCount: 5,
+            manifestLoadingTimeOut: 15000,
+            manifestLoadingMaxRetry: 6,
+            levelLoadingTimeOut: 15000,
+            levelLoadingMaxRetry: 6,
+            fragLoadingTimeOut: 20000,
+            fragLoadingMaxRetry: 8,
           });
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);
           hlsInstance.on(HlsClass.Events.MANIFEST_PARSED, () => {
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
             setConnectionState('ONLINE');
             videoElement.play().catch(() => {});
           });
@@ -357,10 +375,11 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
         } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
           videoElement.src = videoUrl;
           videoElement.play().then(() => {
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
             setConnectionState('ONLINE');
           }).catch(() => {});
         } else {
-          setUseMjpegStream(true);
+          setConnectionState('OFFLINE');
         }
       };
 
@@ -391,7 +410,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
         try { hlsInstance.destroy(); } catch (e) {}
       }
     };
-  }, [videoUrl, streamMode, retryCount, useMjpegStream]);
+  }, [videoUrl, streamMode, retryCount, useMjpegStream, isVisible]);
 
   // Webcam mode setup
   useEffect(() => {

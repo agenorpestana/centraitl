@@ -42,7 +42,8 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
   const [isDvrMode, setIsDvrMode] = useState<boolean>(false);
 
   // Normal Mode State
-  const [gridColumns, setGridColumns] = useState<number>(2); // 1 (1x1), 2 (2x2), 3 (3x3)
+  const [gridColumns, setGridColumns] = useState<number>(2); // 1 (1x1), 2 (2x2), 3 (3x3), 4 (4x4)
+  const [pageSize, setPageSize] = useState<number>(8); // 4, 6, 8, 12, 16, 100
   const [selectedCity, setSelectedCity] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [currentPage, setCurrentPage] = useState<number>(1);
@@ -112,15 +113,14 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
   useEffect(() => {
     setCurrentPage(1);
     setDvrPage(1);
-  }, [selectedCity, searchQuery]);
+  }, [selectedCity, searchQuery, pageSize]);
 
-  // Normal Mode Pagination (10 cameras per page)
-  const NORMAL_PAGE_SIZE = 10;
-  const totalNormalPages = Math.max(1, Math.ceil(filteredCameras.length / NORMAL_PAGE_SIZE));
+  // Normal Mode Pagination
+  const totalNormalPages = Math.max(1, Math.ceil(filteredCameras.length / pageSize));
   const paginatedNormalCameras = React.useMemo(() => {
-    const start = (currentPage - 1) * NORMAL_PAGE_SIZE;
-    return filteredCameras.slice(start, start + NORMAL_PAGE_SIZE);
-  }, [filteredCameras, currentPage]);
+    const start = (currentPage - 1) * pageSize;
+    return filteredCameras.slice(start, start + pageSize);
+  }, [filteredCameras, currentPage, pageSize]);
 
   // DVR Mode Pagination
   const dvrTotalPages = Math.max(1, Math.ceil(filteredCameras.length / dvrGridSize));
@@ -408,8 +408,24 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Page Size Selector */}
+            <div className="flex items-center space-x-1.5 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800 text-xs">
+              <span className="text-slate-400 font-medium">Exibir:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                className="bg-transparent text-emerald-400 font-bold outline-none cursor-pointer"
+              >
+                <option value={4} className="bg-slate-900 text-slate-200">4 por pág</option>
+                <option value={6} className="bg-slate-900 text-slate-200">6 por pág</option>
+                <option value={8} className="bg-slate-900 text-slate-200">8 por pág</option>
+                <option value={12} className="bg-slate-900 text-slate-200">12 por pág</option>
+                <option value={16} className="bg-slate-900 text-slate-200">16 por pág</option>
+                <option value={100} className="bg-slate-900 text-slate-200">Todas ({filteredCameras.length})</option>
+              </select>
+            </div>
+
             {/* Grid Layout Switcher & DVR Button */}
-            <span className="text-xs text-slate-400 hidden lg:inline">Visualização:</span>
             <div className="flex items-center bg-slate-800 p-1 rounded-xl border border-slate-700">
               <button
                 onClick={() => setGridColumns(1)}
@@ -434,6 +450,14 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                 }`}
               >
                 3x3
+              </button>
+              <button
+                onClick={() => setGridColumns(4)}
+                className={`px-2.5 py-1 text-xs rounded-lg font-medium transition ${
+                  gridColumns === 4 ? 'bg-emerald-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                4x4
               </button>
 
               {/* DVR Mode Toggle Button */}
@@ -522,7 +546,9 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
               ? 'grid-cols-1'
               : gridColumns === 2
               ? 'grid-cols-1 md:grid-cols-2'
-              : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'
+              : gridColumns === 3
+              ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'
+              : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4'
           }`}
         >
           {paginatedNormalCameras.map((camera) => {
