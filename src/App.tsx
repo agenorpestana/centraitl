@@ -228,6 +228,15 @@ export default function App() {
       const newCam = await res.json();
       if (newCam && newCam.id) {
         setCameras((prev) => [newCam, ...prev.filter((c) => c.id !== newCam.id)]);
+        if (activeUser.allowedCameraIds && !activeUser.allowedCameraIds.includes('ALL')) {
+          if (!activeUser.allowedCameraIds.includes(newCam.id)) {
+            const updatedAllowed = [...activeUser.allowedCameraIds, newCam.id];
+            setActiveUser((prev) => ({ ...prev, allowedCameraIds: updatedAllowed }));
+            setUsers((prev) =>
+              prev.map((u) => (u.id === activeUser.id ? { ...u, allowedCameraIds: updatedAllowed } : u))
+            );
+          }
+        }
         return;
       }
     } catch (e) {}
@@ -257,6 +266,15 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
     setCameras((prev) => [fallback, ...prev]);
+    if (activeUser.allowedCameraIds && !activeUser.allowedCameraIds.includes('ALL')) {
+      if (!activeUser.allowedCameraIds.includes(fallback.id)) {
+        const updatedAllowed = [...activeUser.allowedCameraIds, fallback.id];
+        setActiveUser((prev) => ({ ...prev, allowedCameraIds: updatedAllowed }));
+        setUsers((prev) =>
+          prev.map((u) => (u.id === activeUser.id ? { ...u, allowedCameraIds: updatedAllowed } : u))
+        );
+      }
+    }
   };
 
   const handleUpdateCamera = async (id: string, updatedData: Partial<Camera>) => {
