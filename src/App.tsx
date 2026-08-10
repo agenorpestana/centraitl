@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
 import { Sidebar } from './components/Sidebar';
+import { Dashboard } from './components/Dashboard';
 import { CameraGrid } from './components/CameraGrid';
 import { CameraMap } from './components/CameraMap';
 import { CloudRecordingsVault } from './components/CloudRecordingsVault';
@@ -483,6 +484,9 @@ export default function App() {
 
         {/* Mobile Tab Navigation */}
         <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900 border-t border-slate-800 flex items-center justify-around p-2 text-[10px] text-slate-400">
+          <button onClick={() => setActiveTab('dashboard')} className={`p-1.5 flex flex-col items-center ${activeTab === 'dashboard' ? 'text-emerald-400 font-bold' : ''}`}>
+            Dashboard
+          </button>
           <button onClick={() => setActiveTab('live-grid')} className={`p-1.5 flex flex-col items-center ${activeTab === 'live-grid' ? 'text-emerald-400 font-bold' : ''}`}>
             Câmeras
           </button>
@@ -501,6 +505,19 @@ export default function App() {
 
         {/* Content Area */}
         <main className="flex-1 p-4 sm:p-6 pb-20 md:pb-6 overflow-x-hidden">
+          {activeTab === 'dashboard' && (
+            <Dashboard
+              cameras={cameras}
+              users={users}
+              recordings={recordings}
+              logs={logs}
+              invoices={invoices}
+              activeUser={activeUser}
+              onSelectCamera={setInspectingCamera}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+            />
+          )}
+
           {activeTab === 'live-grid' && (
             <CameraGrid
               cameras={cameras}

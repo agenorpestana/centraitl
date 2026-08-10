@@ -106,9 +106,13 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     setStreamMode(camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO');
     setUseMjpegStream(camera.protocol === 'RTSP');
     setTempUrlInput(cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || initialUrl));
-    setConnectionState('LOADING');
+    if (camera.status === 'OFFLINE') {
+      setConnectionState('OFFLINE');
+    } else {
+      setConnectionState('LOADING');
+    }
     setRetryCount(0);
-  }, [camera.id, camera.videoStreamUrl, camera.rtspUrl, camera.rtmpUrl, camera.fullRtmpUrl, camera.protocol, camera.isLiveWebcam]);
+  }, [camera.id, camera.videoStreamUrl, camera.rtspUrl, camera.rtmpUrl, camera.fullRtmpUrl, camera.protocol, camera.isLiveWebcam, camera.status]);
 
   // Fullscreen event listener
   useEffect(() => {
@@ -156,8 +160,14 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       });
       const data = await res.json();
       setPlayerDiag({ loading: false, data });
+      if (data && data.success === false) {
+        setConnectionState('OFFLINE');
+      } else if (data && data.success === true) {
+        setConnectionState('ONLINE');
+      }
     } catch (e: any) {
       setPlayerDiag({ loading: false, error: e.message || 'Erro ao realizar diagnóstico' });
+      setConnectionState('OFFLINE');
     }
   };
 
@@ -255,12 +265,23 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
   // Connect stream
   const connectStream = () => {
-    setConnectionState('LOADING');
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
 
     if (camera.status === 'OFFLINE') {
       setConnectionState('OFFLINE');
+      return;
     }
+
+    setConnectionState('LOADING');
+    loadingTimerRef.current = setTimeout(() => {
+      setConnectionState((curr) => {
+        if (curr === 'LOADING') {
+          console.log(`[Stream Player] Timeout de carregamento atingido para ${camera.name}. Definindo como OFF-LINE.`);
+          return 'OFFLINE';
+        }
+        return curr;
+      });
+    }, 6000);
   };
 
   const handleVideoError = () => {

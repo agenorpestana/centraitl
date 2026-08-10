@@ -2586,13 +2586,6 @@ async function startServer() {
       return res.status(404).send('URL da câmera indisponível ou não configurada');
     }
 
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', '*');
-    res.setHeader('Content-Type', 'multipart/x-mixed-replace; boundary=ffmpegboundary');
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Connection', 'close');
-
     const width = (req.query.w || '1280').toString();
     const fps = (req.query.fps || '15').toString();
 
@@ -2623,23 +2616,46 @@ async function startServer() {
     }
 
     let hasReceivedData = false;
+    let headersWritten = false;
+
+    const writeHeaders = () => {
+      if (!headersWritten && !res.headersSent) {
+        headersWritten = true;
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Headers', '*');
+        res.setHeader('Content-Type', 'multipart/x-mixed-replace; boundary=ffmpegboundary');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Connection', 'close');
+      }
+    };
+
     const timeoutTimer = setTimeout(() => {
       if (!hasReceivedData) {
         killProc();
-        if (!res.headersSent) {
-          res.status(504).send('Timeout ao conectar à câmera');
+        if (!res.headersSent && !headersWritten) {
+          res.status(504).send('Timeout ao conectar à câmera (Off-line)');
         } else {
           try { res.end(); } catch (e) {}
         }
       }
     }, 6000);
 
-    proc.stdout.on('data', () => {
+    proc.stdout.on('data', (chunk) => {
       hasReceivedData = true;
       clearTimeout(timeoutTimer);
+      writeHeaders();
+      res.write(chunk);
     });
 
-    proc.stdout.pipe(res);
+    proc.on('exit', () => {
+      clearTimeout(timeoutTimer);
+      if (!hasReceivedData && !res.headersSent && !headersWritten) {
+        res.status(502).send('Sinal de vídeo indisponível (Câmera Off-line)');
+      } else {
+        try { res.end(); } catch (e) {}
+      }
+    });
 
     const killProc = () => {
       clearTimeout(timeoutTimer);

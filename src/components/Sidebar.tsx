@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  LayoutDashboard,
   Grid,
   Map,
   Film,
@@ -43,6 +44,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     : true;
 
   const rawNavItems = [
+    { id: 'dashboard', label: 'Dashboard Monitoramento', icon: LayoutDashboard },
     { id: 'live-grid', label: 'Câmeras ao Vivo', icon: Grid, badge: totalCameras },
     { id: 'event-map', label: 'Mapa de Ocorrências (GIS)', icon: MapPin },
     { id: 'camera-map', label: 'Mapa Vizinhança', icon: Map },
