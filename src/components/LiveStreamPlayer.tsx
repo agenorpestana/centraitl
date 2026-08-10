@@ -361,14 +361,12 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
         script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest';
         script.onload = initHls;
         script.onerror = () => {
-          clearTimeout(fastFallbackTimer);
           setUseMjpegStream(true);
         };
         document.head.appendChild(script);
       }
 
       return () => {
-        clearTimeout(fastFallbackTimer);
         if (hlsInstance) {
           try { hlsInstance.destroy(); } catch (e) {}
         }
