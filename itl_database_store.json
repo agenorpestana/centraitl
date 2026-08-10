@@ -55,7 +55,6 @@
       "createdAt": "2026-07-28"
     }
   ],
-  "alerts": [],
   "recordings": [],
   "users": [
     {
@@ -132,5 +131,65 @@
       "HIGH",
       "MEDIUM"
     ]
-  }
+  },
+  "plans": [
+    {
+      "id": "plan-basic-49",
+      "name": "Plano Residencial Essencial",
+      "monthlyPrice": 49.9,
+      "camerasIncluded": 2,
+      "cloudRetentionDays": 7,
+      "description": "Acesso ao vivo e gravação em nuvem por 7 dias para até 2 câmeras.",
+      "popular": true
+    },
+    {
+      "id": "plan-pro-89",
+      "name": "Plano Comercial Pro",
+      "monthlyPrice": 89.9,
+      "camerasIncluded": 5,
+      "cloudRetentionDays": 15,
+      "description": "Monitoramento 24h, alerta inteligente de IA e gravação de 15 dias."
+    },
+    {
+      "id": "plan-vizinhanca-149",
+      "name": "Plano Vizinhança Protegida ITL",
+      "monthlyPrice": 149.9,
+      "camerasIncluded": 10,
+      "cloudRetentionDays": 30,
+      "description": "Ideal para condomínios e bairros com gravação HD de 30 dias na nuvem."
+    }
+  ],
+  "invoices": [],
+  "mpConfig": {
+    "accessToken": "APP_USR-7829103847192837-072716-a1b2c3d4e5f6g7h8i9j0-123456789",
+    "publicKey": "APP_USR-839201928374-PUB-2026",
+    "webhookSecret": "whsec_itl_mercadopago_2026_key",
+    "isSandbox": true,
+    "autoApproveSimulated": true
+  },
+  "architectureConfig": {
+    "primaryTopology": "CENTRAL_GPU",
+    "centralMediaMtxUrl": "rtsp://datacenter-isp.internal:8554",
+    "ffmpegPreset": "gpu_nvenc",
+    "gstreamerEnabled": true,
+    "onvifAutoDiscovery": true,
+    "redisQueueUrl": "redis://datacenter-isp.internal:6379/0",
+    "postgresVectorUrl": "postgresql://admin:secret@datacenter-isp.internal:5432/vms_pgvector",
+    "minioStorageUrl": "https://s3-storage.datacenter-isp.internal",
+    "edgeNodesCount": 4,
+    "edgeSyncIntervalSec": 10,
+    "offlineCacheEnabled": true
+  },
+  "dbConfig": {
+    "dbHost": "127.0.0.1",
+    "dbPort": 5432,
+    "dbName": "itl_cameras",
+    "dbUser": "itl_user",
+    "dbPassword": "itl123.789"
+  },
+  "deletedCameraIds": [],
+  "deletedRecordingIds": [],
+  "deletedUserIds": [],
+  "deletedPlanIds": [],
+  "deletedInvoiceIds": []
 }

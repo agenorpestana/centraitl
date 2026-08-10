@@ -280,22 +280,17 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const connectStream = () => {
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
 
-    if (camera.status === 'OFFLINE') {
-      setConnectionState('OFFLINE');
-      return;
-    }
-
     setConnectionState('LOADING');
-    // Allow up to 16s for HLS segment generation when many cameras load concurrently
+    // Allow up to 20s for HLS segment generation when many cameras load concurrently
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
-          console.log(`[Stream Player] Tempo limite de carregamento para ${camera.name}. Tentando reconectar HLS...`);
+          console.log(`[Stream Player] Tempo limite de carregamento para ${camera.name}. Definindo como OFF-LINE.`);
           return 'OFFLINE';
         }
         return curr;
       });
-    }, 16000);
+    }, 20000);
   };
 
   const handleVideoError = () => {
@@ -345,12 +340,14 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             backBufferLength: 10,
             liveSyncDurationCount: 2,
             liveMaxLatencyDurationCount: 5,
-            manifestLoadingTimeOut: 15000,
-            manifestLoadingMaxRetry: 6,
-            levelLoadingTimeOut: 15000,
-            levelLoadingMaxRetry: 6,
+            manifestLoadingTimeOut: 20000,
+            manifestLoadingMaxRetry: 10,
+            manifestLoadingRetryDelay: 1000,
+            levelLoadingTimeOut: 20000,
+            levelLoadingMaxRetry: 10,
+            levelLoadingRetryDelay: 1000,
             fragLoadingTimeOut: 20000,
-            fragLoadingMaxRetry: 8,
+            fragLoadingMaxRetry: 10,
           });
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);

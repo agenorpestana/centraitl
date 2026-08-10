@@ -133,13 +133,14 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
   cameraProcessStartTimes.set(key, Date.now());
 
   const ffmpegArgs: string[] = [];
-  ffmpegArgs.push('-fflags', '+nobuffer+discardcorrupt', '-flags', 'low_delay');
+  ffmpegArgs.push('-fflags', '+nobuffer+discardcorrupt+genpts', '-flags', 'low_delay');
 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
       '-stimeout', '10000000',
-      '-use_wallclock_as_timestamps', '1'
+      '-use_wallclock_as_timestamps', '1',
+      '-avoid_negative_ts', 'make_zero'
     );
   } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
     ffmpegArgs.push(
@@ -151,13 +152,16 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
   }
 
   ffmpegArgs.push(
-    '-analyzeduration', '1000000',
-    '-probesize', '1000000',
+    '-analyzeduration', '1500000',
+    '-probesize', '1500000',
     '-i', streamSource,
     '-map', '0:v:0?',
     '-c:v', 'copy',
     '-map', '0:a:0?',
     '-c:a', 'aac',
+    '-ar', '44100',
+    '-ac', '2',
+    '-b:a', '128k',
     '-f', 'hls',
     '-hls_time', '2',
     '-hls_list_size', '6',
@@ -2744,9 +2748,9 @@ async function startServer() {
       startCameraRtspStream(matchedCam);
     }
 
-    // If file doesn't exist yet (initial 1-3s generation delay), wait up to 3.5s
+    // If file doesn't exist yet (initial 1-4s generation delay), wait up to 5.0s
     if (!fs.existsSync(targetFile)) {
-      for (let i = 0; i < 14; i++) {
+      for (let i = 0; i < 20; i++) {
         await new Promise((resolve) => setTimeout(resolve, 250));
         if (fs.existsSync(targetFile)) break;
         const altSubPath = subPath.includes('cam-')
@@ -2772,6 +2776,14 @@ async function startServer() {
         return res.status(200).end();
       }
       return res.sendFile(targetFile);
+    }
+
+    // If m3u8 requested while camera stream is initiating, serve a temporary valid playlist so HLS player retries gracefully
+    if (subPath.endsWith('.m3u8') && matchedCam) {
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      const tempPlaylist = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n`;
+      return res.status(200).send(tempPlaylist);
     }
 
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -2852,7 +2864,6 @@ async function startServer() {
 
         if (!isOnline && (cam.rtspUrl || cam.rtmpUrl || cam.fullRtmpUrl || cam.videoStreamUrl || cam.isLiveWebcam || cam.isDemo)) {
           startCameraRtspStream(cam);
-          isOnline = true;
         }
 
         cam.status = isOnline ? 'ONLINE' : 'OFFLINE';
