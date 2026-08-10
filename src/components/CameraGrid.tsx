@@ -651,7 +651,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
           <span className="text-slate-400">
             Mostrando{' '}
             <strong className="text-slate-200">
-              {(currentPage - 1) * NORMAL_PAGE_SIZE + 1} - {Math.min(currentPage * NORMAL_PAGE_SIZE, filteredCameras.length)}
+              {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, filteredCameras.length)}
             </strong>{' '}
             de <strong className="text-slate-200">{filteredCameras.length}</strong> Câmeras
           </span>
