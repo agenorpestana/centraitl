@@ -20,6 +20,7 @@ function execAsync(cmd: string, timeoutMs = 5000): Promise<void> {
   });
 }
 import { createServer as createViteServer } from 'vite';
+import { streamManager } from './src/server/streamManager';
 
 // Helper function to hash passwords securely using PBKDF2 SHA-256 with salt
 function hashPasswordPBKDF2(password: string, salt = 'itl_vms_secure_salt_2026'): string {
@@ -101,163 +102,14 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
   if (key && deletedCameraIds.has(key)) return;
   if (cleanKey && deletedCameraIds.has(`cam-${cleanKey}`)) return;
 
-  let streamSource = getValidStreamSource(cam);
-
-  if (streamSource.includes('localhost:1935') || streamSource.includes('127.0.0.1:1935') || streamSource.includes('aerocam.itlfibra.com:1935')) {
-    streamSource = streamSource.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
-  }
-
-  if (!streamSource) return;
-
-  // If already running with the exact same URL and process is alive, keep running!
-  if (!forceRestart && activeFfmpegProcesses.has(key) && activeRtspUrls.get(key) === streamSource) {
-    const existingProc = activeFfmpegProcesses.get(key);
-    if (existingProc && existingProc.exitCode === null && !existingProc.killed) {
-      return;
-    }
-  }
-
-  // Stop previous process if restarting or changing URL
-  stopCameraRtspStream(key);
-
-  console.log(`[FFmpeg ITL] Conectando fluxo ${cam.protocol || 'RTSP/RTMP'} -> HLS para a câmera '${cam.name}' (${key}) via ${streamSource}...`);
-  const hlsDir = '/tmp/hls';
-  if (!fs.existsSync(hlsDir)) {
-    try { fs.mkdirSync(hlsDir, { recursive: true }); } catch (e) {}
-  }
-  const hlsPath = path.join(hlsDir, `${key}.m3u8`);
-
-  const logList: string[] = [`[${new Date().toLocaleTimeString()}] Conectando ao fluxo: ${streamSource}`];
-  lastFfmpegLogs.set(key, logList);
-  activeRtspUrls.set(key, streamSource);
-  cameraProcessStartTimes.set(key, Date.now());
-
-  const isRtsp = streamSource.startsWith('rtsp://') || (cam && cam.protocol === 'RTSP');
-
-  const ffmpegArgs: string[] = [];
-  ffmpegArgs.push('-fflags', '+nobuffer+discardcorrupt+genpts', '-flags', 'low_delay');
-
-  if (isRtsp) {
-    ffmpegArgs.push(
-      '-rtsp_transport', 'tcp',
-      '-stimeout', '10000000',
-      '-use_wallclock_as_timestamps', '1',
-      '-avoid_negative_ts', 'make_zero',
-      '-analyzeduration', '2000000',
-      '-probesize', '2000000',
-      '-i', streamSource,
-      '-map', '0:v:0?',
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-tune', 'zerolatency',
-      '-pix_fmt', 'yuv420p',
-      '-g', '30',
-      '-crf', '26',
-      '-map', '0:a:0?',
-      '-c:a', 'aac',
-      '-ac', '2',
-      '-ar', '44100',
-      '-b:a', '64k'
-    );
-  } else {
-    if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
-      ffmpegArgs.push(
-        '-reconnect', '1',
-        '-reconnect_at_eof', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5'
-      );
-    }
-    ffmpegArgs.push(
-      '-analyzeduration', '1500000',
-      '-probesize', '1500000',
-      '-i', streamSource,
-      '-map', '0:v:0?',
-      '-c:v', 'copy',
-      '-map', '0:a:0?',
-      '-c:a', 'aac',
-      '-ac', '2',
-      '-ar', '44100',
-      '-b:a', '128k'
-    );
-  }
-
-  ffmpegArgs.push(
-    '-f', 'hls',
-    '-hls_time', '2',
-    '-hls_list_size', '6',
-    '-hls_flags', 'delete_segments+omit_endlist+discont_start',
-    '-y',
-    hlsPath
-  );
-
-  let proc: ReturnType<typeof spawn> | null = null;
-  try {
-    proc = spawn('ffmpeg', ffmpegArgs);
-
-    proc.stderr.on('data', (data) => {
-      const line = data.toString().trim();
-      if (line) {
-        logList.push(line);
-        if (logList.length > 30) logList.shift();
-      }
-    });
-
-    proc.on('exit', (code) => {
-      const runTimeMs = Date.now() - (cameraProcessStartTimes.get(key) || Date.now());
-      console.log(`[FFmpeg ITL] Processo da câmera '${key}' finalizou com código ${code} após ${Math.round(runTimeMs / 1000)}s`);
-      logList.push(`Processo finalizado com código ${code}`);
-      activeFfmpegProcesses.delete(key);
-      activeRtspUrls.delete(key);
-
-      // Auto-reconnect supervisor only if camera wasn't deleted
-      if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
-        const delay = runTimeMs < 4000 ? 8000 : 2500; // Wait longer if process failed quickly to prevent loop
-        setTimeout(() => {
-          if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
-          const currentProc = activeFfmpegProcesses.get(key);
-          if (!currentProc || currentProc.exitCode !== null || currentProc.killed) {
-            console.log(`[FFmpeg ITL Auto-Reconnect] Reconectando transmissão HLS da câmera '${cam.name}' (${key})...`);
-            startCameraRtspStream(cam);
-          }
-        }, delay);
-      }
-    });
-
-    proc.on('error', (err) => {
-      console.log(`[FFmpeg ITL Warning] Falha na inicialização FFmpeg para '${key}': ${err.message}`);
-      logList.push(`Erro FFmpeg: ${err.message}`);
-      activeFfmpegProcesses.delete(key);
-      activeRtspUrls.delete(key);
-
-      if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
-        setTimeout(() => {
-          if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
-          startCameraRtspStream(cam);
-        }, 8000);
-      }
-    });
-
-    activeFfmpegProcesses.set(key, proc);
-  } catch (spawnErr: any) {
-    console.error(`[FFmpeg ITL Spawn Error] Não foi possível executar FFmpeg para '${key}':`, spawnErr.message || spawnErr);
-  }
+  streamManager.ensureStream(cam);
 }
 
 function stopCameraRtspStream(streamKey: string) {
   if (!streamKey) return;
-  if (activeFfmpegProcesses.has(streamKey)) {
-    try {
-      const proc = activeFfmpegProcesses.get(streamKey);
-      if (proc) {
-        proc.removeAllListeners();
-        proc.kill('SIGKILL');
-      }
-    } catch (e) {}
-    activeFfmpegProcesses.delete(streamKey);
-    activeRtspUrls.delete(streamKey);
-  }
+  streamManager.stopStream(streamKey);
 }
+
 import {
   INITIAL_CAMERAS,
   INITIAL_RECORDINGS,
@@ -2764,9 +2616,10 @@ async function startServer() {
         (c.streamKey && c.streamKey.replace(/^cam[_-]/, '') === rawKeyNum)
     );
 
-    // Ensure FFmpeg process is started on demand if file doesn't exist
-    if (!fs.existsSync(targetFile) && matchedCam) {
-      startCameraRtspStream(matchedCam);
+    // Ensure FFmpeg process is started on demand
+    if (matchedCam) {
+      streamManager.ensureStream(matchedCam);
+      streamManager.touchStream(cleanKey);
     }
 
     // If file doesn't exist yet (initial 1-4s generation delay), wait up to 5.0s
@@ -2804,6 +2657,21 @@ async function startServer() {
       error: 'Câmera offline ou gerando segmento HLS',
       streamKey: cleanKey,
     });
+  });
+
+  // Endpoints para Monitoramento e Saúde de Streams (RTSP/RTMP)
+  app.get('/api/streams/health', (req, res) => {
+    return res.json(streamManager.getAllHealth());
+  });
+
+  app.get('/api/streams/:id/health', (req, res) => {
+    const streamId = req.params.id;
+    const matchedCam = cameras.find((c) => c.id === streamId || c.streamKey === streamId || c.id === `cam-${streamId.replace(/^cam_/, '')}` || c.streamKey === streamId.replace(/^cam-/, 'cam_'));
+    if (matchedCam) {
+      streamManager.ensureStream(matchedCam);
+    }
+    const health = streamManager.getHealth(streamId);
+    return res.json(health);
   });
 
   // Helper to update memory status of camera

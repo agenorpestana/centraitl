@@ -73,6 +73,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');
+  const [streamHealth, setStreamHealth] = useState<{ status: string; lastError?: string | null; logs?: string[] } | null>(null);
   const [videoUrl, setVideoUrl] = useState<string>(() => cleanDoubleUrl(getInitialVideoUrl(camera)));
   const [isEditingUrl, setIsEditingUrl] = useState(false);
   const [tempUrlInput, setTempUrlInput] = useState(() => cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || videoUrl));
@@ -80,6 +81,30 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isVisible, setIsVisible] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Poll stream health if loading or errored
+  const checkHealth = async () => {
+    try {
+      const res = await fetch(`/api/streams/${camera.id}/health`);
+      if (res.ok) {
+        const data = await res.json();
+        setStreamHealth(data);
+        if (data.status === 'online') {
+          setConnectionState('ONLINE');
+        } else if (data.status === 'codecUnsupported') {
+          setConnectionState('OFFLINE');
+        }
+      }
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    if (connectionState === 'LOADING' && isVisible) {
+      checkHealth();
+      const interval = setInterval(checkHealth, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [connectionState, isVisible, camera.id]);
 
   // IntersectionObserver to pause/stop stream when scrolled out of view
   useEffect(() => {
@@ -522,9 +547,14 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             <p className="text-xs font-bold text-slate-100 uppercase tracking-wider">
               Carregando Câmera...
             </p>
-            <p className="text-[10px] text-slate-400 font-mono">
-              Conectando ao fluxo {camera.protocol || 'RTSP/RTMP'}...
+            <p className="text-[10px] text-slate-300 font-medium max-w-xs leading-relaxed">
+              RTSP precisa ser convertido para HLS/WebRTC; aguardando worker de mídia...
             </p>
+            {streamHealth?.status && (
+              <p className="text-[9px] text-emerald-400/90 font-mono uppercase tracking-widest bg-slate-900/80 px-2 py-0.5 rounded border border-emerald-500/20">
+                Status worker: {streamHealth.status}
+              </p>
+            )}
           </div>
         )}
 
