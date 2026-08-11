@@ -377,7 +377,12 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);
           hlsInstance.on(HlsClass.Events.MANIFEST_PARSED, () => {
-            videoElement.play().catch(() => {});
+            videoElement.muted = true;
+            videoElement.play().catch((err) => {
+              console.warn('[Autoplay Blocked]:', err);
+              videoElement.muted = true;
+              videoElement.play().catch(() => {});
+            });
           });
           hlsInstance.on(HlsClass.Events.FRAG_PARSED, () => {
             if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);

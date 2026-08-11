@@ -135,6 +135,15 @@ export class StreamManager {
         if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
           str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
         }
+        // Ensure stream key is appended to RTMP URL if it ends with /live or /live/
+        if (str.endsWith('/live') || str.endsWith('/live/')) {
+          const cleanBase = str.replace(/\/+$/, '');
+          str = `${cleanBase}/${streamKey}`;
+        } else if (!str.includes(streamKey) && !str.includes(streamKey.replace('cam_', ''))) {
+          // If URL ends with a trailing slash or path without key
+          const cleanBase = str.replace(/\/+$/, '');
+          str = `${cleanBase}/${streamKey}`;
+        }
         if (!sources.some((s) => s.url === str)) {
           sources.push({ type: 'RTMP', url: str });
         }
@@ -234,6 +243,20 @@ export class StreamManager {
   private startWorker(camera: Camera, streamKey: string, sourceIndex = 0, profile = 'default') {
     this.ensureHlsDir();
 
+    // Remove stale m3u8 and ts files for this stream key to ensure clean HLS generation
+    try {
+      const hlsPathFile = path.join(this.hlsDir, `${streamKey}.m3u8`);
+      if (fs.existsSync(hlsPathFile)) {
+        fs.unlinkSync(hlsPathFile);
+      }
+      const files = fs.readdirSync(this.hlsDir);
+      for (const file of files) {
+        if (file.startsWith(`${streamKey}_`) && file.endsWith('.ts')) {
+          fs.unlinkSync(path.join(this.hlsDir, file));
+        }
+      }
+    } catch (e) {}
+
     const sources = this.getValidSources(camera);
     const activeSource = sources[sourceIndex] || sources[sources.length - 1];
 
@@ -272,14 +295,22 @@ export class StreamManager {
         '-b:a', '64k',
       ];
     } else if (activeSource.type === 'RTSP') {
+      const isPrivateIp = activeSource.url.includes('192.168.') ||
+        activeSource.url.includes('10.') ||
+        activeSource.url.includes('172.16.') ||
+        activeSource.url.includes('127.0.0.1') ||
+        activeSource.url.includes('localhost');
+
+      const timeoutVal = isPrivateIp ? '3000000' : '5000000'; // 3s for private IPs, 5s for public
+
       ffmpegArgs = [
         '-fflags', '+nobuffer+discardcorrupt+genpts',
         '-flags', 'low_delay',
         '-rtsp_transport', 'tcp',
-        '-stimeout', '5000000',
-        '-rw_timeout', '5000000',
-        '-analyzeduration', '1500000',
-        '-probesize', '1500000',
+        '-stimeout', timeoutVal,
+        '-rw_timeout', timeoutVal,
+        '-analyzeduration', '1000000',
+        '-probesize', '1000000',
         '-i', activeSource.url,
         '-map', '0:v:0?',
         '-c:v', 'libx264',
@@ -304,8 +335,8 @@ export class StreamManager {
         );
       }
       ffmpegArgs.push(
-        '-analyzeduration', '1500000',
-        '-probesize', '1500000',
+        '-analyzeduration', '1000000',
+        '-probesize', '1000000',
         '-i', activeSource.url,
         '-map', '0:v:0?',
         '-c:v', 'copy',
@@ -361,7 +392,7 @@ export class StreamManager {
               streamState.status = 'online';
             }
           }
-          if (safeLine.includes('Invalid data found') || safeLine.includes('Decoder') || safeLine.includes('Connection refused') || safeLine.includes('Operation timed out')) {
+          if (safeLine.includes('Invalid data found') || safeLine.includes('Decoder') || safeLine.includes('Connection refused') || safeLine.includes('Operation timed out') || safeLine.includes('Failed to read')) {
             streamState.lastError = safeLine;
           }
         }
@@ -374,18 +405,18 @@ export class StreamManager {
 
         streamState.process = null;
 
-        // If process failed rapidly (< 8s) and we have another candidate source, trigger fallback!
-        if ((code !== 0 || runTimeMs < 8000) && activeSource.type !== 'SYNTHETIC' && sourceIndex < sources.length - 1) {
+        // If process exited and another candidate source exists, trigger fallback
+        if (activeSource.type !== 'SYNTHETIC' && sourceIndex < sources.length - 1) {
           console.log(`[StreamManager] Fonte ${activeSource.type} para '${streamKey}' falhou. Alternando automaticamente para fonte #${sourceIndex + 2} (${sources[sourceIndex + 1].type})...`);
           logList.push(`[Fallback] Alternando para fonte #${sourceIndex + 2} (${sources[sourceIndex + 1].type})...`);
           
           setTimeout(() => {
             this.startWorker(camera, streamKey, sourceIndex + 1, profile);
-          }, 500);
+          }, 300);
           return;
         }
 
-        streamState.status = code === 0 || fs.existsSync(hlsPath) ? 'online' : 'offline';
+        streamState.status = 'offline';
       });
 
       proc.on('error', (err) => {
