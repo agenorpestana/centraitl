@@ -15,6 +15,8 @@ export interface StreamHealth {
   restartCount: number;
   lastError: string | null;
   maskedSource: string;
+  activeProfile?: string;
+  activeTransport?: string;
   lastAccessTime: number;
   logs: string[];
 }
@@ -23,6 +25,7 @@ export interface Camera {
   id: string;
   name: string;
   protocol?: string;
+  connectionType?: 'LOCAL' | 'REMOTE';
   rtspUrl?: string;
   rtmpUrl?: string;
   fullRtmpUrl?: string;
@@ -36,6 +39,8 @@ export interface StreamSource {
   type: 'RTSP' | 'RTMP' | 'HTTP' | 'SYNTHETIC';
   url: string;
   transport?: 'tcp' | 'udp' | 'auto';
+  mode?: 'copy' | 'transcode';
+  profileName?: string;
 }
 
 interface StreamState {
@@ -43,6 +48,8 @@ interface StreamState {
   camera: Camera;
   rawSource: string;
   maskedSource: string;
+  activeProfile: string;
+  activeTransport: string;
   process: ChildProcess | null;
   startTime: number;
   lastAccessTime: number;
@@ -132,11 +139,13 @@ export class StreamManager {
 
     const isRtspPrimary = cam.protocol === 'RTSP' || isLocalCam || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'));
 
-    // Candidate 1: RTSP URL if provided (Try TCP first, then UDP)
+    // Candidates for RTSP (Ordered according to spec: TCP/Copy -> TCP/Transcode -> UDP/Copy -> UDP/Transcode)
     if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
       const cleanRtsp = cam.rtspUrl.trim();
-      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'tcp' });
-      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'udp' });
+      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'tcp', mode: 'copy', profileName: 'RTSP/TCP (Remux Copy H.264)' });
+      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'tcp', mode: 'transcode', profileName: 'RTSP/TCP (Transcode H.264)' });
+      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'udp', mode: 'copy', profileName: 'RTSP/UDP (Remux Copy H.264)' });
+      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'udp', mode: 'transcode', profileName: 'RTSP/UDP (Transcode H.264)' });
     }
 
     // Candidate 2: RTMP URLs (only if explicitly defined by user or not strictly local)
@@ -318,29 +327,49 @@ export class StreamManager {
         activeSource.url.includes('127.0.0.1') ||
         activeSource.url.includes('localhost');
 
-      const timeoutVal = isPrivateIp ? '3000000' : '5000000'; // 3s for private IPs, 5s for public
+      const timeoutVal = isPrivateIp ? '3000000' : '5000000'; // 3s for private, 5s for public
 
       ffmpegArgs = [
+        '-hide_banner', '-nostdin',
         '-fflags', '+nobuffer+discardcorrupt+genpts',
         '-flags', 'low_delay',
+        '-max_delay', '500000',
         '-rtsp_transport', activeSource.transport || 'tcp',
         '-rw_timeout', timeoutVal,
-        '-analyzeduration', '1000000',
-        '-probesize', '1000000',
+        '-analyzeduration', '500000',
+        '-probesize', '500000',
+        '-use_wallclock_as_timestamps', '1',
         '-i', activeSource.url,
-        '-map', '0:v:0?',
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-tune', 'zerolatency',
-        '-pix_fmt', 'yuv420p',
-        '-g', '30',
-        '-crf', '26',
-        '-map', '0:a:0?',
-        '-c:a', 'aac',
-        '-ac', '2',
-        '-ar', '44100',
-        '-b:a', '64k',
       ];
+
+      if (activeSource.mode === 'copy') {
+        ffmpegArgs.push(
+          '-map', '0:v:0?',
+          '-c:v', 'copy',
+          '-bsf:v', 'h264_mp4toannexb',
+          '-map', '0:a:0?',
+          '-c:a', 'aac',
+          '-ac', '2',
+          '-ar', '44100',
+          '-b:a', '64k'
+        );
+      } else {
+        // Transcode fallback (H.264 / MJPEG / H.265)
+        ffmpegArgs.push(
+          '-map', '0:v:0?',
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-tune', 'zerolatency',
+          '-pix_fmt', 'yuv420p',
+          '-crf', '28',
+          '-threads', '1',
+          '-map', '0:a:0?',
+          '-c:a', 'aac',
+          '-ac', '2',
+          '-ar', '44100',
+          '-b:a', '64k'
+        );
+      }
     } else { // RTMP or HTTP
       ffmpegArgs = [
         '-fflags', '+nobuffer',
@@ -367,18 +396,20 @@ export class StreamManager {
       '-f', 'hls',
       '-hls_time', String(this.hlsSegmentSeconds),
       '-hls_list_size', String(this.hlsListSize),
-      '-hls_flags', 'delete_segments+omit_endlist',
+      '-hls_flags', 'delete_segments+omit_endlist+independent_segments+program_date_time',
       '-hls_segment_filename', path.join(this.hlsDir, `${streamKey}_%03d.ts`),
       hlsPath
     );
 
-    console.log(`[StreamManager] Lançando FFmpeg para '${camera.name || camera.id}' (${streamKey}) [Fonte ${sourceIndex + 1}/${sources.length}: ${activeSource.type}]`);
+    console.log(`[StreamManager] Lançando FFmpeg para '${camera.name || camera.id}' (${streamKey}) [Fonte ${sourceIndex + 1}/${sources.length}: ${activeSource.profileName || activeSource.type}]`);
 
     const streamState: StreamState = {
       streamKey,
       camera,
       rawSource: activeSource.url,
       maskedSource,
+      activeProfile: activeSource.profileName || activeSource.type,
+      activeTransport: activeSource.transport || 'tcp',
       process: null,
       startTime: Date.now(),
       lastAccessTime: Date.now(),
@@ -591,6 +622,8 @@ export class StreamManager {
       restartCount: stream.restartCount,
       lastError: stream.lastError,
       maskedSource: stream.maskedSource,
+      activeProfile: stream.activeProfile,
+      activeTransport: stream.activeTransport,
       lastAccessTime: stream.lastAccessTime,
       logs: stream.logs,
     };

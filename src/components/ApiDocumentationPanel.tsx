@@ -281,6 +281,43 @@ export const ApiDocumentationPanel: React.FC = () => {
       },
     },
     {
+      id: 'streams-health',
+      category: 'Câmeras RTSP',
+      method: 'GET',
+      path: '/api/v1/streams/health',
+      title: 'Diagnóstico & Perfil de Ingestão RTSP/HLS',
+      security: 'Bearer Token',
+      description: 'Retorna o status em tempo real dos workers FFmpeg, o perfil ativo (RTSP/TCP Copy, RTSP/TCP Transcode, RTSP/UDP), tempo de uptime e logs sanitizados de diagnóstico.',
+      headers: [
+        { name: 'Accept', value: 'application/json', description: 'JSON' },
+        { name: 'Authorization', value: 'Bearer <TOKEN_AQUI>', description: 'Bearer Token' },
+      ],
+      sampleResponse: {
+        success: true,
+        health: {
+          cam_01: {
+            streamKey: 'cam_01',
+            cameraId: 'cam-01',
+            cameraName: 'Câmera Portaria',
+            protocol: 'RTSP',
+            status: 'online',
+            hlsUrl: '/live/cam_01.m3u8',
+            activeProfile: 'RTSP/TCP (Remux Copy H.264)',
+            activeTransport: 'tcp',
+            uptime: 1420,
+            restartCount: 0,
+            maskedSource: 'rtsp://***:***@10.44.0.6:554/cam/realmonitor',
+            lastError: null,
+            logs: [
+              '[12:01:22] Iniciando worker #1 (RTSP) para Câmera Portaria',
+              'Fonte: rtsp://***:***@10.44.0.6:554/cam/realmonitor',
+              'Opening \'rtsp://***:***@10.44.0.6:554/cam/realmonitor\' for reading',
+            ]
+          }
+        }
+      },
+    },
+    {
       id: 'alerts-list',
       category: 'Alertas',
       method: 'GET',
