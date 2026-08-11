@@ -35,6 +35,7 @@ export interface Camera {
 export interface StreamSource {
   type: 'RTSP' | 'RTMP' | 'HTTP' | 'SYNTHETIC';
   url: string;
+  transport?: 'tcp' | 'udp' | 'auto';
 }
 
 interface StreamState {
@@ -131,9 +132,11 @@ export class StreamManager {
 
     const isRtspPrimary = cam.protocol === 'RTSP' || isLocalCam || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'));
 
-    // Candidate 1: RTSP URL if provided
+    // Candidate 1: RTSP URL if provided (Try TCP first, then UDP)
     if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
-      sources.push({ type: 'RTSP', url: cam.rtspUrl.trim() });
+      const cleanRtsp = cam.rtspUrl.trim();
+      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'tcp' });
+      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'udp' });
     }
 
     // Candidate 2: RTMP URLs (only if explicitly defined by user or not strictly local)
@@ -180,8 +183,11 @@ export class StreamManager {
       }
     }
 
-    // Candidate 4: Synthetic live test pattern fallback
-    sources.push({ type: 'SYNTHETIC', url: `synthetic:${streamKey}` });
+    // Candidate 4: Synthetic live test pattern ONLY for demo cameras or when no other source exists
+    const isDemoCam = Boolean(cam.isDemo) || cam.id?.toLowerCase().includes('demo') || cam.name?.toLowerCase().includes('demo');
+    if (isDemoCam || sources.length === 0) {
+      sources.push({ type: 'SYNTHETIC', url: `synthetic:${streamKey}` });
+    }
 
     // If RTMP is primary protocol, sort RTMP candidates before RTSP
     if (!isRtspPrimary) {
@@ -317,7 +323,7 @@ export class StreamManager {
       ffmpegArgs = [
         '-fflags', '+nobuffer+discardcorrupt+genpts',
         '-flags', 'low_delay',
-        '-rtsp_transport', 'tcp',
+        '-rtsp_transport', activeSource.transport || 'tcp',
         '-stimeout', timeoutVal,
         '-rw_timeout', timeoutVal,
         '-analyzeduration', '1000000',
