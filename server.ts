@@ -505,6 +505,7 @@ async function startServer() {
               name: String(getVal(row, 'name')),
               location: String(getVal(row, 'location') || ''),
               protocol: (getVal(row, 'protocol') || 'RTSP') as any,
+              connectionType: (getVal(row, 'connection_type') || (getVal(row, 'protocol') === 'RTMP' ? 'REMOTE' : 'LOCAL')) as any,
               rtspUrl: String(getVal(row, 'rtsp_url') || ''),
               rtmpUrl: String(getVal(row, 'rtmp_url') || ''),
               streamKey: String(getVal(row, 'stream_key') || ''),
@@ -626,6 +627,7 @@ async function startServer() {
           name TEXT NOT NULL,
           location TEXT,
           protocol TEXT DEFAULT 'RTSP',
+          connection_type TEXT DEFAULT 'LOCAL',
           rtsp_url TEXT,
           rtmp_url TEXT,
           stream_key TEXT,
@@ -652,6 +654,7 @@ async function startServer() {
           created_at TEXT
         );
       `);
+      try { sqliteDb.run(`ALTER TABLE cameras ADD COLUMN connection_type TEXT DEFAULT 'LOCAL'`); } catch (e) {}
 
       sqliteDb.run(`
         CREATE TABLE IF NOT EXISTS users (
@@ -816,10 +819,10 @@ async function startServer() {
           try {
             sqliteDb.run(
               `INSERT OR REPLACE INTO cameras (
-                id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                id, name, location, protocol, connection_type, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
-                c.id, c.name, c.location || '', c.protocol || 'RTSP', c.rtspUrl || '', c.rtmpUrl || '', c.streamKey || '', c.rtmpServerUrl || '', c.fullRtmpUrl || '', c.stateUf || '', c.city || '', c.status || 'ONLINE', c.isE2EEEncrypted ? 1 : 0, c.encryptionKeyHash || '', c.fps || 30, c.resolution || '1080p', c.storageUsedGB || 0, c.cloudRecordingsActive ? 1 : 0, c.motionSensitivity || 7, c.aiDetectionEnabled ? 1 : 0, c.twoWayAudioEnabled ? 1 : 0, c.lat || -17.0397, c.lng || -39.5312, c.thumbnailUrl || '', c.videoStreamUrl || '', c.isLiveWebcam ? 1 : 0, c.isDemo ? 1 : 0, c.createdAt || new Date().toISOString().split('T')[0]
+                c.id, c.name, c.location || '', c.protocol || 'RTSP', c.connectionType || (c.protocol === 'RTMP' ? 'REMOTE' : 'LOCAL'), c.rtspUrl || '', c.rtmpUrl || '', c.streamKey || '', c.rtmpServerUrl || '', c.fullRtmpUrl || '', c.stateUf || '', c.city || '', c.status || 'ONLINE', c.isE2EEEncrypted ? 1 : 0, c.encryptionKeyHash || '', c.fps || 30, c.resolution || '1080p', c.storageUsedGB || 0, c.cloudRecordingsActive ? 1 : 0, c.motionSensitivity || 7, c.aiDetectionEnabled ? 1 : 0, c.twoWayAudioEnabled ? 1 : 0, c.lat || -17.0397, c.lng || -39.5312, c.thumbnailUrl || '', c.videoStreamUrl || '', c.isLiveWebcam ? 1 : 0, c.isDemo ? 1 : 0, c.createdAt || new Date().toISOString().split('T')[0]
               ]
             );
           } catch (e) {}
@@ -854,13 +857,14 @@ async function startServer() {
     try {
       sqliteDb.run(
         `INSERT OR REPLACE INTO cameras (
-          id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, name, location, protocol, connection_type, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           cam.id,
           cam.name,
           cam.location || '',
           cam.protocol || 'RTSP',
+          cam.connectionType || (cam.protocol === 'RTMP' ? 'REMOTE' : 'LOCAL'),
           cam.rtspUrl || '',
           cam.rtmpUrl || '',
           cam.streamKey || '',

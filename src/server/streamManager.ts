@@ -120,36 +120,45 @@ export class StreamManager {
     const streamKey = this.getStreamKey(cam);
     const sources: StreamSource[] = [];
 
-    const isRtspPrimary = cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'));
+    const isPrivateIp = (url?: string) => {
+      if (!url) return false;
+      return /192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|127\.0\.0\.1|localhost/.test(url);
+    };
+
+    const isLocalCam = cam.connectionType === 'LOCAL' ||
+      (cam.protocol === 'RTSP' && (!cam.rtmpUrl && !cam.fullRtmpUrl)) ||
+      isPrivateIp(cam.rtspUrl);
+
+    const isRtspPrimary = cam.protocol === 'RTSP' || isLocalCam || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'));
 
     // Candidate 1: RTSP URL if provided
     if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
       sources.push({ type: 'RTSP', url: cam.rtspUrl.trim() });
     }
 
-    // Candidate 2: RTMP URLs
-    const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
-    for (const candidate of rtmpCandidates) {
-      let str = (candidate as string).trim();
-      if (str.startsWith('rtmp://')) {
-        if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
-          str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
-        }
-        // Ensure stream key is appended to RTMP URL if it ends with /live or /live/
-        if (str.endsWith('/live') || str.endsWith('/live/')) {
-          const cleanBase = str.replace(/\/+$/, '');
-          str = `${cleanBase}/${streamKey}`;
-        } else if (!str.includes(streamKey) && !str.includes(streamKey.replace('cam_', ''))) {
-          // If URL ends with a trailing slash or path without key
-          const cleanBase = str.replace(/\/+$/, '');
-          str = `${cleanBase}/${streamKey}`;
-        }
-        if (!sources.some((s) => s.url === str)) {
-          sources.push({ type: 'RTMP', url: str });
-        }
-      } else if (str.startsWith('http://') || str.startsWith('https://')) {
-        if (!sources.some((s) => s.url === str)) {
-          sources.push({ type: 'HTTP', url: str });
+    // Candidate 2: RTMP URLs (only if explicitly defined by user or not strictly local)
+    if (!isLocalCam || (cam.rtmpUrl && cam.rtmpUrl.trim()) || (cam.fullRtmpUrl && cam.fullRtmpUrl.trim())) {
+      const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
+      for (const candidate of rtmpCandidates) {
+        let str = (candidate as string).trim();
+        if (str.startsWith('rtmp://')) {
+          if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
+            str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
+          }
+          if (str.endsWith('/live') || str.endsWith('/live/')) {
+            const cleanBase = str.replace(/\/+$/, '');
+            str = `${cleanBase}/${streamKey}`;
+          } else if (!str.includes(streamKey) && !str.includes(streamKey.replace('cam_', ''))) {
+            const cleanBase = str.replace(/\/+$/, '');
+            str = `${cleanBase}/${streamKey}`;
+          }
+          if (!sources.some((s) => s.url === str)) {
+            sources.push({ type: 'RTMP', url: str });
+          }
+        } else if (str.startsWith('http://') || str.startsWith('https://')) {
+          if (!sources.some((s) => s.url === str)) {
+            sources.push({ type: 'HTTP', url: str });
+          }
         }
       }
     }
@@ -163,10 +172,12 @@ export class StreamManager {
       }
     }
 
-    // Default RTMP server stream
-    const defaultRtmp = `rtmp://monitoramento.unityautomacoes.com.br:1935/live/${streamKey}`;
-    if (!sources.some((s) => s.url === defaultRtmp)) {
-      sources.push({ type: 'RTMP', url: defaultRtmp });
+    // Default RTMP server stream ONLY for remote/cloud RTMP cameras
+    if (!isLocalCam) {
+      const defaultRtmp = `rtmp://monitoramento.unityautomacoes.com.br:1935/live/${streamKey}`;
+      if (!sources.some((s) => s.url === defaultRtmp)) {
+        sources.push({ type: 'RTMP', url: defaultRtmp });
+      }
     }
 
     // Candidate 4: Synthetic live test pattern fallback

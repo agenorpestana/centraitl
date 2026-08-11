@@ -79,6 +79,7 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
 }) => {
   const [showForm, setShowForm] = useState(false);
   const [protocol, setProtocol] = useState<'RTSP' | 'RTMP'>('RTSP');
+  const [connectionType, setConnectionType] = useState<'LOCAL' | 'REMOTE'>('LOCAL');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [editingCamera, setEditingCamera] = useState<Camera | null>(null);
 
@@ -242,10 +243,11 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
       name: cameraName.trim(),
       location: `${selectedCity} - ${selectedUf}`,
       protocol,
+      connectionType,
       rtspUrl: protocol === 'RTSP' ? rtspUrl : '',
       rtmpUrl: protocol === 'RTMP' ? rtmpStreamSource : '',
       streamKey: `cam_${cleanKey}`,
-      rtmpServerUrl: serverBase,
+      rtmpServerUrl: protocol === 'RTMP' ? serverBase : '',
       fullRtmpUrl: protocol === 'RTMP' ? rtmpStreamSource : '',
       stateUf: selectedUf,
       city: selectedCity,

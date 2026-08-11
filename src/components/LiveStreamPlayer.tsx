@@ -634,12 +634,13 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               <h4 className="font-bold text-sm text-slate-100 truncate">{camera.name}</h4>
               <span
                 className={`px-2 py-0.5 rounded text-[10px] font-bold border shrink-0 ${
-                  camera.protocol === 'RTSP'
+                  camera.connectionType === 'LOCAL' || camera.protocol === 'RTSP'
                     ? 'bg-cyan-950/90 text-cyan-300 border-cyan-800'
                     : 'bg-emerald-950/90 text-emerald-400 border-emerald-800'
                 }`}
+                title={camera.connectionType === 'LOCAL' || camera.protocol === 'RTSP' ? 'Rede Local / Transcodificação HLS Direta' : 'Transmissão RTMP Nuvem'}
               >
-                {camera.protocol || 'RTMP'}
+                {camera.connectionType === 'LOCAL' || camera.protocol === 'RTSP' ? 'RTSP LAN' : camera.protocol || 'RTMP'}
               </span>
             </div>
 
