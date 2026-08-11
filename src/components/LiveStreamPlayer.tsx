@@ -352,10 +352,17 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);
           hlsInstance.on(HlsClass.Events.MANIFEST_PARSED, () => {
-            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
-            setConnectionState('ONLINE');
             videoElement.play().catch(() => {});
           });
+          hlsInstance.on(HlsClass.Events.FRAG_PARSED, () => {
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+            setConnectionState('ONLINE');
+          });
+          const handlePlaying = () => {
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+            setConnectionState('ONLINE');
+          };
+          videoElement.addEventListener('playing', handlePlaying);
           hlsInstance.on(HlsClass.Events.ERROR, (_: any, data: any) => {
             if (data.fatal) {
               if (data.type === HlsClass.ErrorTypes.NETWORK_ERROR) {

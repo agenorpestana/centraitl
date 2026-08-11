@@ -132,36 +132,57 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
   activeRtspUrls.set(key, streamSource);
   cameraProcessStartTimes.set(key, Date.now());
 
+  const isRtsp = streamSource.startsWith('rtsp://') || (cam && cam.protocol === 'RTSP');
+
   const ffmpegArgs: string[] = [];
   ffmpegArgs.push('-fflags', '+nobuffer+discardcorrupt+genpts', '-flags', 'low_delay');
 
-  if (streamSource.startsWith('rtsp://')) {
+  if (isRtsp) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
       '-stimeout', '10000000',
       '-use_wallclock_as_timestamps', '1',
-      '-avoid_negative_ts', 'make_zero'
+      '-avoid_negative_ts', 'make_zero',
+      '-analyzeduration', '2000000',
+      '-probesize', '2000000',
+      '-i', streamSource,
+      '-map', '0:v:0?',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-tune', 'zerolatency',
+      '-pix_fmt', 'yuv420p',
+      '-g', '30',
+      '-crf', '26',
+      '-map', '0:a:0?',
+      '-c:a', 'aac',
+      '-ac', '2',
+      '-ar', '44100',
+      '-b:a', '64k'
     );
-  } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
+  } else {
+    if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
+      ffmpegArgs.push(
+        '-reconnect', '1',
+        '-reconnect_at_eof', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5'
+      );
+    }
     ffmpegArgs.push(
-      '-reconnect', '1',
-      '-reconnect_at_eof', '1',
-      '-reconnect_streamed', '1',
-      '-reconnect_delay_max', '5'
+      '-analyzeduration', '1500000',
+      '-probesize', '1500000',
+      '-i', streamSource,
+      '-map', '0:v:0?',
+      '-c:v', 'copy',
+      '-map', '0:a:0?',
+      '-c:a', 'aac',
+      '-ac', '2',
+      '-ar', '44100',
+      '-b:a', '128k'
     );
   }
 
   ffmpegArgs.push(
-    '-analyzeduration', '1500000',
-    '-probesize', '1500000',
-    '-i', streamSource,
-    '-map', '0:v:0?',
-    '-c:v', 'copy',
-    '-map', '0:a:0?',
-    '-c:a', 'aac',
-    '-ar', '44100',
-    '-ac', '2',
-    '-b:a', '128k',
     '-f', 'hls',
     '-hls_time', '2',
     '-hls_list_size', '6',
@@ -2778,14 +2799,6 @@ async function startServer() {
       return res.sendFile(targetFile);
     }
 
-    // If m3u8 requested while camera stream is initiating, serve a temporary valid playlist so HLS player retries gracefully
-    if (subPath.endsWith('.m3u8') && matchedCam) {
-      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      const tempPlaylist = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n`;
-      return res.status(200).send(tempPlaylist);
-    }
-
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     return res.status(404).json({
       error: 'Câmera offline ou gerando segmento HLS',
@@ -2827,38 +2840,14 @@ async function startServer() {
           if (fs.existsSync(f)) {
             try {
               const stat = fs.statSync(f);
-              if (Date.now() - stat.mtimeMs < 35000) {
-                isOnline = true;
-                break;
+              if (Date.now() - stat.mtimeMs < 25000) {
+                const content = fs.readFileSync(f, 'utf8');
+                if (content.includes('.ts')) {
+                  isOnline = true;
+                  break;
+                }
               }
             } catch (e) {}
-          }
-        }
-
-        if (!isOnline) {
-          const logs =
-            lastFfmpegLogs.get(rawKey) ||
-            lastFfmpegLogs.get(keyUnderscore) ||
-            lastFfmpegLogs.get(keyDash) ||
-            [];
-          const logsJoined = logs.join(' ');
-          if (
-            logsJoined.includes('Stream mapping') ||
-            logsJoined.includes('Press [q] to stop') ||
-            logsJoined.includes('Output #0, hls') ||
-            logsJoined.includes('frame=')
-          ) {
-            isOnline = true;
-          }
-        }
-
-        if (!isOnline) {
-          const proc =
-            activeFfmpegProcesses.get(rawKey) ||
-            activeFfmpegProcesses.get(keyUnderscore) ||
-            activeFfmpegProcesses.get(keyDash);
-          if (proc && proc.exitCode === null && !proc.killed) {
-            isOnline = true;
           }
         }
 
