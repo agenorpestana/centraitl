@@ -324,7 +324,6 @@ export class StreamManager {
         '-fflags', '+nobuffer+discardcorrupt+genpts',
         '-flags', 'low_delay',
         '-rtsp_transport', activeSource.transport || 'tcp',
-        '-stimeout', timeoutVal,
         '-rw_timeout', timeoutVal,
         '-analyzeduration', '1000000',
         '-probesize', '1000000',
@@ -343,6 +342,10 @@ export class StreamManager {
         '-b:a', '64k',
       ];
     } else { // RTMP or HTTP
+      ffmpegArgs = [
+        '-fflags', '+nobuffer',
+        '-flags', 'low_delay',
+      ];
       if (activeSource.url.startsWith('http://') || activeSource.url.startsWith('https://')) {
         ffmpegArgs.push(
           '-reconnect', '1',
@@ -352,16 +355,11 @@ export class StreamManager {
         );
       }
       ffmpegArgs.push(
-        '-analyzeduration', '1000000',
-        '-probesize', '1000000',
         '-i', activeSource.url,
         '-map', '0:v:0?',
         '-c:v', 'copy',
         '-map', '0:a:0?',
-        '-c:a', 'aac',
-        '-ac', '2',
-        '-ar', '44100',
-        '-b:a', '128k'
+        '-c:a', 'copy'
       );
     }
 
