@@ -191,6 +191,7 @@ export const CameraDetailModal: React.FC<CameraDetailModalProps> = ({
                 zoomLevel={zoomLevel}
                 isMuted={isMuted}
                 showOverlayControls={true}
+                useSubStream={false}
               />
 
               {/* PTZ Action Notice */}

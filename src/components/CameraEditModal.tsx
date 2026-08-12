@@ -63,10 +63,19 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
   const initialFull = rawFull.replace(/aerocam\.itlfibra\.com/g, currentHost);
 
   const [name, setName] = useState(camera.name || '');
-  const [protocol, setProtocol] = useState<'RTSP' | 'RTMP'>(
-    camera.protocol === 'RTMP' ? 'RTMP' : 'RTSP'
+  const [protocol, setProtocol] = useState<'RTSP' | 'RTMP' | 'ONVIF'>(
+    camera.protocol === 'ONVIF' ? 'ONVIF' : camera.protocol === 'RTMP' ? 'RTMP' : 'RTSP'
   );
   const [rtspUrl, setRtspUrl] = useState(camera.rtspUrl || '');
+  const [onvifIp, setOnvifIp] = useState(camera.onvifIp || '');
+  const [onvifPort, setOnvifPort] = useState<number>(camera.onvifPort || 554);
+  const [onvifUsername, setOnvifUsername] = useState(camera.onvifUsername || 'admin');
+  const [onvifPassword, setOnvifPassword] = useState(camera.onvifPassword || '');
+  const [onvifProfile, setOnvifProfile] = useState(camera.onvifProfile || 'onvif1');
+  const [subStreamUrl, setSubStreamUrl] = useState(camera.subStreamUrl || '');
+  const [isProbingOnvif, setIsProbingOnvif] = useState(false);
+  const [onvifProbeNotice, setOnvifProbeNotice] = useState<string | null>(null);
+
   const [streamKey, setStreamKey] = useState(
     camera.streamKey || (camera.id ? camera.id.replace(/^cam-/, 'cam_') : 'cam_01')
   );
@@ -120,6 +129,39 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
       .catch(() => setLoadingCities(false));
   }, [stateUf]);
 
+  const handleProbeOnvif = async () => {
+    if (!onvifIp.trim()) {
+      alert('Por favor, informe o IP do dispositivo ONVIF (ex: 192.168.1.108).');
+      return;
+    }
+    setIsProbingOnvif(true);
+    setOnvifProbeNotice('Sondando câmera ONVIF e perfis de vídeo...');
+    try {
+      const res = await fetch('/api/onvif/probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ip: onvifIp.trim(),
+          port: onvifPort,
+          username: onvifUsername.trim(),
+          password: onvifPassword.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setOnvifProbeNotice(`ONVIF Conectado! ${data.message || ''}`);
+        if (data.mainStreamUrl) setRtspUrl(data.mainStreamUrl);
+        if (data.subStreamUrl) setSubStreamUrl(data.subStreamUrl);
+      } else {
+        setOnvifProbeNotice(`Falha na sondagem ONVIF: ${data.message || 'Erro de rede'}`);
+      }
+    } catch (e: any) {
+      setOnvifProbeNotice(`Erro ao conectar ONVIF: ${e.message || e}`);
+    } finally {
+      setIsProbingOnvif(false);
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -133,16 +175,34 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
       return;
     }
 
+    if (protocol === 'ONVIF' && !onvifIp.trim()) {
+      alert('Por favor, informe o IP do dispositivo ONVIF (ex: 192.168.1.108).');
+      return;
+    }
+
     const cleanKey = streamKey.trim().replace(/^cam-/, '').replace(/^cam_/, '');
     const validKey = `cam_${cleanKey}`;
     const rtmpStreamSource = fullRtmpUrl.trim().startsWith('rtmp://')
       ? fullRtmpUrl.trim()
       : `${rtmpServerUrl.trim().replace(/\/$/, '')}/${validKey}`;
 
+    const user = onvifUsername.trim() || 'admin';
+    const pass = onvifPassword.trim();
+    const auth = (user || pass) ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : '';
+    const constructedOnvifRtsp = rtspUrl.trim().startsWith('rtsp://')
+      ? rtspUrl.trim()
+      : `rtsp://${auth}${onvifIp.trim()}:${onvifPort || 554}/${onvifProfile || 'onvif1'}`;
+
     const updatedData: Partial<Camera> = {
       name: name.trim(),
       protocol,
-      rtspUrl: protocol === 'RTSP' ? rtspUrl.trim() : '',
+      rtspUrl: protocol === 'ONVIF' ? constructedOnvifRtsp : protocol === 'RTSP' ? rtspUrl.trim() : '',
+      onvifIp: onvifIp.trim(),
+      onvifPort: onvifPort || 554,
+      onvifUsername: user,
+      onvifPassword: pass,
+      onvifProfile: onvifProfile || 'onvif1',
+      subStreamUrl: subStreamUrl.trim() || `rtsp://${auth}${onvifIp.trim()}:${onvifPort || 554}/onvif2`,
       streamKey: validKey,
       rtmpServerUrl: rtmpServerUrl.trim(),
       rtmpUrl: protocol === 'RTMP' ? rtmpStreamSource : '',
@@ -220,7 +280,20 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
             <label className="block text-xs font-bold text-slate-200 mb-1.5">
               Protocolo de Transmissão:
             </label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setProtocol('ONVIF')}
+                className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center space-x-2 transition ${
+                  protocol === 'ONVIF'
+                    ? 'bg-purple-950/80 border-purple-500 text-purple-300 shadow-md'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                }`}
+              >
+                <Video className="w-4 h-4 text-purple-400" />
+                <span>ONVIF (Direct IP)</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setProtocol('RTSP')}
@@ -231,7 +304,7 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
                 }`}
               >
                 <Radio className="w-4 h-4" />
-                <span>RTSP (Conexão Direta / Pull)</span>
+                <span>RTSP (Direct Pull)</span>
               </button>
 
               <button
@@ -244,13 +317,117 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
                 }`}
               >
                 <RadioTower className="w-4 h-4" />
-                <span>RTMP (Servidor / Push)</span>
+                <span>RTMP (Server Push)</span>
               </button>
             </div>
           </div>
 
           {/* Protocol-Specific Fields */}
-          {protocol === 'RTSP' ? (
+          {protocol === 'ONVIF' ? (
+            <div className="p-3.5 bg-purple-950/20 border border-purple-800/60 rounded-xl space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-purple-300 flex items-center gap-1.5">
+                  <Video className="w-4 h-4 text-purple-400" />
+                  Configuração Conexão ONVIF
+                </span>
+                <button
+                  type="button"
+                  onClick={handleProbeOnvif}
+                  disabled={isProbingOnvif}
+                  className="px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isProbingOnvif ? 'animate-spin' : ''}`} />
+                  <span>{isProbingOnvif ? 'Sondando...' : 'Sondar Câmera'}</span>
+                </button>
+              </div>
+
+              {onvifProbeNotice && (
+                <div className="text-[11px] p-2 bg-purple-950/80 border border-purple-500/40 rounded-lg text-purple-200 font-mono">
+                  {onvifProbeNotice}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                    Endereço IP ONVIF:
+                  </label>
+                  <input
+                    type="text"
+                    value={onvifIp}
+                    onChange={(e) => setOnvifIp(e.target.value)}
+                    placeholder="ex: 192.168.1.108"
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 text-purple-300 font-mono px-3 py-1.5 rounded-xl text-xs outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                    Porta HTTP / ONVIF:
+                  </label>
+                  <input
+                    type="number"
+                    value={onvifPort}
+                    onChange={(e) => setOnvifPort(Number(e.target.value))}
+                    placeholder="80 / 554"
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 text-purple-300 font-mono px-3 py-1.5 rounded-xl text-xs outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                    Usuário ONVIF:
+                  </label>
+                  <input
+                    type="text"
+                    value={onvifUsername}
+                    onChange={(e) => setOnvifUsername(e.target.value)}
+                    placeholder="admin"
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 text-slate-200 px-3 py-1.5 rounded-xl text-xs outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                    Senha ONVIF:
+                  </label>
+                  <input
+                    type="password"
+                    value={onvifPassword}
+                    onChange={(e) => setOnvifPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 text-slate-200 px-3 py-1.5 rounded-xl text-xs outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                  URL RTSP Principal (Main Stream / Full HD 1080p):
+                </label>
+                <input
+                  type="text"
+                  value={rtspUrl}
+                  onChange={(e) => setRtspUrl(e.target.value)}
+                  placeholder="rtsp://admin:123456@192.168.1.108:554/onvif1"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 text-purple-300 font-mono px-3 py-1.5 rounded-xl text-xs outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                  URL Sub-Stream (Sub-Stream / Economia CPU em Grade):
+                </label>
+                <input
+                  type="text"
+                  value={subStreamUrl}
+                  onChange={(e) => setSubStreamUrl(e.target.value)}
+                  placeholder="rtsp://admin:123456@192.168.1.108:554/onvif2"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 text-amber-300 font-mono px-3 py-1.5 rounded-xl text-xs outline-none"
+                />
+              </div>
+            </div>
+          ) : protocol === 'RTSP' ? (
             <div className="p-3.5 bg-slate-950/80 border border-slate-800 rounded-xl space-y-2">
               <label className="block text-xs font-bold text-cyan-400">
                 URL de Conexão RTSP (DVR / NVR / Câmera IP):

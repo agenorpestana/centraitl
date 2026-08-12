@@ -20,6 +20,7 @@ function execAsync(cmd: string, timeoutMs = 5000): Promise<void> {
   });
 }
 import { createServer as createViteServer } from 'vite';
+import { discoverOnvifDevices, probeOnvifDevice, sendOnvifPtzCommand } from './src/utils/onvifHelper';
 
 // Helper function to hash passwords securely using PBKDF2 SHA-256 with salt
 function hashPasswordPBKDF2(password: string, salt = 'itl_vms_secure_salt_2026'): string {
@@ -57,6 +58,20 @@ function getValidStreamSource(cam: any): string {
   const key = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
 
+  // ONVIF protocol support
+  if (cam.protocol === 'ONVIF' || (cam.onvifIp && cam.onvifIp.trim())) {
+    if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
+      return cam.rtspUrl.trim();
+    }
+    const user = cam.onvifUsername || 'admin';
+    const pass = cam.onvifPassword || '';
+    const auth = (user || pass) ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : '';
+    const ip = (cam.onvifIp || '192.168.1.100').trim();
+    const port = cam.onvifPort || 554;
+    const profile = cam.onvifProfile || 'onvif1';
+    return `rtsp://${auth}${ip}:${port}/${profile}`;
+  }
+
   // Prioritize RTSP if camera protocol is RTSP or has rtspUrl starting with rtsp://
   if (cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'))) {
     if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
@@ -92,16 +107,20 @@ function getValidStreamSource(cam: any): string {
 
 const cameraProcessStartTimes = new Map<string, number>();
 
-function startCameraRtspStream(cam: Camera, forceRestart = false) {
+function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = false) {
   if (!cam) return;
-  const key = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
+  const baseKey = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
+  const cleanBase = baseKey.replace(/[-_]sub$/, '');
+  const key = isSubStream ? `${cleanBase}_sub` : cleanBase;
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
 
   if (cam.id && deletedCameraIds.has(cam.id)) return;
   if (key && deletedCameraIds.has(key)) return;
   if (cleanKey && deletedCameraIds.has(`cam-${cleanKey}`)) return;
 
-  let streamSource = getValidStreamSource(cam);
+  let streamSource = isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim()
+    ? cam.subStreamUrl.trim()
+    : getValidStreamSource(cam);
 
   if (streamSource.includes('localhost:1935') || streamSource.includes('127.0.0.1:1935') || streamSource.includes('aerocam.itlfibra.com:1935')) {
     streamSource = streamSource.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
@@ -120,14 +139,14 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
   // Stop previous process if restarting or changing URL
   stopCameraRtspStream(key);
 
-  console.log(`[FFmpeg ITL] Conectando fluxo ${cam.protocol || 'RTSP/RTMP'} -> HLS para a câmera '${cam.name}' (${key}) via ${streamSource}...`);
+  console.log(`[FFmpeg ITL] Conectando fluxo ${cam.protocol || 'RTSP/RTMP'} (${isSubStream ? 'Sub-stream SD 360p' : 'Full HD'}) -> HLS para '${cam.name}' (${key}) via ${streamSource}...`);
   const hlsDir = '/tmp/hls';
   if (!fs.existsSync(hlsDir)) {
     try { fs.mkdirSync(hlsDir, { recursive: true }); } catch (e) {}
   }
   const hlsPath = path.join(hlsDir, `${key}.m3u8`);
 
-  const logList: string[] = [`[${new Date().toLocaleTimeString()}] Conectando ao fluxo: ${streamSource}`];
+  const logList: string[] = [`[${new Date().toLocaleTimeString()}] Conectando ao fluxo (${isSubStream ? 'SUB 360p' : 'MAIN'}): ${streamSource}`];
   lastFfmpegLogs.set(key, logList);
   activeRtspUrls.set(key, streamSource);
   cameraProcessStartTimes.set(key, Date.now());
@@ -154,8 +173,23 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
     '-analyzeduration', '1000000',
     '-probesize', '1000000',
     '-i', streamSource,
-    '-map', '0:v:0?',
-    '-c:v', 'copy',
+    '-map', '0:v:0?'
+  );
+
+  if (isSubStream && (!cam.subStreamUrl || !cam.subStreamUrl.trim())) {
+    ffmpegArgs.push(
+      '-vf', 'scale=640:-2',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-tune', 'zerolatency',
+      '-r', '15',
+      '-b:v', '400k'
+    );
+  } else {
+    ffmpegArgs.push('-c:v', 'copy');
+  }
+
+  ffmpegArgs.push(
     '-map', '0:a:0?',
     '-c:a', 'aac',
     '-f', 'hls',
@@ -1253,10 +1287,10 @@ async function startServer() {
       const safeStorage = isNaN(Number(cam.storageUsedGB)) ? 0.1 : Number(cam.storageUsedGB);
 
       await queryPg(
-        `INSERT INTO cameras (id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO cameras (id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, onvif_ip, onvif_port, onvif_username, onvif_password, onvif_profile, sub_stream_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
-         name=EXCLUDED.name, location=EXCLUDED.location, protocol=EXCLUDED.protocol, rtsp_url=EXCLUDED.rtsp_url, rtmp_url=EXCLUDED.rtmp_url, stream_key=EXCLUDED.stream_key, rtmp_server_url=EXCLUDED.rtmp_server_url, full_rtmp_url=EXCLUDED.full_rtmp_url, state_uf=EXCLUDED.state_uf, city=EXCLUDED.city, status=EXCLUDED.status, is_e2ee_encrypted=EXCLUDED.is_e2ee_encrypted, encryption_key_hash=EXCLUDED.encryption_key_hash, fps=EXCLUDED.fps, resolution=EXCLUDED.resolution, storage_used_gb=EXCLUDED.storage_used_gb, cloud_recordings_active=EXCLUDED.cloud_recordings_active, motion_sensitivity=EXCLUDED.motion_sensitivity, ai_detection_enabled=EXCLUDED.ai_detection_enabled, two_way_audio_enabled=EXCLUDED.two_way_audio_enabled, lat=EXCLUDED.lat, lng=EXCLUDED.lng, thumbnail_url=EXCLUDED.thumbnail_url, video_stream_url=EXCLUDED.video_stream_url, is_live_webcam=EXCLUDED.is_live_webcam, is_demo=EXCLUDED.is_demo`,
+         name=EXCLUDED.name, location=EXCLUDED.location, protocol=EXCLUDED.protocol, rtsp_url=EXCLUDED.rtsp_url, rtmp_url=EXCLUDED.rtmp_url, stream_key=EXCLUDED.stream_key, rtmp_server_url=EXCLUDED.rtmp_server_url, full_rtmp_url=EXCLUDED.full_rtmp_url, onvif_ip=EXCLUDED.onvif_ip, onvif_port=EXCLUDED.onvif_port, onvif_username=EXCLUDED.onvif_username, onvif_password=EXCLUDED.onvif_password, onvif_profile=EXCLUDED.onvif_profile, sub_stream_url=EXCLUDED.sub_stream_url, state_uf=EXCLUDED.state_uf, city=EXCLUDED.city, status=EXCLUDED.status, is_e2ee_encrypted=EXCLUDED.is_e2ee_encrypted, encryption_key_hash=EXCLUDED.encryption_key_hash, fps=EXCLUDED.fps, resolution=EXCLUDED.resolution, storage_used_gb=EXCLUDED.storage_used_gb, cloud_recordings_active=EXCLUDED.cloud_recordings_active, motion_sensitivity=EXCLUDED.motion_sensitivity, ai_detection_enabled=EXCLUDED.ai_detection_enabled, two_way_audio_enabled=EXCLUDED.two_way_audio_enabled, lat=EXCLUDED.lat, lng=EXCLUDED.lng, thumbnail_url=EXCLUDED.thumbnail_url, video_stream_url=EXCLUDED.video_stream_url, is_live_webcam=EXCLUDED.is_live_webcam, is_demo=EXCLUDED.is_demo`,
         [
           cam.id,
           cam.name,
@@ -1267,6 +1301,12 @@ async function startServer() {
           cam.streamKey || '',
           cam.rtmpServerUrl || '',
           cam.fullRtmpUrl || '',
+          cam.onvifIp || '',
+          cam.onvifPort || 554,
+          cam.onvifUsername || '',
+          cam.onvifPassword || '',
+          cam.onvifProfile || '',
+          cam.subStreamUrl || '',
           cam.stateUf || '',
           cam.city || '',
           cam.status || 'ONLINE',
@@ -1624,6 +1664,12 @@ async function startServer() {
             streamKey: row.stream_key || '',
             rtmpServerUrl: row.rtmp_server_url || '',
             fullRtmpUrl: row.full_rtmp_url || '',
+            onvifIp: row.onvif_ip || '',
+            onvifPort: row.onvif_port || 554,
+            onvifUsername: row.onvif_username || '',
+            onvifPassword: row.onvif_password || '',
+            onvifProfile: row.onvif_profile || '',
+            subStreamUrl: row.sub_stream_url || '',
             stateUf: row.state_uf || '',
             city: row.city || '',
             status: row.status || 'ONLINE',
@@ -1846,6 +1892,12 @@ async function startServer() {
         stream_key: 'VARCHAR(100)',
         rtmp_server_url: 'TEXT',
         full_rtmp_url: 'TEXT',
+        onvif_ip: 'VARCHAR(100)',
+        onvif_port: 'INT DEFAULT 554',
+        onvif_username: 'VARCHAR(100)',
+        onvif_password: 'TEXT',
+        onvif_profile: 'VARCHAR(100)',
+        sub_stream_url: 'TEXT',
         state_uf: 'VARCHAR(20)',
         city: 'VARCHAR(100)',
         status: "VARCHAR(50) DEFAULT 'ONLINE'",
@@ -2721,27 +2773,29 @@ async function startServer() {
       }
     }
 
+    const isSub = subPath.includes('_sub') || subPath.includes('-sub');
     const cleanKey = subPath.replace(/\.m3u8$/, '').replace(/_\d+\.ts$/, '').replace(/\.ts$/, '');
-    const cleanKeyUnderscore = cleanKey.replace(/^cam-/, 'cam_');
-    const cleanKeyDash = cleanKey.replace(/^cam_/, 'cam-');
-    const rawKeyNum = cleanKey.replace(/^cam[_-]/, '');
+    const cleanBaseKey = cleanKey.replace(/[-_]sub$/, '');
+    const cleanKeyUnderscore = cleanBaseKey.replace(/^cam-/, 'cam_');
+    const cleanKeyDash = cleanBaseKey.replace(/^cam_/, 'cam-');
+    const rawKeyNum = cleanBaseKey.replace(/^cam[_-]/, '');
 
     const matchedCam = cameras.find(
       (c) =>
-        (c.streamKey || c.id) === cleanKey ||
-        c.id === cleanKey ||
+        (c.streamKey || c.id) === cleanBaseKey ||
+        c.id === cleanBaseKey ||
         c.id === cleanKeyDash ||
         c.id === cleanKeyUnderscore ||
         c.streamKey === cleanKeyUnderscore ||
         c.streamKey === cleanKeyDash ||
-        (c.streamKey && (c.streamKey === cleanKey || c.streamKey.endsWith(cleanKey))) ||
+        (c.streamKey && (c.streamKey === cleanBaseKey || c.streamKey.endsWith(cleanBaseKey))) ||
         (c.id && c.id.replace(/^cam[_-]/, '') === rawKeyNum) ||
         (c.streamKey && c.streamKey.replace(/^cam[_-]/, '') === rawKeyNum)
     );
 
     // Ensure FFmpeg process is started on demand if file doesn't exist
     if (!fs.existsSync(targetFile) && matchedCam) {
-      startCameraRtspStream(matchedCam);
+      startCameraRtspStream(matchedCam, false, isSub);
     }
 
     // If file doesn't exist yet (initial 1-3s generation delay), wait up to 3.5s
@@ -3093,6 +3147,96 @@ async function startServer() {
           logs: currentLogs,
         });
       }
+    }
+  });
+
+  // Endpoints ONVIF Discovery, Probe e PTZ
+  app.post('/api/onvif/discover', async (req, res) => {
+    try {
+      const timeout = Number(req.body?.timeoutMs) || 2500;
+      const discovered = await discoverOnvifDevices(timeout);
+      
+      const onvifCamsFromMem = cameras.filter((c) => c.protocol === 'ONVIF' || (c.onvifIp && c.onvifIp.trim()));
+      for (const cam of onvifCamsFromMem) {
+        if (cam.onvifIp && !discovered.some((d) => d.ip === cam.onvifIp)) {
+          discovered.push({
+            ip: cam.onvifIp,
+            port: cam.onvifPort || 554,
+            xaddr: `http://${cam.onvifIp}:${cam.onvifPort || 80}/onvif/device_service`,
+            manufacturer: 'ONVIF Configurada',
+            model: 'IP Camera',
+            name: cam.name,
+            mainStreamUrl: cam.rtspUrl || `rtsp://${cam.onvifIp}:${cam.onvifPort || 554}/onvif1`,
+            subStreamUrl: cam.subStreamUrl || `rtsp://${cam.onvifIp}:${cam.onvifPort || 554}/onvif2`,
+          });
+        }
+      }
+
+      res.json({
+        success: true,
+        count: discovered.length,
+        devices: discovered,
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message || 'Erro na descoberta ONVIF' });
+    }
+  });
+
+  app.post('/api/onvif/probe', async (req, res) => {
+    try {
+      const { ip, port, username, password } = req.body;
+      if (!ip) {
+        return res.status(400).json({ success: false, message: 'IP do dispositivo ONVIF é obrigatório.' });
+      }
+
+      const result = await probeOnvifDevice(
+        ip,
+        Number(port) || 80,
+        username || 'admin',
+        password || ''
+      );
+
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'Falha ao sondar câmera ONVIF.' });
+    }
+  });
+
+  app.post('/api/onvif/ptz', async (req, res) => {
+    try {
+      const { cameraId, ip, port, username, password, action, speed } = req.body;
+      
+      let targetIp = ip;
+      let targetPort = port || 80;
+      let targetUser = username || 'admin';
+      let targetPass = password || '';
+
+      if (cameraId) {
+        const cam = cameras.find((c) => c.id === cameraId || c.streamKey === cameraId);
+        if (cam) {
+          targetIp = targetIp || cam.onvifIp;
+          targetPort = targetPort || cam.onvifPort || 80;
+          targetUser = targetUser || cam.onvifUsername || 'admin';
+          targetPass = targetPass || cam.onvifPassword || '';
+        }
+      }
+
+      if (!targetIp) {
+        return res.status(400).json({ success: false, message: 'IP do dispositivo ONVIF é necessário para PTZ.' });
+      }
+
+      const result = await sendOnvifPtzCommand(
+        targetIp,
+        Number(targetPort) || 80,
+        targetUser,
+        targetPass,
+        action,
+        Number(speed) || 0.5
+      );
+
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message || 'Erro no comando PTZ' });
     }
   });
 

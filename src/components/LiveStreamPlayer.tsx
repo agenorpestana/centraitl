@@ -30,6 +30,7 @@ interface LiveStreamPlayerProps {
   onSelectCamera?: (cam: Camera) => void;
   showOverlayControls?: boolean;
   hideBottomCard?: boolean;
+  useSubStream?: boolean;
 }
 
 const cleanDoubleUrl = (url: string | undefined | null): string => {
@@ -39,15 +40,19 @@ const cleanDoubleUrl = (url: string | undefined | null): string => {
   return cleaned;
 };
 
-const getInitialVideoUrl = (cam: Camera) => {
+const getInitialVideoUrl = (cam: Camera, useSubStream = false) => {
   if (cam.videoStreamUrl && cam.videoStreamUrl.trim() !== '') {
     let url = cleanDoubleUrl(cam.videoStreamUrl);
     if (url.includes('/live/') && !url.endsWith('.m3u8')) url += '.m3u8';
+    if (useSubStream && url.includes('/live/') && !url.includes('_sub.m3u8')) {
+      url = url.replace(/\.m3u8$/, '_sub.m3u8');
+    }
     return url;
   }
   const key = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
-  return `/live/cam_${cleanKey}.m3u8`;
+  const suffix = useSubStream ? '_sub.m3u8' : '.m3u8';
+  return `/live/cam_${cleanKey}${suffix}`;
 };
 
 type ConnectionState = 'LOADING' | 'ONLINE' | 'OFFLINE';
@@ -60,6 +65,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   onSelectCamera,
   showOverlayControls = true,
   hideBottomCard = false,
+  useSubStream = false,
 }) => {
   const streamKey = camera.streamKey || (camera.id ? (camera.id.startsWith('cam-') ? `cam_${camera.id.replace('cam-', '')}` : camera.id) : 'stream');
   const cleanKey = streamKey.replace(/^cam-/, '').replace(/^cam_/, '');
@@ -73,7 +79,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');
-  const [videoUrl, setVideoUrl] = useState<string>(() => cleanDoubleUrl(getInitialVideoUrl(camera)));
+  const [videoUrl, setVideoUrl] = useState<string>(() => cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream)));
   const [isEditingUrl, setIsEditingUrl] = useState(false);
   const [tempUrlInput, setTempUrlInput] = useState(() => cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || videoUrl));
 
@@ -275,6 +281,11 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       clearInterval(recurringTimer);
     };
   }, [connectionState, camera.id, camera.thumbnailUrl, captureAndUploadSnapshot]);
+
+  // Sync videoUrl state when camera or useSubStream changes
+  useEffect(() => {
+    setVideoUrl(cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream)));
+  }, [camera.id, camera.videoStreamUrl, camera.streamKey, useSubStream]);
 
   // Connect stream
   const connectStream = () => {
@@ -595,12 +606,25 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               <h4 className="font-bold text-sm text-slate-100 truncate">{camera.name}</h4>
               <span
                 className={`px-2 py-0.5 rounded text-[10px] font-bold border shrink-0 ${
-                  camera.protocol === 'RTSP'
+                  camera.protocol === 'ONVIF'
+                    ? 'bg-purple-950/90 text-purple-300 border-purple-800'
+                    : camera.protocol === 'RTSP'
                     ? 'bg-cyan-950/90 text-cyan-300 border-cyan-800'
                     : 'bg-emerald-950/90 text-emerald-400 border-emerald-800'
                 }`}
               >
                 {camera.protocol || 'RTMP'}
+              </span>
+
+              <span
+                className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold border shrink-0 ${
+                  useSubStream && !isFullscreen
+                    ? 'bg-amber-950/80 text-amber-300 border-amber-800/80'
+                    : 'bg-emerald-950/80 text-emerald-300 border-emerald-800/80'
+                }`}
+                title={useSubStream && !isFullscreen ? 'Modo de menor resolução para economia de CPU/Processamento' : 'Modo Alta Definição Full HD'}
+              >
+                {useSubStream && !isFullscreen ? 'SD 360p' : 'Full HD'}
               </span>
             </div>
 

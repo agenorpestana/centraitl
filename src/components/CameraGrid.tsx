@@ -277,6 +277,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                     onSelectCamera={() => onSelectCamera(camera)}
                     showOverlayControls={false}
                     hideBottomCard={true}
+                    useSubStream={true}
                   />
                 </div>
 
@@ -572,6 +573,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                     isMuted={isMuted}
                     onSelectCamera={onSelectCamera}
                     showOverlayControls={true}
+                    useSubStream={true}
                   />
 
                   {/* Live 2-Way RTMP Audio Active Bar */}
