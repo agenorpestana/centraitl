@@ -86,13 +86,28 @@ export const DatabaseDiagnosticsPanel: React.FC<DatabaseDiagnosticsPanelProps> =
     setConsoleLogs((prev) => [`[${timestamp}] ${msg}`, ...prev.slice(0, 99)]);
   };
 
+  const parseJsonResponse = async (res: Response) => {
+    const rawText = await res.text();
+    if (!rawText || !rawText.trim()) {
+      return {};
+    }
+    try {
+      return JSON.parse(rawText);
+    } catch (e) {
+      if (rawText.includes('<html') || rawText.includes('<!DOCTYPE')) {
+        throw new Error(`Servidor respondeu com código de erro HTTP ${res.status} (Nginx/Gateway). Verifique o serviço no servidor.`);
+      }
+      throw new Error(`Resposta inválida do servidor: ${rawText.substring(0, 100)}`);
+    }
+  };
+
   const fetchDbStatus = async () => {
     setLoadingStatus(true);
     addLog('Solicitando status do banco de dados PostgreSQL...');
     try {
       const res = await fetch('/api/db-status');
       if (res.ok) {
-        const data: DbStatusResponse = await res.json();
+        const data: DbStatusResponse = await parseJsonResponse(res);
         setDbStatus(data);
         if (data.host) {
           setConfig((prev) => ({
@@ -135,7 +150,7 @@ export const DatabaseDiagnosticsPanel: React.FC<DatabaseDiagnosticsPanelProps> =
       const elapsed = Math.round(endTime - startTime);
 
       if (res.ok) {
-        const data = await res.json();
+        const data = await parseJsonResponse(res);
         if (Array.isArray(data.tests)) {
           setTestResults(data.tests);
           data.tests.forEach((t: TestResult) => {
@@ -144,8 +159,8 @@ export const DatabaseDiagnosticsPanel: React.FC<DatabaseDiagnosticsPanelProps> =
         }
         addLog(`Diagnóstico concluído em ${elapsed}ms. Status geral: ${data.success ? 'SUCESSO' : 'ATENÇÃO'}`);
       } else {
-        const errorText = await res.text();
-        addLog(`[ERRO HTTP ${res.status}] Falha ao executar /api/db-test: ${errorText}`);
+        const errorText = await res.text().catch(() => '');
+        addLog(`[ERRO HTTP ${res.status}] Falha ao executar /api/db-test: ${errorText.substring(0, 100)}`);
         setTestResults([
           {
             step: 'Conexão HTTP Backend',
@@ -176,7 +191,7 @@ export const DatabaseDiagnosticsPanel: React.FC<DatabaseDiagnosticsPanelProps> =
     addLog('=== INICIANDO AUDITORIA TABELA A TABELA, COLUNA A COLUNA E SINCRONIZAÇÃO ===');
     try {
       const res = await fetch('/api/db-sync', { method: 'POST' });
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (data.success) {
         addLog(`[SUCESSO] ${data.message}`);
         if (data.auditResult?.auditLog) {
@@ -221,7 +236,7 @@ export const DatabaseDiagnosticsPanel: React.FC<DatabaseDiagnosticsPanelProps> =
         body: JSON.stringify(config),
       });
 
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (res.ok && data.success) {
         setConfigMessage({ type: 'success', text: data.message || 'Configuração salva e conexão estabelecida!' });
         addLog(`[SUCESSO] Conexão com PostgreSQL estabelecida no host ${config.dbHost}:${config.dbPort}`);

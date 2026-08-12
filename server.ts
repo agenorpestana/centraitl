@@ -1317,7 +1317,6 @@ async function startServer() {
 
   // Helper functions to persist data to PostgreSQL
   async function syncRecordingToMysql(rec: CloudRecording) {
-    saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
       await queryPg(
@@ -1357,7 +1356,6 @@ async function startServer() {
   }
 
   async function syncCameraToMysql(cam: Camera) {
-    saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
       const safeLat = isNaN(Number(cam.lat)) ? -17.0397 : Number(cam.lat);
@@ -1426,7 +1424,6 @@ async function startServer() {
 
   async function syncUserToMysql(u: User) {
     deletedUserIds.delete(u.id);
-    saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
       const safeCustomPerms = typeof u.customPermissions === 'string'
@@ -1488,7 +1485,6 @@ async function startServer() {
 
   async function syncPlanToMysql(plan: FinancialPlan) {
     deletedPlanIds.delete(plan.id);
-    saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
       await queryPg(
@@ -1523,7 +1519,6 @@ async function startServer() {
 
   async function syncInvoiceToMysql(inv: Invoice) {
     deletedInvoiceIds.delete(inv.id);
-    saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
       await queryPg(
@@ -1565,7 +1560,6 @@ async function startServer() {
   }
 
   async function syncMpConfigToMysql(cfg: MercadoPagoConfig) {
-    saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
       await queryPg(
@@ -1587,7 +1581,6 @@ async function startServer() {
   }
 
   async function syncBackupConfigToMysql(cfg: BackupConfig) {
-    saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
       await queryPg(
@@ -1613,7 +1606,6 @@ async function startServer() {
   }
 
   async function syncNotificationConfigToMysql(cfg: NotificationConfig) {
-    saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
       await queryPg(
@@ -1639,7 +1631,6 @@ async function startServer() {
   }
 
   async function syncSystemSettingsToMysql(storageLimitGB: number) {
-    saveToLocalFile();
     if (!isPgActive || !pool) return;
     try {
       await queryPg(
@@ -1687,14 +1678,16 @@ async function startServer() {
         try { await queryPg('DELETE FROM financial_invoices WHERE id = ?', [id]); } catch (e) {}
       }
 
-      // 2. Push all local JSON memory entities into PostgreSQL (upsert)
+      // 2. Push essential local memory entities into PostgreSQL (upsert)
       for (const c of cameras) {
         if (!deletedCameraIds.has(c.id)) {
           try { await syncCameraToMysql(c); } catch (e) {}
         }
       }
       for (const u of users) { if (!deletedUserIds.has(u.id)) { try { await syncUserToMysql(u); } catch (e) {} } }
-      for (const r of recordings) { if (!deletedRecordingIds.has(r.id)) { try { await syncRecordingToMysql(r); } catch (e) {} } }
+      // Sync top 100 most recent recordings to PostgreSQL to ensure fast HTTP response time
+      const recentRecs = recordings.slice(0, 100);
+      for (const r of recentRecs) { if (!deletedRecordingIds.has(r.id)) { try { await syncRecordingToMysql(r); } catch (e) {} } }
       for (const p of plans) { if (!deletedPlanIds.has(p.id)) { try { await syncPlanToMysql(p); } catch (e) {} } }
       for (const i of invoices) { if (!deletedInvoiceIds.has(i.id)) { try { await syncInvoiceToMysql(i); } catch (e) {} } }
       try { await syncMpConfigToMysql(mpConfig); } catch (e) {}
