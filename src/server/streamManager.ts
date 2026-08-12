@@ -156,6 +156,7 @@ export class StreamManager {
     if (!cam) return [{ type: 'SYNTHETIC', url: 'synthetic:stream' }];
 
     const streamKey = this.getStreamKey(cam, profile);
+    const baseStreamKey = this.getStreamKey(cam, 'default');
     const sources: StreamSource[] = [];
     const isSub = profile === 'sub';
 
@@ -165,10 +166,8 @@ export class StreamManager {
     };
 
     const isLocalCam = cam.connectionType === 'LOCAL' ||
-      (cam.protocol === 'RTSP' && (!cam.rtmpUrl && !cam.fullRtmpUrl)) ||
-      isPrivateIp(cam.rtspUrl);
-
-    const isRtspPrimary = cam.protocol === 'RTSP' || isLocalCam || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'));
+      isPrivateIp(cam.rtspUrl) ||
+      (cam.protocol === 'RTSP' && !cam.rtmpUrl && !cam.fullRtmpUrl);
 
     // Candidates for RTSP
     if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
@@ -190,29 +189,24 @@ export class StreamManager {
       }
     }
 
-    // Candidate 2: RTMP URLs (only if explicitly defined by user or not strictly local)
-    if (!isLocalCam || (cam.rtmpUrl && cam.rtmpUrl.trim()) || (cam.fullRtmpUrl && cam.fullRtmpUrl.trim())) {
-      const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
-      for (const candidate of rtmpCandidates) {
-        let str = (candidate as string).trim();
-        if (str.startsWith('rtmp://')) {
-          if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
-            str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
-          }
-          if (str.endsWith('/live') || str.endsWith('/live/')) {
-            const cleanBase = str.replace(/\/+$/, '');
-            str = `${cleanBase}/${streamKey}`;
-          } else if (!str.includes(streamKey) && !str.includes(streamKey.replace('cam_', ''))) {
-            const cleanBase = str.replace(/\/+$/, '');
-            str = `${cleanBase}/${streamKey}`;
-          }
-          if (!sources.some((s) => s.url === str)) {
-            sources.push({ type: 'RTMP', url: str });
-          }
-        } else if (str.startsWith('http://') || str.startsWith('https://')) {
-          if (!sources.some((s) => s.url === str)) {
-            sources.push({ type: 'HTTP', url: str });
-          }
+    // Candidate 2: RTMP URLs (only if explicitly defined by user or for RTMP cameras)
+    const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
+    for (const candidate of rtmpCandidates) {
+      let str = (candidate as string).trim();
+      if (str.startsWith('rtmp://')) {
+        if (str.endsWith('/live') || str.endsWith('/live/')) {
+          const cleanBase = str.replace(/\/+$/, '');
+          str = `${cleanBase}/${baseStreamKey}`;
+        } else if (!str.includes(baseStreamKey) && !str.includes(baseStreamKey.replace('cam_', ''))) {
+          const cleanBase = str.replace(/\/+$/, '');
+          str = `${cleanBase}/${baseStreamKey}`;
+        }
+        if (!sources.some((s) => s.url === str)) {
+          sources.push({ type: 'RTMP', url: str });
+        }
+      } else if (str.startsWith('http://') || str.startsWith('https://')) {
+        if (!sources.some((s) => s.url === str)) {
+          sources.push({ type: 'HTTP', url: str });
         }
       }
     }
@@ -226,9 +220,10 @@ export class StreamManager {
       }
     }
 
-    // Default RTMP server stream ONLY for remote/cloud RTMP cameras
-    if (!isLocalCam) {
-      const defaultRtmp = `rtmp://monitoramento.unityautomacoes.com.br:1935/live/${streamKey}`;
+    // Default RTMP server stream ONLY for cameras explicitly set to RTMP protocol when no other RTMP URL exists
+    if (cam.protocol === 'RTMP' && !sources.some((s) => s.type === 'RTMP')) {
+      const host = process.env.APP_DOMAIN || 'localhost';
+      const defaultRtmp = `rtmp://${host}:1935/live/${baseStreamKey}`;
       if (!sources.some((s) => s.url === defaultRtmp)) {
         sources.push({ type: 'RTMP', url: defaultRtmp });
       }
@@ -241,10 +236,10 @@ export class StreamManager {
     }
 
     // If RTMP is primary protocol, sort RTMP candidates before RTSP
-    if (!isRtspPrimary) {
+    if (cam.protocol === 'RTMP') {
       sources.sort((a, b) => {
-        if (a.type === 'RTMP' && b.type === 'RTSP') return -1;
-        if (a.type === 'RTSP' && b.type === 'RTMP') return 1;
+        if (a.type === 'RTMP' && b.type !== 'RTMP') return -1;
+        if (a.type !== 'RTMP' && b.type === 'RTMP') return 1;
         return 0;
       });
     }
@@ -419,6 +414,7 @@ export class StreamManager {
         ffmpegArgs.push('-an');
       }
     } else { // RTMP or HTTP
+      const isSubStream = profile === 'sub' || streamKey.endsWith('_sub');
       ffmpegArgs = [
         '-fflags', '+nobuffer',
         '-flags', 'low_delay',
@@ -431,13 +427,28 @@ export class StreamManager {
           '-reconnect_delay_max', '5'
         );
       }
-      ffmpegArgs.push(
-        '-i', activeSource.url,
-        '-map', '0:v:0?',
-        '-c:v', 'copy',
-        '-map', '0:a:0?',
-        '-c:a', 'copy'
-      );
+      ffmpegArgs.push('-i', activeSource.url, '-map', '0:v:0?');
+
+      if (isSubStream) {
+        ffmpegArgs.push(
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-tune', 'zerolatency',
+          '-pix_fmt', 'yuv420p',
+          '-vf', "scale='min(640,iw)':-2",
+          '-r', '15',
+          '-crf', '30',
+          '-b:v', '350k',
+          '-maxrate', '450k',
+          '-bufsize', '900k',
+          '-an'
+        );
+      } else {
+        ffmpegArgs.push(
+          '-c:v', 'copy',
+          '-an'
+        );
+      }
     }
 
     ffmpegArgs.push(

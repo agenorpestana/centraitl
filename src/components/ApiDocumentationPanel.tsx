@@ -44,7 +44,7 @@ export const ApiDocumentationPanel: React.FC = () => {
     if (typeof window !== 'undefined' && window.location.host) {
       return window.location.host;
     }
-    return 'monitoramento.unityautomacoes.com.br';
+    return 'localhost';
   });
 
   const [selectedCategory, setSelectedCategory] = useState<string>('Todos');
@@ -213,7 +213,7 @@ export const ApiDocumentationPanel: React.FC = () => {
             protocol: 'RTSP',
             resolution: '1080p Full HD',
             fps: 30,
-            fullRtmpUrl: 'https://monitoramento.unityautomacoes.com.br/live/cam_01.m3u8',
+            fullRtmpUrl: 'https://seudominio.com.br/live/cam_01.m3u8',
           },
         ],
       },
@@ -249,7 +249,7 @@ export const ApiDocumentationPanel: React.FC = () => {
           name: 'Câmera Portaria Leste',
           status: 'ONLINE',
           streamKey: 'cam_4820',
-          fullRtmpUrl: 'https://monitoramento.unityautomacoes.com.br/live/cam_4820.m3u8',
+          fullRtmpUrl: 'https://seudominio.com.br/live/cam_4820.m3u8',
         },
       },
     },
@@ -272,9 +272,9 @@ export const ApiDocumentationPanel: React.FC = () => {
           {
             id: 'cam-01',
             name: 'Câmera Principal',
-            hlsUrl: 'https://monitoramento.unityautomacoes.com.br/live/cam_01.m3u8',
-            mjpegUrl: 'https://monitoramento.unityautomacoes.com.br/api/stream?id=cam-01',
-            snapshotUrl: 'https://monitoramento.unityautomacoes.com.br/api/cameras/cam-01/snapshot',
+            hlsUrl: 'https://seudominio.com.br/live/cam_01.m3u8',
+            mjpegUrl: 'https://seudominio.com.br/api/stream?id=cam-01',
+            snapshotUrl: 'https://seudominio.com.br/api/cameras/cam-01/snapshot',
             status: 'ONLINE',
           },
         ],
@@ -463,10 +463,10 @@ export const ApiDocumentationPanel: React.FC = () => {
             motionSensitivity: 80,
             twoWayAudioEnabled: false,
             streamKey: 'cam_01',
-            rtspUrl: 'rtsp://monitoramento.unityautomacoes.com.br:554/live/cam-01',
-            hlsUrl: 'https://monitoramento.unityautomacoes.com.br/live/cam_01.m3u8',
-            mjpegUrl: 'https://monitoramento.unityautomacoes.com.br/api/stream?id=cam-01',
-            snapshotUrl: 'https://monitoramento.unityautomacoes.com.br/api/cameras/cam-01/snapshot',
+            rtspUrl: 'rtsp://seudominio.com.br:554/live/cam-01',
+            hlsUrl: 'https://seudominio.com.br/live/cam_01.m3u8',
+            mjpegUrl: 'https://seudominio.com.br/api/stream?id=cam-01',
+            snapshotUrl: 'https://seudominio.com.br/api/cameras/cam-01/snapshot',
           },
         ],
       },
@@ -506,10 +506,10 @@ export const ApiDocumentationPanel: React.FC = () => {
           motionSensitivity: 80,
           twoWayAudioEnabled: false,
           streamKey: 'cam_01',
-          rtspUrl: 'rtsp://monitoramento.unityautomacoes.com.br:554/live/cam-01',
-          hlsUrl: 'https://monitoramento.unityautomacoes.com.br/live/cam_01.m3u8',
-          mjpegUrl: 'https://monitoramento.unityautomacoes.com.br/api/stream?id=cam-01',
-          snapshotUrl: 'https://monitoramento.unityautomacoes.com.br/api/cameras/cam-01/snapshot',
+          rtspUrl: 'rtsp://seudominio.com.br:554/live/cam-01',
+          hlsUrl: 'https://seudominio.com.br/live/cam_01.m3u8',
+          mjpegUrl: 'https://seudominio.com.br/api/stream?id=cam-01',
+          snapshotUrl: 'https://seudominio.com.br/api/cameras/cam-01/snapshot',
         },
       },
     },

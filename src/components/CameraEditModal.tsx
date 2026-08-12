@@ -51,10 +51,9 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
 }) => {
   const getCurrentHost = () => {
     if (typeof window !== 'undefined' && window.location && window.location.hostname) {
-      const h = window.location.hostname;
-      if (h && h !== 'localhost' && h !== '127.0.0.1') return h;
+      return window.location.hostname;
     }
-    return 'monitoramento.unityautomacoes.com.br';
+    return 'localhost';
   };
 
   const currentHost = getCurrentHost();

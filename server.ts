@@ -69,13 +69,7 @@ function getValidStreamSource(cam: any): string {
   const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
   for (const candidate of rtmpCandidates) {
     let str = candidate.trim();
-    if (str.startsWith('rtmp://')) {
-      if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
-        str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
-      }
-      return str;
-    }
-    if (str.startsWith('http://') || str.startsWith('https://')) {
+    if (str.startsWith('rtmp://') || str.startsWith('http://') || str.startsWith('https://')) {
       return str;
     }
   }
@@ -88,7 +82,8 @@ function getValidStreamSource(cam: any): string {
     return cam.rtspUrl.trim();
   }
 
-  return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/cam_${cleanKey}`;
+  const host = process.env.APP_DOMAIN || 'localhost';
+  return `rtmp://${host}:1935/live/cam_${cleanKey}`;
 }
 
 const cameraProcessStartTimes = new Map<string, number>();
@@ -2475,11 +2470,8 @@ async function startServer() {
     }
 
     if (!targetUrl && cleanKey) {
-      targetUrl = `rtmp://monitoramento.unityautomacoes.com.br:1935/live/cam_${cleanKey}`;
-    }
-
-    if (targetUrl.includes('localhost:1935') || targetUrl.includes('127.0.0.1:1935') || targetUrl.includes('aerocam.itlfibra.com:1935')) {
-      targetUrl = targetUrl.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
+      const host = req.headers.host ? req.headers.host.split(':')[0] : (process.env.APP_DOMAIN || 'localhost');
+      targetUrl = `rtmp://${host}:1935/live/cam_${cleanKey}`;
     }
 
     if (!targetUrl || (!targetUrl.startsWith('rtsp://') && !targetUrl.startsWith('rtmp://') && !targetUrl.startsWith('http'))) {
