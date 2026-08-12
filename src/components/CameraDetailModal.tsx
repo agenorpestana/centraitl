@@ -190,7 +190,6 @@ export const CameraDetailModal: React.FC<CameraDetailModalProps> = ({
                 camera={camera}
                 zoomLevel={zoomLevel}
                 isMuted={isMuted}
-                quality="main"
                 showOverlayControls={true}
               />
 

@@ -362,10 +362,8 @@ fi
 echo
 
 if [ $IS_UPDATE -eq 0 ]; then
-    echo -e "${YELLOW}Digite a URL do repositório GitHub (ex: https://github.com/usuario/repositorio.git):${NC}"
+    echo -e "${YELLOW}Digite a URL do repositório GitHub:${NC}"
     read REPO_URL
-    REPO_URL=$(echo "$REPO_URL" | xargs)
-    REPO_URL=${REPO_URL%/}
 fi
 
 # Instalação de dependências do sistema
@@ -473,40 +471,14 @@ if [ ! -z "$DB_PASSWORD" ]; then
 fi
 
 # Download ou atualização do código fonte
-mkdir -p "$APP_DIR"
+mkdir -p $APP_DIR
 if [ $IS_UPDATE -eq 1 ]; then
     echo -e "${YELLOW}Atualizando código fonte já existente (git pull)...${NC}"
-    cd "$APP_DIR" || exit 1
-    GIT_TERMINAL_PROMPT=0 git pull || {
-        echo -e "${RED}Erro ao atualizar o código com 'git pull'. Verifique as alterações locais em $APP_DIR.${NC}"
-        exit 1
-    }
+    cd $APP_DIR && git pull
 else
-    echo -e "${YELLOW}Baixando nova cópia do repositório ($REPO_URL)...${NC}"
-    GIT_TERMINAL_PROMPT=0 git clone "$REPO_URL" "$APP_DIR"
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}------------------------------------------------------------------${NC}"
-        echo -e "${RED}ERRO GRAVE: Falha ao clonar o repositório GitHub!${NC}"
-        echo -e "${YELLOW}Possíveis causas:${NC}"
-        echo -e " 1. O nome do repositório ou usuário está incorreto/com erro de digitação."
-        echo -e " 2. O repositório é PRIVADO no GitHub."
-        echo -e "    Se for PRIVADO, você deve gerar um Token de Acesso Pessoal (PAT) no GitHub e informar a URL assim:"
-        echo -e "    ${BLUE}https://SEU_TOKEN@github.com/usuario/repositorio.git${NC}"
-        echo -e " 3. Se for PÚBLICO, certifique-se do formato correto:"
-        echo -e "    ${BLUE}https://github.com/usuario/repositorio.git${NC}"
-        echo -e "${RED}------------------------------------------------------------------${NC}"
-        rm -rf "$APP_DIR"
-        exit 1
-    fi
-    cd "$APP_DIR" || exit 1
-fi
-
-# Validação do repositório clonado
-if [ ! -f "$APP_DIR/package.json" ]; then
-    echo -e "${RED}ERRO GRAVE: O arquivo 'package.json' não foi encontrado em $APP_DIR.${NC}"
-    echo -e "${RED}Verifique se a URL digitada aponta para a raiz do repositório do projeto.${NC}"
-    exit 1
+    echo -e "${YELLOW}Baixando nova cópia do repositório...${NC}"
+    git clone $REPO_URL $APP_DIR
+    cd $APP_DIR
 fi
 
 # Executa as tabelas SQL da aplicação
