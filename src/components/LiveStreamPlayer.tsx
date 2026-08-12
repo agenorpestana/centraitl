@@ -375,6 +375,11 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           });
           hlsInstance.on(HlsClass.Events.ERROR, (_: any, data: any) => {
             if (data.fatal) {
+              if (videoUrl.includes('_sub.m3u8')) {
+                console.log(`[HLS Sub-stream Fallback] Alternando para fluxo principal para ${camera.name}...`);
+                setVideoUrl(videoUrl.replace('_sub.m3u8', '.m3u8'));
+                return;
+              }
               if (data.type === HlsClass.ErrorTypes.NETWORK_ERROR) {
                 console.log(`[HLS Net Recovery] Tentando reconectar HLS para ${camera.name}...`);
                 try { hlsInstance.startLoad(); } catch (e) { handleVideoError(); }

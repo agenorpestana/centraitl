@@ -197,6 +197,12 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
       '-timeout', '5000000',
       '-use_wallclock_as_timestamps', '1'
     );
+  } else if (streamSource.startsWith('rtmp://')) {
+    ffmpegArgs.push(
+      '-rw_timeout', '5000000',
+      '-analyzeduration', '2000000',
+      '-probesize', '2000000'
+    );
   } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
     ffmpegArgs.push(
       '-reconnect', '1',
@@ -235,6 +241,8 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   ffmpegArgs.push(
     '-map', '0:a:0?',
     '-c:a', 'aac',
+    '-ac', '2',
+    '-ar', '44100',
     '-f', 'hls',
     '-hls_time', '2',
     '-hls_list_size', '6',
@@ -270,7 +278,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
           const currentProc = activeFfmpegProcesses.get(key);
           if (!currentProc || currentProc.exitCode !== null || currentProc.killed) {
             console.log(`[FFmpeg ITL Auto-Reconnect] Reconectando transmissão HLS da câmera '${cam.name}' (${key})...`);
-            startCameraRtspStream(cam);
+            startCameraRtspStream(cam, false, isSubStream);
           }
         }, delay);
       }
@@ -285,7 +293,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
       if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
         setTimeout(() => {
           if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
-          startCameraRtspStream(cam);
+          startCameraRtspStream(cam, false, isSubStream);
         }, 8000);
       }
     });
@@ -563,6 +571,28 @@ async function startServer() {
   const formatDateTime = (d: Date) =>
     `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 
+  const LOGS_FILE = path.join(process.cwd(), 'itl_logs.json');
+
+  const saveLogsToLocalFile = () => {
+    try {
+      fs.writeFileSync(LOGS_FILE, JSON.stringify(logs, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('[ITL Logs] Erro ao salvar arquivo de logs local:', err);
+    }
+  };
+
+  const loadLogsFromLocalFile = () => {
+    try {
+      if (fs.existsSync(LOGS_FILE)) {
+        const raw = fs.readFileSync(LOGS_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) logs = parsed;
+      }
+    } catch (err) {
+      console.error('[ITL Logs] Erro ao carregar arquivo de logs local:', err);
+    }
+  };
+
   // Helper function to save snapshot to local file store
   const saveToLocalFile = () => {
     try {
@@ -570,7 +600,6 @@ async function startServer() {
         cameras: cameras.filter((c) => c.id && !deletedCameraIds.has(c.id)),
         recordings: recordings.filter((r) => r.id && !deletedRecordingIds.has(r.id)),
         users: users.filter((u) => u.id && !deletedUserIds.has(u.id)),
-        logs,
         backupConfig,
         notificationConfig,
         plans: plans.filter((p) => p.id && !deletedPlanIds.has(p.id)),
@@ -636,7 +665,13 @@ async function startServer() {
         if (parsed.users && Array.isArray(parsed.users)) {
           users = parsed.users.filter((u: any) => u.id && !deletedUserIds.has(u.id));
         }
-        if (parsed.logs && Array.isArray(parsed.logs)) logs = parsed.logs;
+        if (parsed.logs && Array.isArray(parsed.logs)) {
+          if (!fs.existsSync(LOGS_FILE)) {
+            logs = parsed.logs;
+            saveLogsToLocalFile();
+          }
+        }
+        loadLogsFromLocalFile();
         if (parsed.backupConfig) backupConfig = parsed.backupConfig;
         if (parsed.notificationConfig) notificationConfig = parsed.notificationConfig;
         if (parsed.plans && Array.isArray(parsed.plans)) {
@@ -1447,27 +1482,8 @@ async function startServer() {
   }
 
   async function syncLogToMysql(log: ActivityLog) {
-    saveToLocalFile();
-    if (!isPgActive || !pool) return;
-    try {
-      await queryPg(
-        `INSERT INTO activity_logs (id, user_id, user_name, action, category, details, ip_address, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET action=EXCLUDED.action, category=EXCLUDED.category, details=EXCLUDED.details`,
-        [
-          log.id,
-          log.userId || 'sys',
-          log.userName || 'Sistema ITL',
-          log.action || '',
-          log.category || 'SYSTEM',
-          log.details || '',
-          log.ipAddress || '127.0.0.1',
-          log.timestamp || new Date().toISOString().replace('T', ' ').substring(0, 19)
-        ]
-      );
-    } catch (e: any) {
-      console.error('[PostgreSQL Sync Error] Activity log:', e.message || e);
-    }
+    saveLogsToLocalFile();
+    // Activity logs are saved exclusively in local file (itl_logs.json) to optimize PostgreSQL database speed
   }
 
   async function syncPlanToMysql(plan: FinancialPlan) {
@@ -1679,7 +1695,6 @@ async function startServer() {
       }
       for (const u of users) { if (!deletedUserIds.has(u.id)) { try { await syncUserToMysql(u); } catch (e) {} } }
       for (const r of recordings) { if (!deletedRecordingIds.has(r.id)) { try { await syncRecordingToMysql(r); } catch (e) {} } }
-      for (const l of logs) { try { await syncLogToMysql(l); } catch (e) {} }
       for (const p of plans) { if (!deletedPlanIds.has(p.id)) { try { await syncPlanToMysql(p); } catch (e) {} } }
       for (const i of invoices) { if (!deletedInvoiceIds.has(i.id)) { try { await syncInvoiceToMysql(i); } catch (e) {} } }
       try { await syncMpConfigToMysql(mpConfig); } catch (e) {}
@@ -1810,28 +1825,6 @@ async function startServer() {
           }
         }
         recordings = Array.from(recMap.values()).filter((r) => !deletedRecordingIds.has(r.id));
-      }
-
-      // Activity Logs
-      const logRows = await queryPg('SELECT * FROM activity_logs ORDER BY timestamp DESC LIMIT 200');
-      if (logRows && Array.isArray(logRows)) {
-        const dbLogs = logRows.map((row: any) => ({
-          id: row.id,
-          userId: row.user_id,
-          userName: row.user_name,
-          action: row.action,
-          category: row.category,
-          details: row.details,
-          ipAddress: row.ip_address,
-          timestamp: row.timestamp,
-        }));
-
-        const logMap = new Map<string, ActivityLog>();
-        for (const l of dbLogs) logMap.set(l.id, l);
-        for (const l of logs) {
-          logMap.set(l.id, l);
-        }
-        logs = Array.from(logMap.values());
       }
 
       // Financial Plans
@@ -2214,127 +2207,116 @@ async function startServer() {
     const targetPassword = dbConfig.dbPassword !== undefined ? dbConfig.dbPassword : 'itl123.789';
     const targetName = dbConfig.dbName || process.env.DB_NAME || 'itl_cameras';
 
-    const hostsToTry = [targetHost, '127.0.0.1', 'localhost'].filter((h, i, a) => a.indexOf(h) === i);
-    const candidatesPass = [
-      targetPassword,
-      'itl123.789',
-      'itl_pass_2026',
-      'postgres',
-      ''
-    ].filter((p, index, self) => p !== undefined && self.indexOf(p) === index);
-
-    const candidatesUser = [targetUser, 'itl_user', 'postgres'].filter((u, index, self) => self.indexOf(u) === index);
-
-    const credentials: Array<{ user: string; pass: string }> = [];
-    for (const u of candidatesUser) {
-      for (const p of candidatesPass) {
-        credentials.push({ user: u, pass: p });
-      }
-    }
+    // Fast-fail connection candidates list to prevent long timeouts
+    const candidates = [
+      { host: targetHost, user: targetUser, pass: targetPassword },
+      { host: '127.0.0.1', user: 'itl_user', pass: 'itl123.789' },
+      { host: '127.0.0.1', user: 'postgres', pass: 'postgres' },
+    ].filter((c, index, self) => 
+      self.findIndex((x) => x.host === c.host && x.user === c.user && x.pass === c.pass) === index
+    );
 
     let connectedHost = '';
 
-    for (const hostCandidate of hostsToTry) {
+    for (const cred of candidates) {
       if (isPgActive) break;
-      for (const cred of credentials) {
-        let testPool: InstanceType<typeof Pool> | null = null;
-        try {
-          testPool = new pg.Pool({
-            host: hostCandidate,
-            port: targetPort,
-            user: cred.user,
-            password: cred.pass,
-            database: targetName,
-            max: 10,
-            idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 1000,
-          });
+      let testPool: InstanceType<typeof Pool> | null = null;
+      try {
+        testPool = new pg.Pool({
+          host: cred.host,
+          port: targetPort,
+          user: cred.user,
+          password: cred.pass,
+          database: targetName,
+          max: 10,
+          idleTimeoutMillis: 30000,
+          connectionTimeoutMillis: 800,
+        });
 
-          testPool.on('error', (err) => {
-            console.error('[PostgreSQL Pool Background Error]', err.message || err);
-          });
+        testPool.on('error', (err) => {
+          console.error('[PostgreSQL Pool Background Error]', err.message || err);
+        });
 
-          const client = await testPool.connect();
-          await client.query('SELECT 1');
-          client.release();
+        const client = await testPool.connect();
+        await client.query('SELECT 1');
+        client.release();
 
-          pool = testPool;
-          isPgActive = true;
-          connectedHost = hostCandidate;
+        pool = testPool;
+        isPgActive = true;
+        connectedHost = cred.host;
 
-          dbConfig = {
-            dbHost: hostCandidate,
-            dbPort: targetPort,
-            dbName: targetName,
-            dbUser: cred.user,
-            dbPassword: cred.pass,
-          };
-          process.env.DB_HOST = hostCandidate;
-          process.env.DB_PORT = String(targetPort);
-          process.env.DB_NAME = targetName;
-          process.env.DB_USER = cred.user;
-          process.env.DB_PASSWORD = cred.pass;
-          saveToLocalFile();
+        dbConfig = {
+          dbHost: cred.host,
+          dbPort: targetPort,
+          dbName: targetName,
+          dbUser: cred.user,
+          dbPassword: cred.pass,
+        };
+        process.env.DB_HOST = cred.host;
+        process.env.DB_PORT = String(targetPort);
+        process.env.DB_NAME = targetName;
+        process.env.DB_USER = cred.user;
+        process.env.DB_PASSWORD = cred.pass;
+        saveToLocalFile();
 
-          console.log(`[PostgreSQL ITL] Conectado com SUCESSO ao PostgreSQL em ${connectedHost}:${targetPort} (banco '${targetName}', usuário '${cred.user}')`);
-          break;
-        } catch (err: any) {
-          if (testPool) {
-            try { await testPool.end(); } catch (e) {}
-          }
-          // If database doesn't exist, try creating it via root database 'postgres'
-          if (err.code === '3D000') {
-            try {
-              const rootPool = new pg.Pool({
-                host: hostCandidate,
-                port: targetPort,
-                user: cred.user,
-                password: cred.pass,
-                database: 'postgres',
-                connectionTimeoutMillis: 2000,
-              });
-              rootPool.on('error', (e) => console.error('[Pg Root Pool Error]', e.message || e));
-              const rootClient = await rootPool.connect();
-              await rootClient.query(`CREATE DATABASE "${targetName}"`);
-              rootClient.release();
-              await rootPool.end();
+        console.log(`[PostgreSQL ITL] Conectado com SUCESSO ao PostgreSQL em ${connectedHost}:${targetPort} (banco '${targetName}', usuário '${cred.user}')`);
+        break;
+      } catch (err: any) {
+        if (testPool) {
+          try { await testPool.end(); } catch (e) {}
+        }
+        // If database doesn't exist, try creating it via root database 'postgres'
+        if (err.code === '3D000') {
+          try {
+            const rootPool = new pg.Pool({
+              host: cred.host,
+              port: targetPort,
+              user: cred.user,
+              password: cred.pass,
+              database: 'postgres',
+              connectionTimeoutMillis: 1000,
+            });
+            rootPool.on('error', (e) => console.error('[Pg Root Pool Error]', e.message || e));
+            const rootClient = await rootPool.connect();
+            await rootClient.query(`CREATE DATABASE "${targetName}"`);
+            rootClient.release();
+            await rootPool.end();
 
-              const targetPool = new pg.Pool({
-                host: hostCandidate,
-                port: targetPort,
-                user: cred.user,
-                password: cred.pass,
-                database: targetName,
-                max: 10,
-                connectionTimeoutMillis: 2000,
-              });
-              targetPool.on('error', (e) => console.error('[Pg Target Pool Error]', e.message || e));
-              const targetClient = await targetPool.connect();
-              await targetClient.query('SELECT 1');
-              targetClient.release();
+            const targetPool = new pg.Pool({
+              host: cred.host,
+              port: targetPort,
+              user: cred.user,
+              password: cred.pass,
+              database: targetName,
+              max: 10,
+              connectionTimeoutMillis: 1000,
+            });
+            targetPool.on('error', (e) => console.error('[Pg Target Pool Error]', e.message || e));
+            const targetClient = await targetPool.connect();
+            await targetClient.query('SELECT 1');
+            targetClient.release();
 
-              pool = targetPool;
-              isPgActive = true;
-              connectedHost = hostCandidate;
+            pool = targetPool;
+            isPgActive = true;
+            connectedHost = cred.host;
 
-              dbConfig = {
-                dbHost: hostCandidate,
-                dbPort: targetPort,
-                dbName: targetName,
-                dbUser: cred.user,
-                dbPassword: cred.pass,
-              };
-              process.env.DB_HOST = hostCandidate;
-              process.env.DB_PORT = String(targetPort);
-              process.env.DB_NAME = targetName;
-              process.env.DB_USER = cred.user;
-              process.env.DB_PASSWORD = cred.pass;
-              saveToLocalFile();
+            dbConfig = {
+              dbHost: cred.host,
+              dbPort: targetPort,
+              dbName: targetName,
+              dbUser: cred.user,
+              dbPassword: cred.pass,
+            };
+            process.env.DB_HOST = cred.host;
+            process.env.DB_PORT = String(targetPort);
+            process.env.DB_NAME = targetName;
+            process.env.DB_USER = cred.user;
+            process.env.DB_PASSWORD = cred.pass;
+            saveToLocalFile();
 
-              console.log(`[PostgreSQL ITL] Banco de dados '${targetName}' criado e conectado em ${connectedHost}:${targetPort}`);
-              break;
-            } catch (e2) {}
-          }
+            console.log(`[PostgreSQL ITL] Banco de dados '${targetName}' criado e conectado em ${connectedHost}:${targetPort}`);
+            break;
+          } catch (e2) {}
         }
       }
     }
@@ -2579,10 +2561,10 @@ async function startServer() {
   setTimeout(checkAndStartAllAutoRecordings, 2000);
   setInterval(checkAndStartAllAutoRecordings, 10000);
 
-  // Helper log function
+  // Helper log function (saved exclusively to local file itl_logs.json)
   const addLog = (userName: string, action: string, category: ActivityLog['category'], details?: string) => {
     const newLog: ActivityLog = {
-      id: `log-${Date.now()}`,
+      id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       userName,
       action,
       category,
@@ -2591,8 +2573,8 @@ async function startServer() {
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
     };
     logs.unshift(newLog);
-    if (logs.length > 100) logs = logs.slice(0, 100);
-    saveToLocalFile();
+    if (logs.length > 500) logs = logs.slice(0, 500);
+    saveLogsToLocalFile();
   };
 
   // ---------------- API ENDPOINTS ----------------
