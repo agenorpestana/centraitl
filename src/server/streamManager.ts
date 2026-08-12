@@ -36,7 +36,7 @@ export interface Camera {
 }
 
 export interface StreamSource {
-  type: 'RTSP' | 'RTMP' | 'HTTP' | 'SYNTHETIC';
+  type: 'RTSP' | 'RTMP' | 'HTTP';
   url: string;
   transport?: 'tcp' | 'udp' | 'auto';
   mode?: 'copy' | 'transcode';
@@ -153,21 +153,12 @@ export class StreamManager {
    * Returns a list of candidate video stream sources in priority order.
    */
   public getValidSources(cam: Camera, profile = 'default'): StreamSource[] {
-    if (!cam) return [{ type: 'SYNTHETIC', url: 'synthetic:stream' }];
+    if (!cam) return [];
 
     const streamKey = this.getStreamKey(cam, profile);
     const baseStreamKey = this.getStreamKey(cam, 'default');
     const sources: StreamSource[] = [];
     const isSub = profile === 'sub';
-
-    const isPrivateIp = (url?: string) => {
-      if (!url) return false;
-      return /192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|127\.0\.0\.1|localhost/.test(url);
-    };
-
-    const isLocalCam = cam.connectionType === 'LOCAL' ||
-      isPrivateIp(cam.rtspUrl) ||
-      (cam.protocol === 'RTSP' && !cam.rtmpUrl && !cam.fullRtmpUrl);
 
     // Candidates for RTSP
     if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
@@ -186,6 +177,10 @@ export class StreamManager {
         sources.push({ type: 'RTSP', url: activeRtsp, transport: 'tcp', mode: 'transcode', profileName: `RTSP/TCP (Transcode ${isSub ? 'Grid SD 360p' : 'Full HD 1080p'})` });
         sources.push({ type: 'RTSP', url: activeRtsp, transport: 'udp', mode: 'copy', profileName: 'RTSP/UDP (Remux Copy)' });
         sources.push({ type: 'RTSP', url: activeRtsp, transport: 'udp', mode: 'transcode', profileName: 'RTSP/UDP (Transcode)' });
+      }
+
+      if (isSub && subRtsp !== mainRtsp) {
+        sources.push({ type: 'RTSP', url: mainRtsp, transport: 'tcp', mode: 'transcode', profileName: 'RTSP/TCP Main Stream SD Transcode' });
       }
     }
 
@@ -234,12 +229,6 @@ export class StreamManager {
       }
     }
 
-    // Candidate 4: Synthetic test pattern ONLY if camera explicitly requested DEMO/SYNTHETIC protocol or zero sources exist
-    const isExplicitDemo = cam.protocol === 'DEMO' || cam.protocol === 'SYNTHETIC';
-    if (sources.length === 0 || isExplicitDemo) {
-      sources.push({ type: 'SYNTHETIC', url: `synthetic:${streamKey}` });
-    }
-
     // If RTMP is primary protocol, sort RTMP candidates before RTSP
     if (cam.protocol === 'RTMP') {
       sources.sort((a, b) => {
@@ -257,7 +246,7 @@ export class StreamManager {
    */
   public getValidStreamSource(cam: Camera): string {
     const sources = this.getValidSources(cam);
-    return sources[0]?.url || `synthetic:${this.getStreamKey(cam)}`;
+    return sources[0]?.url || '';
   }
 
   /**
@@ -311,7 +300,7 @@ export class StreamManager {
   private startWorker(camera: Camera, streamKey: string, sourceIndex = 0, profile = 'default') {
     this.ensureHlsDir();
 
-    // Remove stale m3u8 and ts files for this stream key to ensure clean HLS generation
+    // Clean stale HLS segment files on worker launch
     try {
       const hlsPathFile = path.join(this.hlsDir, `${streamKey}.m3u8`);
       if (fs.existsSync(hlsPathFile)) {
@@ -326,12 +315,33 @@ export class StreamManager {
     } catch (e) {}
 
     const sources = this.getValidSources(camera, profile);
-    const activeSource = sources[sourceIndex] || sources[sources.length - 1];
 
-    const maskedSource = activeSource.type === 'SYNTHETIC' 
-      ? 'Gerador de Sinal HLS ao Vivo Central ITL'
-      : this.maskCredentials(activeSource.url);
+    if (!sources || sources.length === 0 || sourceIndex >= sources.length) {
+      console.log(`[StreamManager] Nenhuma fonte RTSP/RTMP ativa para ${camera.name || streamKey}`);
+      const hlsPath = path.join(this.hlsDir, `${streamKey}.m3u8`);
+      const streamState: StreamState = {
+        streamKey,
+        camera,
+        rawSource: '',
+        maskedSource: '',
+        activeProfile: 'Inativo',
+        activeTransport: 'Inativo',
+        process: null,
+        startTime: Date.now(),
+        lastAccessTime: Date.now(),
+        restartCount: 0,
+        lastRestartTime: Date.now(),
+        status: 'offline',
+        lastError: 'Sinal indisponível: Nenhuma URL de transmissão válida encontrada.',
+        logs: [`[${new Date().toLocaleTimeString()}] Sem fonte de vídeo disponível.`],
+        sourceIndex: 0,
+      };
+      this.streams.set(streamKey, streamState);
+      return;
+    }
 
+    const activeSource = sources[sourceIndex];
+    const maskedSource = this.maskCredentials(activeSource.url);
     const hlsPath = path.join(this.hlsDir, `${streamKey}.m3u8`);
     const existing = this.streams.get(streamKey);
     const restartCount = existing ? existing.restartCount + 1 : 0;
@@ -343,26 +353,7 @@ export class StreamManager {
 
     let ffmpegArgs: string[] = [];
 
-    if (activeSource.type === 'SYNTHETIC') {
-      const title = (camera.name || streamKey).replace(/'/g, '').replace(/"/g, '');
-      ffmpegArgs = [
-        '-re',
-        '-f', 'lavfi',
-        '-i', 'testsrc=size=1280x720:rate=30',
-        '-f', 'lavfi',
-        '-i', 'sine=frequency=440:sample_rate=44100',
-        '-vf', `drawtext=text='CENTRAL ITL - CÂMERA AO VIVO\\: ${title} (%{localtime\\:%X})':x=20:y=20:fontsize=22:fontcolor=white:box=1:boxcolor=black@0.6`,
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-tune', 'zerolatency',
-        '-pix_fmt', 'yuv420p',
-        '-g', '30',
-        '-c:a', 'aac',
-        '-ac', '2',
-        '-ar', '44100',
-        '-b:a', '64k',
-      ];
-    } else if (activeSource.type === 'RTSP') {
+    if (activeSource.type === 'RTSP') {
       const isSubStream = profile === 'sub' || streamKey.endsWith('_sub');
 
       ffmpegArgs = [
@@ -372,9 +363,9 @@ export class StreamManager {
         '-flags', 'low_delay',
         '-max_delay', '500000',
         '-rtsp_transport', activeSource.transport || 'tcp',
-        '-stimeout', '10000000', // 10s socket timeout in microseconds
-        '-analyzeduration', '1000000',
-        '-probesize', '1000000',
+        '-stimeout', '10000000', // 10s socket timeout
+        '-analyzeduration', '5000000',
+        '-probesize', '5000000',
         '-use_wallclock_as_timestamps', '1',
         '-i', activeSource.url,
       ];
@@ -516,7 +507,7 @@ export class StreamManager {
         streamState.process = null;
 
         // If process exited and another candidate source exists, trigger fallback
-        if (activeSource.type !== 'SYNTHETIC' && sourceIndex < sources.length - 1) {
+        if (sourceIndex < sources.length - 1) {
           console.log(`[StreamManager] Fonte ${activeSource.type} para '${streamKey}' falhou. Alternando automaticamente para fonte #${sourceIndex + 2} (${sources[sourceIndex + 1].type})...`);
           logList.push(`[Fallback] Alternando para fonte #${sourceIndex + 2} (${sources[sourceIndex + 1].type})...`);
           
