@@ -274,7 +274,6 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                     key={`${camera.id}-dvr-${autoRefreshKey}`}
                     camera={camera}
                     isMuted={isMuted}
-                    isGridMode={true}
                     onSelectCamera={() => onSelectCamera(camera)}
                     showOverlayControls={false}
                     hideBottomCard={true}
@@ -406,11 +405,6 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
             <p className="text-xs text-slate-400">
               {filteredCameras.length} Câmera(s) encontrada(s) ({accessibleCameras.length} autorizadas para seu perfil)
             </p>
-            {filteredCameras.length > 16 && (
-              <p className="text-[10px] text-emerald-400/90 font-mono mt-1 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-500/20 inline-block">
-                * Para grandes frotas (200+ câmeras), a visualização é dividida em páginas de 16/25 câmeras ativas sob demanda.
-              </p>
-            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -423,10 +417,11 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                 className="bg-transparent text-emerald-400 font-bold outline-none cursor-pointer"
               >
                 <option value={4} className="bg-slate-900 text-slate-200">4 por pág</option>
+                <option value={6} className="bg-slate-900 text-slate-200">6 por pág</option>
                 <option value={8} className="bg-slate-900 text-slate-200">8 por pág</option>
                 <option value={12} className="bg-slate-900 text-slate-200">12 por pág</option>
-                <option value={16} className="bg-slate-900 text-slate-200">16 por pág (Recomendado)</option>
-                <option value={25} className="bg-slate-900 text-slate-200">25 por pág (Máximo)</option>
+                <option value={16} className="bg-slate-900 text-slate-200">16 por pág</option>
+                <option value={100} className="bg-slate-900 text-slate-200">Todas ({filteredCameras.length})</option>
               </select>
             </div>
 
@@ -575,7 +570,6 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                     key={`${camera.id}-${autoRefreshKey}`}
                     camera={camera}
                     isMuted={isMuted}
-                    isGridMode={true}
                     onSelectCamera={onSelectCamera}
                     showOverlayControls={true}
                   />

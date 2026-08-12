@@ -79,7 +79,6 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
 }) => {
   const [showForm, setShowForm] = useState(false);
   const [protocol, setProtocol] = useState<'RTSP' | 'RTMP'>('RTSP');
-  const [connectionType, setConnectionType] = useState<'LOCAL' | 'REMOTE'>('LOCAL');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [editingCamera, setEditingCamera] = useState<Camera | null>(null);
 
@@ -92,9 +91,10 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
 
   const getCurrentHost = () => {
     if (typeof window !== 'undefined' && window.location && window.location.hostname) {
-      return window.location.hostname;
+      const h = window.location.hostname;
+      if (h && h !== 'localhost' && h !== '127.0.0.1') return h;
     }
-    return 'localhost';
+    return 'monitoramento.unityautomacoes.com.br';
   };
 
   const getCurrentProtocol = () => {
@@ -242,11 +242,10 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
       name: cameraName.trim(),
       location: `${selectedCity} - ${selectedUf}`,
       protocol,
-      connectionType,
       rtspUrl: protocol === 'RTSP' ? rtspUrl : '',
       rtmpUrl: protocol === 'RTMP' ? rtmpStreamSource : '',
       streamKey: `cam_${cleanKey}`,
-      rtmpServerUrl: protocol === 'RTMP' ? serverBase : '',
+      rtmpServerUrl: serverBase,
       fullRtmpUrl: protocol === 'RTMP' ? rtmpStreamSource : '',
       stateUf: selectedUf,
       city: selectedCity,

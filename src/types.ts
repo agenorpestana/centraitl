@@ -89,7 +89,6 @@ export interface Camera {
   name: string;
   location: string;
   protocol?: 'RTSP' | 'RTMP';
-  connectionType?: 'LOCAL' | 'REMOTE';
   rtspUrl: string;
   rtmpUrl?: string;
   streamKey?: string;

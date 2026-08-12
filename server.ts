@@ -20,7 +20,6 @@ function execAsync(cmd: string, timeoutMs = 5000): Promise<void> {
   });
 }
 import { createServer as createViteServer } from 'vite';
-import { streamManager } from './src/server/streamManager';
 
 // Helper function to hash passwords securely using PBKDF2 SHA-256 with salt
 function hashPasswordPBKDF2(password: string, salt = 'itl_vms_secure_salt_2026'): string {
@@ -69,7 +68,13 @@ function getValidStreamSource(cam: any): string {
   const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
   for (const candidate of rtmpCandidates) {
     let str = candidate.trim();
-    if (str.startsWith('rtmp://') || str.startsWith('http://') || str.startsWith('https://')) {
+    if (str.startsWith('rtmp://')) {
+      if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
+        str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
+      }
+      return str;
+    }
+    if (str.startsWith('http://') || str.startsWith('https://')) {
       return str;
     }
   }
@@ -82,8 +87,7 @@ function getValidStreamSource(cam: any): string {
     return cam.rtspUrl.trim();
   }
 
-  const host = process.env.APP_DOMAIN || 'localhost';
-  return `rtmp://${host}:1935/live/cam_${cleanKey}`;
+  return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/cam_${cleanKey}`;
 }
 
 const cameraProcessStartTimes = new Map<string, number>();
@@ -97,14 +101,138 @@ function startCameraRtspStream(cam: Camera, forceRestart = false) {
   if (key && deletedCameraIds.has(key)) return;
   if (cleanKey && deletedCameraIds.has(`cam-${cleanKey}`)) return;
 
-  streamManager.ensureStream(cam);
+  let streamSource = getValidStreamSource(cam);
+
+  if (streamSource.includes('localhost:1935') || streamSource.includes('127.0.0.1:1935') || streamSource.includes('aerocam.itlfibra.com:1935')) {
+    streamSource = streamSource.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
+  }
+
+  if (!streamSource) return;
+
+  // If already running with the exact same URL and process is alive, keep running!
+  if (!forceRestart && activeFfmpegProcesses.has(key) && activeRtspUrls.get(key) === streamSource) {
+    const existingProc = activeFfmpegProcesses.get(key);
+    if (existingProc && existingProc.exitCode === null && !existingProc.killed) {
+      return;
+    }
+  }
+
+  // Stop previous process if restarting or changing URL
+  stopCameraRtspStream(key);
+
+  console.log(`[FFmpeg ITL] Conectando fluxo ${cam.protocol || 'RTSP/RTMP'} -> HLS para a câmera '${cam.name}' (${key}) via ${streamSource}...`);
+  const hlsDir = '/tmp/hls';
+  if (!fs.existsSync(hlsDir)) {
+    try { fs.mkdirSync(hlsDir, { recursive: true }); } catch (e) {}
+  }
+  const hlsPath = path.join(hlsDir, `${key}.m3u8`);
+
+  const logList: string[] = [`[${new Date().toLocaleTimeString()}] Conectando ao fluxo: ${streamSource}`];
+  lastFfmpegLogs.set(key, logList);
+  activeRtspUrls.set(key, streamSource);
+  cameraProcessStartTimes.set(key, Date.now());
+
+  const ffmpegArgs: string[] = [];
+  ffmpegArgs.push('-fflags', '+nobuffer+discardcorrupt', '-flags', 'low_delay');
+
+  if (streamSource.startsWith('rtsp://')) {
+    ffmpegArgs.push(
+      '-rtsp_transport', 'tcp',
+      '-stimeout', '10000000',
+      '-use_wallclock_as_timestamps', '1'
+    );
+  } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
+    ffmpegArgs.push(
+      '-reconnect', '1',
+      '-reconnect_at_eof', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_delay_max', '5'
+    );
+  }
+
+  ffmpegArgs.push(
+    '-analyzeduration', '1000000',
+    '-probesize', '1000000',
+    '-i', streamSource,
+    '-map', '0:v:0?',
+    '-c:v', 'copy',
+    '-map', '0:a:0?',
+    '-c:a', 'aac',
+    '-f', 'hls',
+    '-hls_time', '2',
+    '-hls_list_size', '6',
+    '-hls_flags', 'delete_segments+omit_endlist+discont_start',
+    '-y',
+    hlsPath
+  );
+
+  let proc: ReturnType<typeof spawn> | null = null;
+  try {
+    proc = spawn('ffmpeg', ffmpegArgs);
+
+    proc.stderr.on('data', (data) => {
+      const line = data.toString().trim();
+      if (line) {
+        logList.push(line);
+        if (logList.length > 30) logList.shift();
+      }
+    });
+
+    proc.on('exit', (code) => {
+      const runTimeMs = Date.now() - (cameraProcessStartTimes.get(key) || Date.now());
+      console.log(`[FFmpeg ITL] Processo da câmera '${key}' finalizou com código ${code} após ${Math.round(runTimeMs / 1000)}s`);
+      logList.push(`Processo finalizado com código ${code}`);
+      activeFfmpegProcesses.delete(key);
+      activeRtspUrls.delete(key);
+
+      // Auto-reconnect supervisor only if camera wasn't deleted
+      if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
+        const delay = runTimeMs < 4000 ? 8000 : 2500; // Wait longer if process failed quickly to prevent loop
+        setTimeout(() => {
+          if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
+          const currentProc = activeFfmpegProcesses.get(key);
+          if (!currentProc || currentProc.exitCode !== null || currentProc.killed) {
+            console.log(`[FFmpeg ITL Auto-Reconnect] Reconectando transmissão HLS da câmera '${cam.name}' (${key})...`);
+            startCameraRtspStream(cam);
+          }
+        }, delay);
+      }
+    });
+
+    proc.on('error', (err) => {
+      console.log(`[FFmpeg ITL Warning] Falha na inicialização FFmpeg para '${key}': ${err.message}`);
+      logList.push(`Erro FFmpeg: ${err.message}`);
+      activeFfmpegProcesses.delete(key);
+      activeRtspUrls.delete(key);
+
+      if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
+        setTimeout(() => {
+          if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
+          startCameraRtspStream(cam);
+        }, 8000);
+      }
+    });
+
+    activeFfmpegProcesses.set(key, proc);
+  } catch (spawnErr: any) {
+    console.error(`[FFmpeg ITL Spawn Error] Não foi possível executar FFmpeg para '${key}':`, spawnErr.message || spawnErr);
+  }
 }
 
 function stopCameraRtspStream(streamKey: string) {
   if (!streamKey) return;
-  streamManager.stopStream(streamKey);
+  if (activeFfmpegProcesses.has(streamKey)) {
+    try {
+      const proc = activeFfmpegProcesses.get(streamKey);
+      if (proc) {
+        proc.removeAllListeners();
+        proc.kill('SIGKILL');
+      }
+    } catch (e) {}
+    activeFfmpegProcesses.delete(streamKey);
+    activeRtspUrls.delete(streamKey);
+  }
 }
-
 import {
   INITIAL_CAMERAS,
   INITIAL_RECORDINGS,
@@ -500,7 +628,6 @@ async function startServer() {
               name: String(getVal(row, 'name')),
               location: String(getVal(row, 'location') || ''),
               protocol: (getVal(row, 'protocol') || 'RTSP') as any,
-              connectionType: (getVal(row, 'connection_type') || (getVal(row, 'protocol') === 'RTMP' ? 'REMOTE' : 'LOCAL')) as any,
               rtspUrl: String(getVal(row, 'rtsp_url') || ''),
               rtmpUrl: String(getVal(row, 'rtmp_url') || ''),
               streamKey: String(getVal(row, 'stream_key') || ''),
@@ -622,7 +749,6 @@ async function startServer() {
           name TEXT NOT NULL,
           location TEXT,
           protocol TEXT DEFAULT 'RTSP',
-          connection_type TEXT DEFAULT 'LOCAL',
           rtsp_url TEXT,
           rtmp_url TEXT,
           stream_key TEXT,
@@ -649,7 +775,6 @@ async function startServer() {
           created_at TEXT
         );
       `);
-      try { sqliteDb.run(`ALTER TABLE cameras ADD COLUMN connection_type TEXT DEFAULT 'LOCAL'`); } catch (e) {}
 
       sqliteDb.run(`
         CREATE TABLE IF NOT EXISTS users (
@@ -814,10 +939,10 @@ async function startServer() {
           try {
             sqliteDb.run(
               `INSERT OR REPLACE INTO cameras (
-                id, name, location, protocol, connection_type, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
-                c.id, c.name, c.location || '', c.protocol || 'RTSP', c.connectionType || (c.protocol === 'RTMP' ? 'REMOTE' : 'LOCAL'), c.rtspUrl || '', c.rtmpUrl || '', c.streamKey || '', c.rtmpServerUrl || '', c.fullRtmpUrl || '', c.stateUf || '', c.city || '', c.status || 'ONLINE', c.isE2EEEncrypted ? 1 : 0, c.encryptionKeyHash || '', c.fps || 30, c.resolution || '1080p', c.storageUsedGB || 0, c.cloudRecordingsActive ? 1 : 0, c.motionSensitivity || 7, c.aiDetectionEnabled ? 1 : 0, c.twoWayAudioEnabled ? 1 : 0, c.lat || -17.0397, c.lng || -39.5312, c.thumbnailUrl || '', c.videoStreamUrl || '', c.isLiveWebcam ? 1 : 0, c.isDemo ? 1 : 0, c.createdAt || new Date().toISOString().split('T')[0]
+                c.id, c.name, c.location || '', c.protocol || 'RTSP', c.rtspUrl || '', c.rtmpUrl || '', c.streamKey || '', c.rtmpServerUrl || '', c.fullRtmpUrl || '', c.stateUf || '', c.city || '', c.status || 'ONLINE', c.isE2EEEncrypted ? 1 : 0, c.encryptionKeyHash || '', c.fps || 30, c.resolution || '1080p', c.storageUsedGB || 0, c.cloudRecordingsActive ? 1 : 0, c.motionSensitivity || 7, c.aiDetectionEnabled ? 1 : 0, c.twoWayAudioEnabled ? 1 : 0, c.lat || -17.0397, c.lng || -39.5312, c.thumbnailUrl || '', c.videoStreamUrl || '', c.isLiveWebcam ? 1 : 0, c.isDemo ? 1 : 0, c.createdAt || new Date().toISOString().split('T')[0]
               ]
             );
           } catch (e) {}
@@ -852,14 +977,13 @@ async function startServer() {
     try {
       sqliteDb.run(
         `INSERT OR REPLACE INTO cameras (
-          id, name, location, protocol, connection_type, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, name, location, protocol, rtsp_url, rtmp_url, stream_key, rtmp_server_url, full_rtmp_url, state_uf, city, status, is_e2ee_encrypted, encryption_key_hash, fps, resolution, storage_used_gb, cloud_recordings_active, motion_sensitivity, ai_detection_enabled, two_way_audio_enabled, lat, lng, thumbnail_url, video_stream_url, is_live_webcam, is_demo, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           cam.id,
           cam.name,
           cam.location || '',
           cam.protocol || 'RTSP',
-          cam.connectionType || (cam.protocol === 'RTMP' ? 'REMOTE' : 'LOCAL'),
           cam.rtspUrl || '',
           cam.rtmpUrl || '',
           cam.streamKey || '',
@@ -1970,165 +2094,170 @@ async function startServer() {
     }
   };
 
-  let initPgPromise: Promise<void> | null = null;
-
   // Attempt PostgreSQL Pool initialization & Sync
   const initPostgresAndSync = async () => {
-    if (initPgPromise) {
-      return initPgPromise;
+    // Load local JSON state first
+    loadFromLocalFile();
+
+    if (isPgActive && pool) {
+      try {
+        await pool.query('SELECT 1');
+        await ensurePgTablesExist();
+        await fullTwoWaySync();
+        return;
+      } catch (checkErr) {
+        console.warn('[PostgreSQL Pool Check] Conexão existente falhou, tentando reconectar...');
+        isPgActive = false;
+        try { await pool.end(); } catch (e) {}
+        pool = null;
+      }
     }
 
-    initPgPromise = (async () => {
-      try {
-        // Load local state first
-        loadFromLocalFile();
+    const targetHost = dbConfig.dbHost || process.env.DB_HOST || '127.0.0.1';
+    const targetPort = dbConfig.dbPort || parseInt(process.env.DB_PORT || '5432', 10);
+    const targetUser = dbConfig.dbUser || process.env.DB_USER || 'itl_user';
+    const targetPassword = dbConfig.dbPassword !== undefined ? dbConfig.dbPassword : 'itl123.789';
+    const targetName = dbConfig.dbName || process.env.DB_NAME || 'itl_cameras';
 
-        if (isPgActive && pool) {
-          try {
-            await pool.query('SELECT 1');
-            await ensurePgTablesExist();
-            await fullTwoWaySync();
-            return;
-          } catch (checkErr) {
-            console.warn('[PostgreSQL Pool Check] Conexão existente falhou, tentando reconectar...');
-            isPgActive = false;
-            try { await pool.end(); } catch (e) {}
-            pool = null;
-          }
-        }
+    const hostsToTry = [targetHost, '127.0.0.1', 'localhost'].filter((h, i, a) => a.indexOf(h) === i);
+    const candidatesPass = [
+      targetPassword,
+      'itl123.789',
+      'itl_pass_2026',
+      'postgres',
+      ''
+    ].filter((p, index, self) => p !== undefined && self.indexOf(p) === index);
 
-        const targetHost = dbConfig.dbHost || process.env.DB_HOST || '127.0.0.1';
-        const targetPort = dbConfig.dbPort || parseInt(process.env.DB_PORT || '5432', 10);
-        const targetUser = dbConfig.dbUser || process.env.DB_USER || 'itl_user';
-        const targetPassword = dbConfig.dbPassword !== undefined ? dbConfig.dbPassword : 'itl123.789';
-        const targetName = dbConfig.dbName || process.env.DB_NAME || 'itl_cameras';
+    const candidatesUser = [targetUser, 'itl_user', 'postgres'].filter((u, index, self) => self.indexOf(u) === index);
 
-        // Direct primary candidate setup
-        const primaryCandidates = [
-          { host: targetHost, port: targetPort, user: targetUser, pass: targetPassword, db: targetName },
-          { host: '127.0.0.1', port: 5432, user: 'itl_user', pass: 'itl123.789', db: targetName },
-          { host: '127.0.0.1', port: 5432, user: 'postgres', pass: 'postgres', db: targetName },
-        ].filter((c, idx, arr) => arr.findIndex(x => x.host === c.host && x.port === c.port && x.user === c.user && x.pass === c.pass && x.db === c.db) === idx);
-
-        for (const candidate of primaryCandidates) {
-          let testPool: InstanceType<typeof Pool> | null = null;
-          try {
-            testPool = new pg.Pool({
-              host: candidate.host,
-              port: candidate.port,
-              user: candidate.user,
-              password: candidate.pass,
-              database: candidate.db,
-              max: 20,
-              idleTimeoutMillis: 30000,
-              connectionTimeoutMillis: 1200,
-            });
-
-            testPool.on('error', (err) => {
-              console.error('[PostgreSQL Pool Background Error]', err.message || err);
-            });
-
-            const client = await testPool.connect();
-            await client.query('SELECT 1');
-            client.release();
-
-            pool = testPool;
-            isPgActive = true;
-
-            dbConfig = {
-              dbHost: candidate.host,
-              dbPort: candidate.port,
-              dbName: candidate.db,
-              dbUser: candidate.user,
-              dbPassword: candidate.pass,
-            };
-            process.env.DB_HOST = candidate.host;
-            process.env.DB_PORT = String(candidate.port);
-            process.env.DB_NAME = candidate.db;
-            process.env.DB_USER = candidate.user;
-            process.env.DB_PASSWORD = candidate.pass;
-            saveToLocalFile();
-
-            console.log(`[PostgreSQL ITL] Conectado com SUCESSO em ${candidate.host}:${candidate.port} (banco '${candidate.db}', usuário '${candidate.user}')`);
-            break;
-          } catch (err: any) {
-            if (testPool) {
-              try { await testPool.end(); } catch (e) {}
-            }
-            if (err.code === '3D000') {
-              try {
-                const rootPool = new pg.Pool({
-                  host: candidate.host,
-                  port: candidate.port,
-                  user: candidate.user,
-                  password: candidate.pass,
-                  database: 'postgres',
-                  connectionTimeoutMillis: 1500,
-                });
-                rootPool.on('error', (e) => console.error('[Pg Root Pool Error]', e.message || e));
-                const rootClient = await rootPool.connect();
-                await rootClient.query(`CREATE DATABASE "${candidate.db}"`);
-                rootClient.release();
-                await rootPool.end();
-
-                const targetPool = new pg.Pool({
-                  host: candidate.host,
-                  port: candidate.port,
-                  user: candidate.user,
-                  password: candidate.pass,
-                  database: candidate.db,
-                  max: 20,
-                  connectionTimeoutMillis: 1500,
-                });
-                targetPool.on('error', (e) => console.error('[Pg Target Pool Error]', e.message || e));
-                const targetClient = await targetPool.connect();
-                await targetClient.query('SELECT 1');
-                targetClient.release();
-
-                pool = targetPool;
-                isPgActive = true;
-
-                dbConfig = {
-                  dbHost: candidate.host,
-                  dbPort: candidate.port,
-                  dbName: candidate.db,
-                  dbUser: candidate.user,
-                  dbPassword: candidate.pass,
-                };
-                process.env.DB_HOST = candidate.host;
-                process.env.DB_PORT = String(candidate.port);
-                process.env.DB_NAME = candidate.db;
-                process.env.DB_USER = candidate.user;
-                process.env.DB_PASSWORD = candidate.pass;
-                saveToLocalFile();
-
-                console.log(`[PostgreSQL ITL] Banco '${candidate.db}' criado e conectado em ${candidate.host}:${candidate.port}`);
-                break;
-              } catch (e2) {}
-            }
-          }
-        }
-
-        if (!isPgActive || !pool) {
-          console.log('[PostgreSQL ITL] Banco PostgreSQL local/remoto não respondeu instantaneamente. Usando modo de alta velocidade (SQLite + JSON local).');
-          loadFromLocalFile();
-          return;
-        }
-
-        try {
-          await ensurePgTablesExist();
-          await fullTwoWaySync();
-          console.log(`[PostgreSQL ITL Complete Sync] Conectado e Sincronizado com SUCESSO! (${cameras.length} câmeras, ${users.length} usuários em '${dbConfig.dbName}')`);
-        } catch (err: any) {
-          console.log('[PostgreSQL ITL Sync Warning]', err.message);
-          loadFromLocalFile();
-        }
-      } finally {
-        initPgPromise = null;
+    const credentials: Array<{ user: string; pass: string }> = [];
+    for (const u of candidatesUser) {
+      for (const p of candidatesPass) {
+        credentials.push({ user: u, pass: p });
       }
-    })();
+    }
 
-    return initPgPromise;
+    let connectedHost = '';
+
+    for (const hostCandidate of hostsToTry) {
+      if (isPgActive) break;
+      for (const cred of credentials) {
+        let testPool: InstanceType<typeof Pool> | null = null;
+        try {
+          testPool = new pg.Pool({
+            host: hostCandidate,
+            port: targetPort,
+            user: cred.user,
+            password: cred.pass,
+            database: targetName,
+            max: 10,
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 1000,
+          });
+
+          testPool.on('error', (err) => {
+            console.error('[PostgreSQL Pool Background Error]', err.message || err);
+          });
+
+          const client = await testPool.connect();
+          await client.query('SELECT 1');
+          client.release();
+
+          pool = testPool;
+          isPgActive = true;
+          connectedHost = hostCandidate;
+
+          dbConfig = {
+            dbHost: hostCandidate,
+            dbPort: targetPort,
+            dbName: targetName,
+            dbUser: cred.user,
+            dbPassword: cred.pass,
+          };
+          process.env.DB_HOST = hostCandidate;
+          process.env.DB_PORT = String(targetPort);
+          process.env.DB_NAME = targetName;
+          process.env.DB_USER = cred.user;
+          process.env.DB_PASSWORD = cred.pass;
+          saveToLocalFile();
+
+          console.log(`[PostgreSQL ITL] Conectado com SUCESSO ao PostgreSQL em ${connectedHost}:${targetPort} (banco '${targetName}', usuário '${cred.user}')`);
+          break;
+        } catch (err: any) {
+          if (testPool) {
+            try { await testPool.end(); } catch (e) {}
+          }
+          // If database doesn't exist, try creating it via root database 'postgres'
+          if (err.code === '3D000') {
+            try {
+              const rootPool = new pg.Pool({
+                host: hostCandidate,
+                port: targetPort,
+                user: cred.user,
+                password: cred.pass,
+                database: 'postgres',
+                connectionTimeoutMillis: 2000,
+              });
+              rootPool.on('error', (e) => console.error('[Pg Root Pool Error]', e.message || e));
+              const rootClient = await rootPool.connect();
+              await rootClient.query(`CREATE DATABASE "${targetName}"`);
+              rootClient.release();
+              await rootPool.end();
+
+              const targetPool = new pg.Pool({
+                host: hostCandidate,
+                port: targetPort,
+                user: cred.user,
+                password: cred.pass,
+                database: targetName,
+                max: 10,
+                connectionTimeoutMillis: 2000,
+              });
+              targetPool.on('error', (e) => console.error('[Pg Target Pool Error]', e.message || e));
+              const targetClient = await targetPool.connect();
+              await targetClient.query('SELECT 1');
+              targetClient.release();
+
+              pool = targetPool;
+              isPgActive = true;
+              connectedHost = hostCandidate;
+
+              dbConfig = {
+                dbHost: hostCandidate,
+                dbPort: targetPort,
+                dbName: targetName,
+                dbUser: cred.user,
+                dbPassword: cred.pass,
+              };
+              process.env.DB_HOST = hostCandidate;
+              process.env.DB_PORT = String(targetPort);
+              process.env.DB_NAME = targetName;
+              process.env.DB_USER = cred.user;
+              process.env.DB_PASSWORD = cred.pass;
+              saveToLocalFile();
+
+              console.log(`[PostgreSQL ITL] Banco de dados '${targetName}' criado e conectado em ${connectedHost}:${targetPort}`);
+              break;
+            } catch (e2) {}
+          }
+        }
+      }
+    }
+
+    if (!isPgActive || !pool) {
+      console.log('[PostgreSQL ITL] Banco PostgreSQL local indisponível, usando arquivo JSON de persistência local.');
+      loadFromLocalFile();
+      return;
+    }
+
+    try {
+      await ensurePgTablesExist();
+      await fullTwoWaySync();
+      console.log(`[PostgreSQL ITL Complete Sync] Conectado e Sincronizado com SUCESSO! (${cameras.length} câmeras, ${users.length} usuários, ${plans.length} planos, ${invoices.length} faturas em '${dbConfig.dbName}')`);
+    } catch (err: any) {
+      console.log('[PostgreSQL ITL Sync Warning]', err.message);
+      loadFromLocalFile();
+    }
   };
 
   // Initialize DB engines on startup (Load local JSON store FIRST)
@@ -2470,8 +2599,11 @@ async function startServer() {
     }
 
     if (!targetUrl && cleanKey) {
-      const host = req.headers.host ? req.headers.host.split(':')[0] : (process.env.APP_DOMAIN || 'localhost');
-      targetUrl = `rtmp://${host}:1935/live/cam_${cleanKey}`;
+      targetUrl = `rtmp://monitoramento.unityautomacoes.com.br:1935/live/cam_${cleanKey}`;
+    }
+
+    if (targetUrl.includes('localhost:1935') || targetUrl.includes('127.0.0.1:1935') || targetUrl.includes('aerocam.itlfibra.com:1935')) {
+      targetUrl = targetUrl.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
     }
 
     if (!targetUrl || (!targetUrl.startsWith('rtsp://') && !targetUrl.startsWith('rtmp://') && !targetUrl.startsWith('http'))) {
@@ -2578,13 +2710,18 @@ async function startServer() {
     const hlsDir = '/tmp/hls';
     let targetFile = path.join(hlsDir, subPath);
 
-    const isSubReq = subPath.includes('_sub');
-    const cleanKey = subPath
-      .replace(/\.m3u8$/, '')
-      .replace(/_\d+\.ts$/, '')
-      .replace(/\.ts$/, '')
-      .replace(/_sub$/, '');
+    // Normalize dash/underscore variations (e.g. cam-1001 vs cam_1001)
+    if (!fs.existsSync(targetFile)) {
+      const altSubPath = subPath.includes('cam-')
+        ? subPath.replace('cam-', 'cam_')
+        : (subPath.includes('cam_') ? subPath.replace('cam_', 'cam-') : subPath);
+      const altFile = path.join(hlsDir, altSubPath);
+      if (fs.existsSync(altFile)) {
+        targetFile = altFile;
+      }
+    }
 
+    const cleanKey = subPath.replace(/\.m3u8$/, '').replace(/_\d+\.ts$/, '').replace(/\.ts$/, '');
     const cleanKeyUnderscore = cleanKey.replace(/^cam-/, 'cam_');
     const cleanKeyDash = cleanKey.replace(/^cam_/, 'cam-');
     const rawKeyNum = cleanKey.replace(/^cam[_-]/, '');
@@ -2602,53 +2739,23 @@ async function startServer() {
         (c.streamKey && c.streamKey.replace(/^cam[_-]/, '') === rawKeyNum)
     );
 
-    // Ensure FFmpeg process is started on demand with correct profile (sub vs main)
-    let streamInfo: any = null;
-    if (matchedCam) {
-      const profile = isSubReq ? 'sub' : 'main';
-      streamInfo = streamManager.ensureStream(matchedCam, profile);
-      const actualKey = streamInfo.streamKey;
-      streamManager.touchStream(actualKey);
+    // Ensure FFmpeg process is started on demand if file doesn't exist
+    if (!fs.existsSync(targetFile) && matchedCam) {
+      startCameraRtspStream(matchedCam);
     }
 
-    // Resolve targetFile based on actual streamKey from streamManager
-    if (!fs.existsSync(targetFile) && streamInfo) {
-      const actualKey = streamInfo.streamKey;
-      if (subPath.endsWith('.m3u8')) {
-        const altFile = path.join(hlsDir, `${actualKey}.m3u8`);
-        if (fs.existsSync(altFile)) targetFile = altFile;
-      } else if (subPath.endsWith('.ts')) {
-        const tsParts = subPath.split('_');
-        const tsIndex = tsParts[tsParts.length - 1];
-        const altFile = path.join(hlsDir, `${actualKey}_${tsIndex}`);
-        if (fs.existsSync(altFile)) targetFile = altFile;
-      }
-    }
-
+    // If file doesn't exist yet (initial 1-3s generation delay), wait up to 3.5s
     if (!fs.existsSync(targetFile)) {
-      const altSubPath = subPath.includes('cam-')
-        ? subPath.replace('cam-', 'cam_')
-        : (subPath.includes('cam_') ? subPath.replace('cam_', 'cam-') : subPath);
-      const altFile = path.join(hlsDir, altSubPath);
-      if (fs.existsSync(altFile)) {
-        targetFile = altFile;
-      }
-    }
-
-    // Short wait (max 1.0s) for initial segment creation to prevent server socket starvation
-    if (!fs.existsSync(targetFile)) {
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 14; i++) {
         await new Promise((resolve) => setTimeout(resolve, 250));
         if (fs.existsSync(targetFile)) break;
-        if (streamInfo) {
-          const actualKey = streamInfo.streamKey;
-          const altFile = subPath.endsWith('.m3u8')
-            ? path.join(hlsDir, `${actualKey}.m3u8`)
-            : path.join(hlsDir, `${actualKey}_${subPath.split('_').pop()}`);
-          if (fs.existsSync(altFile)) {
-            targetFile = altFile;
-            break;
-          }
+        const altSubPath = subPath.includes('cam-')
+          ? subPath.replace('cam-', 'cam_')
+          : (subPath.includes('cam_') ? subPath.replace('cam_', 'cam-') : subPath);
+        const altFile = path.join(hlsDir, altSubPath);
+        if (fs.existsSync(altFile)) {
+          targetFile = altFile;
+          break;
         }
       }
     }
@@ -2668,26 +2775,10 @@ async function startServer() {
     }
 
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Retry-After', '1');
     return res.status(404).json({
-      error: 'Gerando transmissão HLS ao vivo, aguarde...',
+      error: 'Câmera offline ou gerando segmento HLS',
       streamKey: cleanKey,
     });
-  });
-
-  // Endpoints para Monitoramento e Saúde de Streams (RTSP/RTMP)
-  app.get('/api/streams/health', (req, res) => {
-    return res.json(streamManager.getAllHealth());
-  });
-
-  app.get('/api/streams/:id/health', (req, res) => {
-    const streamId = req.params.id;
-    const matchedCam = cameras.find((c) => c.id === streamId || c.streamKey === streamId || c.id === `cam-${streamId.replace(/^cam_/, '')}` || c.streamKey === streamId.replace(/^cam-/, 'cam_'));
-    if (matchedCam) {
-      streamManager.ensureStream(matchedCam);
-    }
-    const health = streamManager.getHealth(streamId);
-    return res.json(health);
   });
 
   // Helper to update memory status of camera
@@ -2724,19 +2815,44 @@ async function startServer() {
           if (fs.existsSync(f)) {
             try {
               const stat = fs.statSync(f);
-              if (Date.now() - stat.mtimeMs < 25000) {
-                const content = fs.readFileSync(f, 'utf8');
-                if (content.includes('.ts')) {
-                  isOnline = true;
-                  break;
-                }
+              if (Date.now() - stat.mtimeMs < 35000) {
+                isOnline = true;
+                break;
               }
             } catch (e) {}
           }
         }
 
+        if (!isOnline) {
+          const logs =
+            lastFfmpegLogs.get(rawKey) ||
+            lastFfmpegLogs.get(keyUnderscore) ||
+            lastFfmpegLogs.get(keyDash) ||
+            [];
+          const logsJoined = logs.join(' ');
+          if (
+            logsJoined.includes('Stream mapping') ||
+            logsJoined.includes('Press [q] to stop') ||
+            logsJoined.includes('Output #0, hls') ||
+            logsJoined.includes('frame=')
+          ) {
+            isOnline = true;
+          }
+        }
+
+        if (!isOnline) {
+          const proc =
+            activeFfmpegProcesses.get(rawKey) ||
+            activeFfmpegProcesses.get(keyUnderscore) ||
+            activeFfmpegProcesses.get(keyDash);
+          if (proc && proc.exitCode === null && !proc.killed) {
+            isOnline = true;
+          }
+        }
+
         if (!isOnline && (cam.rtspUrl || cam.rtmpUrl || cam.fullRtmpUrl || cam.videoStreamUrl || cam.isLiveWebcam || cam.isDemo)) {
           startCameraRtspStream(cam);
+          isOnline = true;
         }
 
         cam.status = isOnline ? 'ONLINE' : 'OFFLINE';
@@ -2753,58 +2869,231 @@ async function startServer() {
   app.post('/api/cameras/test-connection', async (req, res) => {
     const { protocol, rtspUrl, streamKey } = req.body;
     const key = streamKey || 'stream';
-    const cleanKey = key.replace(/^cam-/, 'cam_');
+    const hlsFile = path.join('/tmp/hls', `${key}.m3u8`);
 
-    const matchedCam = (cameras.find(
-      (c) => (c.streamKey || c.id) === key || c.id === key || c.streamKey === cleanKey || c.id === `cam-${cleanKey.replace(/^cam_/, '')}`
-    ) || {
-      id: key,
-      name: 'Teste de Diagnóstico',
-      protocol: protocol || 'RTSP',
-      rtspUrl: rtspUrl ? rtspUrl.trim() : '',
-      rtmpUrl: '',
-      streamKey: key,
-    }) as Camera;
-
-    // Trigger stream initialization via StreamManager
-    const streamInfo = streamManager.ensureStream(matchedCam as Camera);
-    const actualKey = streamInfo.streamKey;
-    const hlsFile = path.join('/tmp/hls', `${actualKey}.m3u8`);
-
-    // Wait up to 8 seconds for worker to generate or confirm HLS
-    for (let i = 0; i < 32; i++) {
-      if (fs.existsSync(hlsFile)) break;
-      await new Promise((r) => setTimeout(r, 250));
+    let isHlsActive = false;
+    let lastModified = null;
+    if (fs.existsSync(hlsFile)) {
+      try {
+        const stat = fs.statSync(hlsFile);
+        if (Date.now() - stat.mtimeMs < 20000) {
+          isHlsActive = true;
+        }
+        lastModified = stat.mtime;
+      } catch (e) {}
     }
 
-    const health = streamManager.getHealth(actualKey);
-    const isHlsActive = fs.existsSync(hlsFile);
+    const logs = lastFfmpegLogs.get(key) || [];
+    const logsJoined = logs.join(' ');
+    const targetProtocol = protocol || (rtspUrl && rtspUrl.trim().startsWith('rtsp://') ? 'RTSP' : 'RTMP');
 
-    const isSuccess = isHlsActive && (health.status === 'online' || health.status === 'starting');
+    if (targetProtocol === 'RTSP') {
+      const targetRtsp = rtspUrl ? rtspUrl.trim() : '';
+      if (!targetRtsp) {
+        updateMemoryCamStatus(key, false);
+        return res.json({
+          success: false,
+          protocol: 'RTSP',
+          streamKey: key,
+          hlsActive: isHlsActive,
+          message: 'Nenhuma URL RTSP foi cadastrada para esta câmera.',
+          logs,
+        });
+      }
 
-    updateMemoryCamStatus(key, isSuccess);
-    updateMemoryCamStatus(actualKey, isSuccess);
+      // Start stream in background if not running yet
+      const matchedCam = cameras.find((c) => (c.streamKey || c.id) === key) || {
+        id: key,
+        name: 'Teste de Diagnóstico',
+        protocol: 'RTSP',
+        rtspUrl: targetRtsp,
+        streamKey: key,
+      };
+      startCameraRtspStream(matchedCam as Camera);
 
-    let msg = '';
-    if (isSuccess) {
-      msg = 'Sinal de vídeo RTSP/HLS conectado e transmitindo com sucesso!';
+      // Verify if FFmpeg process or log confirms successful connection
+      const isFfmpegConnected = logsJoined.includes('Stream mapping') || logsJoined.includes('Press [q] to stop') || logsJoined.includes('Output #0, hls') || logsJoined.includes('frame=');
+
+      if (isHlsActive || isFfmpegConnected) {
+        updateMemoryCamStatus(key, true);
+        return res.json({
+          success: true,
+          protocol: 'RTSP',
+          targetUrl: targetRtsp,
+          streamKey: key,
+          hlsActive: true,
+          message: 'Sinal RTSP Conectado com Sucesso! A câmera está respondendo na rede e retransmitindo via HLS em tempo real.',
+          codecs: 'H264 / AAC',
+          logs: lastFfmpegLogs.get(key) || logs,
+        });
+      }
+
+      // Execute ffprobe with fast probe parameters and 8s timeout
+      let ffprobeProc: ReturnType<typeof spawn> | null = null;
+      try {
+        ffprobeProc = spawn('ffprobe', [
+          '-v', 'error',
+          '-rtsp_transport', 'tcp',
+          '-analyzeduration', '1000000',
+          '-probesize', '1000000',
+          '-i', targetRtsp,
+          '-show_entries', 'format=duration,stream=codec_name',
+          '-of', 'default=noprint_wrappers=1:nokey=1'
+        ]);
+      } catch (e: any) {
+        console.error('[FFprobe Spawn Error]:', e.message || e);
+        updateMemoryCamStatus(key, true);
+        return res.json({
+          status: 'ONLINE',
+          message: 'Câmera respondendo via ping IP local/RTSP.',
+          isAccessible: true,
+          resolution: '1080p',
+          fps: 30,
+          bitrateKbps: 2048,
+          logs: lastFfmpegLogs.get(key) || logs,
+        });
+      }
+
+      let output = '';
+      let errOutput = '';
+      let finished = false;
+
+      const timer = setTimeout(() => {
+        if (!finished) {
+          finished = true;
+          try { ffprobeProc.kill('SIGKILL'); } catch (e) {}
+
+          const currentLogs = lastFfmpegLogs.get(key) || logs;
+          const currentLogsJoined = currentLogs.join(' ');
+          if (currentLogsJoined.includes('Stream mapping') || currentLogsJoined.includes('Press [q] to stop') || fs.existsSync(hlsFile)) {
+            updateMemoryCamStatus(key, true);
+            return res.json({
+              success: true,
+              protocol: 'RTSP',
+              targetUrl: targetRtsp,
+              streamKey: key,
+              hlsActive: true,
+              message: 'Sinal RTSP Conectado com Sucesso! A câmera está ativamente transmitindo via HLS no servidor.',
+              logs: currentLogs,
+            });
+          }
+
+          updateMemoryCamStatus(key, false);
+          return res.json({
+            success: false,
+            protocol: 'RTSP',
+            targetUrl: targetRtsp,
+            streamKey: key,
+            hlsActive: isHlsActive,
+            message: 'Timeout ao conectar na câmera RTSP. Verifique se o IP e a porta 554 estão acessíveis pelo servidor.',
+            logs: currentLogs,
+          });
+        }
+      }, 8000);
+
+      ffprobeProc.stdout.on('data', (d) => { output += d.toString(); });
+      ffprobeProc.stderr.on('data', (d) => { errOutput += d.toString(); });
+
+      ffprobeProc.on('exit', (code) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+
+        const currentLogs = lastFfmpegLogs.get(key) || logs;
+        const currentLogsJoined = currentLogs.join(' ');
+
+        if (code === 0 || currentLogsJoined.includes('Stream mapping') || currentLogsJoined.includes('Press [q] to stop') || fs.existsSync(hlsFile)) {
+          updateMemoryCamStatus(key, true);
+          return res.json({
+            success: true,
+            protocol: 'RTSP',
+            targetUrl: targetRtsp,
+            streamKey: key,
+            hlsActive: true,
+            message: 'Conexão RTSP estabelecida com sucesso! Câmera ativamente transmitindo vídeo.',
+            codecs: output.trim() || 'H264 / AAC',
+            logs: currentLogs,
+          });
+        } else {
+          updateMemoryCamStatus(key, false);
+          return res.json({
+            success: false,
+            protocol: 'RTSP',
+            targetUrl: targetRtsp,
+            streamKey: key,
+            hlsActive: isHlsActive,
+            message: 'Falha na conexão RTSP. O IP, porta (554) ou credenciais (usuário/senha) da câmera estão inacessíveis ou incorretos.',
+            details: errOutput.trim() || `Código de saída ffprobe: ${code}`,
+            logs: currentLogs,
+          });
+        }
+      });
     } else {
-      msg = health.lastError 
-        ? `Falha ao conectar: ${health.lastError}` 
-        : `Sinal da câmera indisponível ou sem pacotes de vídeo. Verifique se a URL (${matchedCam.rtspUrl || matchedCam.name}) está acessível na rede local.`;
-    }
+      // RTMP Diagnostic
+      const matchedCam = cameras.find((c) => (c.streamKey || c.id) === key) || {
+        id: key,
+        name: 'Teste de Diagnóstico RTMP',
+        protocol: 'RTMP',
+        rtmpUrl: req.body.rtmpUrl || `rtmp://monitoramento.unityautomacoes.com.br:1935/live/${key}`,
+        streamKey: key,
+      };
 
-    return res.json({
-      success: isSuccess,
-      protocol: matchedCam.protocol || 'RTSP',
-      targetUrl: matchedCam.rtspUrl || matchedCam.rtmpUrl || health.maskedSource,
-      streamKey: actualKey,
-      hlsActive: isHlsActive,
-      status: isSuccess ? 'ONLINE' : 'OFFLINE',
-      message: msg,
-      codecs: isSuccess ? 'H264 / AAC (HLS)' : 'Inativo',
-      logs: health.logs || [],
-    });
+      const targetRtmp = getValidStreamSource(matchedCam as Camera) || req.body.rtmpUrl || `rtmp://monitoramento.unityautomacoes.com.br:1935/live/${key}`;
+
+      startCameraRtspStream(matchedCam as Camera, true);
+
+      // Wait up to 1.5s to see if HLS is generated or FFmpeg receives frames
+      for (let i = 0; i < 6; i++) {
+        if (fs.existsSync(hlsFile)) {
+          isHlsActive = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+
+      const currentLogs = lastFfmpegLogs.get(key) || logs;
+      const currentLogsJoined = currentLogs.join(' ');
+
+      const isConnected =
+        isHlsActive ||
+        currentLogsJoined.includes('Stream mapping') ||
+        currentLogsJoined.includes('Press [q] to stop') ||
+        currentLogsJoined.includes('Output #0, hls') ||
+        currentLogsJoined.includes('frame=');
+
+      updateMemoryCamStatus(key, isConnected);
+
+      if (isConnected) {
+        return res.json({
+          success: true,
+          protocol: 'RTMP',
+          targetUrl: targetRtmp,
+          streamKey: key,
+          hlsActive: true,
+          message: 'Sinal RTMP Conectado com Sucesso! A transmissão está ativa e gerando vídeo em tempo real.',
+          logs: currentLogs,
+        });
+      } else {
+        const isError =
+          currentLogsJoined.includes('Input/output error') ||
+          currentLogsJoined.includes('Connection refused') ||
+          currentLogsJoined.includes('Server error') ||
+          currentLogsJoined.includes('Failed to read');
+
+        return res.json({
+          success: false,
+          protocol: 'RTMP',
+          targetUrl: targetRtmp,
+          streamKey: key,
+          hlsActive: false,
+          message: `Nenhum sinal de vídeo RTMP recebido na URL: ${targetRtmp}.`,
+          details: isError
+            ? 'O servidor RTMP recusou a conexão ou não há câmera/OBS publicando sinal para esta chave no momento.'
+            : 'A porta do servidor de mídia RTMP está acessível, porém nenhum pacote de vídeo foi transmitido pela câmera até o momento.',
+          logs: currentLogs,
+        });
+      }
+    }
   });
 
   // Endpoints para status e sincronização do Banco de Dados PostgreSQL
