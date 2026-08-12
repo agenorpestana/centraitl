@@ -2586,7 +2586,13 @@ async function startServer() {
     const hlsDir = '/tmp/hls';
     let targetFile = path.join(hlsDir, subPath);
 
-    const cleanKey = subPath.replace(/\.m3u8$/, '').replace(/_\d+\.ts$/, '').replace(/\.ts$/, '');
+    const isSubReq = subPath.includes('_sub');
+    const cleanKey = subPath
+      .replace(/\.m3u8$/, '')
+      .replace(/_\d+\.ts$/, '')
+      .replace(/\.ts$/, '')
+      .replace(/_sub$/, '');
+
     const cleanKeyUnderscore = cleanKey.replace(/^cam-/, 'cam_');
     const cleanKeyDash = cleanKey.replace(/^cam_/, 'cam-');
     const rawKeyNum = cleanKey.replace(/^cam[_-]/, '');
@@ -2604,11 +2610,13 @@ async function startServer() {
         (c.streamKey && c.streamKey.replace(/^cam[_-]/, '') === rawKeyNum)
     );
 
-    // Ensure FFmpeg process is started on demand
+    // Ensure FFmpeg process is started on demand with correct profile (sub vs main)
     let streamInfo: any = null;
     if (matchedCam) {
-      streamInfo = streamManager.ensureStream(matchedCam);
-      streamManager.touchStream(cleanKey);
+      const profile = isSubReq ? 'sub' : 'main';
+      streamInfo = streamManager.ensureStream(matchedCam, profile);
+      const actualKey = streamInfo.streamKey;
+      streamManager.touchStream(actualKey);
     }
 
     // Resolve targetFile based on actual streamKey from streamManager
@@ -2635,9 +2643,9 @@ async function startServer() {
       }
     }
 
-    // If file doesn't exist yet (initial 1-4s generation delay), wait up to 4.0s
+    // Short wait (max 1.0s) for initial segment creation to prevent server socket starvation
     if (!fs.existsSync(targetFile)) {
-      for (let i = 0; i < 16; i++) {
+      for (let i = 0; i < 4; i++) {
         await new Promise((resolve) => setTimeout(resolve, 250));
         if (fs.existsSync(targetFile)) break;
         if (streamInfo) {
@@ -2668,8 +2676,9 @@ async function startServer() {
     }
 
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Retry-After', '1');
     return res.status(404).json({
-      error: 'Câmera offline ou gerando segmento HLS',
+      error: 'Gerando transmissão HLS ao vivo, aguarde...',
       streamKey: cleanKey,
     });
   });

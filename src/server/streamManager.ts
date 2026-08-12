@@ -106,27 +106,58 @@ export class StreamManager {
   }
 
   /**
-   * Derive standardized stream key for a camera.
+   * Derive standardized stream key for a camera with optional sub-stream profile.
    */
-  public getStreamKey(cam: Camera): string {
+  public getStreamKey(cam: Camera, profile = 'default'): string {
+    let baseKey = 'cam_unknown';
     if (cam.streamKey && cam.streamKey.trim()) {
-      return cam.streamKey.trim().replace(/^cam-/, 'cam_');
-    }
-    if (cam.id) {
+      baseKey = cam.streamKey.trim().replace(/^cam-/, 'cam_');
+    } else if (cam.id) {
       const cleanId = cam.id.replace(/^cam-/, '').replace(/^cam_/, '');
-      return `cam_${cleanId}`;
+      baseKey = `cam_${cleanId}`;
     }
-    return 'cam_unknown';
+    return profile === 'sub' ? `${baseKey}_sub` : baseKey;
+  }
+
+  /**
+   * Helper to convert Main Stream RTSP URL to Hardware Sub-stream RTSP URL.
+   */
+  public getSubstreamRtspUrl(url: string): string {
+    if (!url || !url.trim().startsWith('rtsp://')) return url;
+    let clean = url.trim();
+    if (clean.includes('subtype=0')) {
+      return clean.replace('subtype=0', 'subtype=1');
+    }
+    if (clean.includes('subtype=main')) {
+      return clean.replace('subtype=main', 'subtype=sub');
+    }
+    if (clean.includes('/cam/realmonitor') && !clean.includes('subtype=')) {
+      return clean + (clean.includes('?') ? '&' : '?') + 'subtype=1';
+    }
+    if (clean.includes('/Streaming/Channels/101')) {
+      return clean.replace('/Streaming/Channels/101', '/Streaming/Channels/102');
+    }
+    if (clean.includes('/Channels/1')) {
+      return clean.replace('/Channels/1', '/Channels/2');
+    }
+    if (clean.includes('/h264/ch1/main')) {
+      return clean.replace('/h264/ch1/main', '/h264/ch1/sub');
+    }
+    if (clean.includes('stream=0')) {
+      return clean.replace('stream=0', 'stream=1');
+    }
+    return clean;
   }
 
   /**
    * Returns a list of candidate video stream sources in priority order.
    */
-  public getValidSources(cam: Camera): StreamSource[] {
+  public getValidSources(cam: Camera, profile = 'default'): StreamSource[] {
     if (!cam) return [{ type: 'SYNTHETIC', url: 'synthetic:stream' }];
 
-    const streamKey = this.getStreamKey(cam);
+    const streamKey = this.getStreamKey(cam, profile);
     const sources: StreamSource[] = [];
+    const isSub = profile === 'sub';
 
     const isPrivateIp = (url?: string) => {
       if (!url) return false;
@@ -139,13 +170,24 @@ export class StreamManager {
 
     const isRtspPrimary = cam.protocol === 'RTSP' || isLocalCam || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'));
 
-    // Candidates for RTSP (Ordered according to spec: TCP/Copy -> TCP/Transcode -> UDP/Copy -> UDP/Transcode)
+    // Candidates for RTSP
     if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
-      const cleanRtsp = cam.rtspUrl.trim();
-      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'tcp', mode: 'copy', profileName: 'RTSP/TCP (Remux Copy H.264)' });
-      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'tcp', mode: 'transcode', profileName: 'RTSP/TCP (Transcode H.264)' });
-      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'udp', mode: 'copy', profileName: 'RTSP/UDP (Remux Copy H.264)' });
-      sources.push({ type: 'RTSP', url: cleanRtsp, transport: 'udp', mode: 'transcode', profileName: 'RTSP/UDP (Transcode H.264)' });
+      const mainRtsp = cam.rtspUrl.trim();
+      const subRtsp = this.getSubstreamRtspUrl(mainRtsp);
+      const activeRtsp = isSub ? subRtsp : mainRtsp;
+
+      if (isSub && subRtsp !== mainRtsp) {
+        // Hardware Substream Candidates
+        sources.push({ type: 'RTSP', url: subRtsp, transport: 'tcp', mode: 'copy', profileName: 'RTSP/TCP (Hardware Substream Copy)' });
+        sources.push({ type: 'RTSP', url: subRtsp, transport: 'tcp', mode: 'transcode', profileName: 'RTSP/TCP (Hardware Substream Transcode)' });
+        sources.push({ type: 'RTSP', url: subRtsp, transport: 'udp', mode: 'copy', profileName: 'RTSP/UDP (Hardware Substream Copy)' });
+      } else {
+        // Standard Candidates
+        sources.push({ type: 'RTSP', url: activeRtsp, transport: 'tcp', mode: 'copy', profileName: `RTSP/TCP (Remux Copy ${isSub ? 'Grid SD' : 'Full HD'})` });
+        sources.push({ type: 'RTSP', url: activeRtsp, transport: 'tcp', mode: 'transcode', profileName: `RTSP/TCP (Transcode ${isSub ? 'Grid SD 360p' : 'Full HD 1080p'})` });
+        sources.push({ type: 'RTSP', url: activeRtsp, transport: 'udp', mode: 'copy', profileName: 'RTSP/UDP (Remux Copy)' });
+        sources.push({ type: 'RTSP', url: activeRtsp, transport: 'udp', mode: 'transcode', profileName: 'RTSP/UDP (Transcode)' });
+      }
     }
 
     // Candidate 2: RTMP URLs (only if explicitly defined by user or not strictly local)
@@ -226,7 +268,7 @@ export class StreamManager {
       throw new Error('Camera is required');
     }
 
-    const streamKey = this.getStreamKey(camera);
+    const streamKey = this.getStreamKey(camera, profile);
     const hlsPath = path.join(this.hlsDir, `${streamKey}.m3u8`);
     const hlsUrl = `/live/${streamKey}.m3u8`;
     const now = Date.now();
@@ -283,7 +325,7 @@ export class StreamManager {
       }
     } catch (e) {}
 
-    const sources = this.getValidSources(camera);
+    const sources = this.getValidSources(camera, profile);
     const activeSource = sources[sourceIndex] || sources[sources.length - 1];
 
     const maskedSource = activeSource.type === 'SYNTHETIC' 
@@ -321,54 +363,60 @@ export class StreamManager {
         '-b:a', '64k',
       ];
     } else if (activeSource.type === 'RTSP') {
-      const isPrivateIp = activeSource.url.includes('192.168.') ||
-        activeSource.url.includes('10.') ||
-        activeSource.url.includes('172.16.') ||
-        activeSource.url.includes('127.0.0.1') ||
-        activeSource.url.includes('localhost');
-
-      const timeoutVal = isPrivateIp ? '3000000' : '5000000'; // 3s for private, 5s for public
+      const isSubStream = profile === 'sub' || streamKey.endsWith('_sub');
 
       ffmpegArgs = [
         '-hide_banner', '-nostdin',
+        '-loglevel', 'warning',
         '-fflags', '+nobuffer+discardcorrupt+genpts',
         '-flags', 'low_delay',
         '-max_delay', '500000',
         '-rtsp_transport', activeSource.transport || 'tcp',
-        '-rw_timeout', timeoutVal,
-        '-analyzeduration', '500000',
-        '-probesize', '500000',
+        '-stimeout', '10000000', // 10s socket timeout in microseconds
+        '-analyzeduration', '1000000',
+        '-probesize', '1000000',
         '-use_wallclock_as_timestamps', '1',
         '-i', activeSource.url,
       ];
 
-      if (activeSource.mode === 'copy') {
+      if (activeSource.mode === 'copy' && !isSubStream) {
+        // High speed remux copy for native H.264 Main Stream
         ffmpegArgs.push(
           '-map', '0:v:0?',
           '-c:v', 'copy',
-          '-bsf:v', 'h264_mp4toannexb',
-          '-map', '0:a:0?',
-          '-c:a', 'aac',
-          '-ac', '2',
-          '-ar', '44100',
-          '-b:a', '64k'
+          '-an'
         );
       } else {
-        // Transcode fallback (H.264 / MJPEG / H.265)
+        // Transcode mode for H.264/H.265/MJPEG or Substream Grid scaling
         ffmpegArgs.push(
           '-map', '0:v:0?',
           '-c:v', 'libx264',
           '-preset', 'ultrafast',
           '-tune', 'zerolatency',
-          '-pix_fmt', 'yuv420p',
-          '-crf', '28',
-          '-threads', '1',
-          '-map', '0:a:0?',
-          '-c:a', 'aac',
-          '-ac', '2',
-          '-ar', '44100',
-          '-b:a', '64k'
+          '-pix_fmt', 'yuv420p'
         );
+
+        if (isSubStream) {
+          // Grid mode: 640x360 SD resolution at 15fps, 350kbps bitrate
+          ffmpegArgs.push(
+            '-vf', "scale='min(640,iw)':-2",
+            '-r', '15',
+            '-crf', '30',
+            '-b:v', '350k',
+            '-maxrate', '450k',
+            '-bufsize', '900k'
+          );
+        } else {
+          // Main mode: Full HD / Native resolution
+          ffmpegArgs.push(
+            '-crf', '24',
+            '-b:v', '2200k',
+            '-maxrate', '3000k',
+            '-bufsize', '4500k'
+          );
+        }
+
+        ffmpegArgs.push('-an');
       }
     } else { // RTMP or HTTP
       ffmpegArgs = [
