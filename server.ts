@@ -336,6 +336,7 @@ import {
 } from './src/types';
 
 const LOCAL_STORE_FILE = path.join(process.cwd(), 'itl_database_store.json');
+const LOCAL_LOGS_FILE = path.join(process.cwd(), 'itl_system_logs.json');
 
 const cleanDoubleUrl = (url: string | undefined | null): string => {
   if (!url) return '';
@@ -563,6 +564,30 @@ async function startServer() {
   const formatDateTime = (d: Date) =>
     `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 
+  // Helper function to save logs to a separate local file (not sent to PostgreSQL or DB store)
+  const saveToLocalLogsFile = () => {
+    try {
+      const dataToSave = logs.slice(0, 200);
+      fs.writeFileSync(LOCAL_LOGS_FILE, JSON.stringify(dataToSave, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('[ITL Logs] Erro ao salvar arquivo de logs local:', err);
+    }
+  };
+
+  const loadFromLocalLogsFile = () => {
+    try {
+      if (fs.existsSync(LOCAL_LOGS_FILE)) {
+        const raw = fs.readFileSync(LOCAL_LOGS_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          logs = parsed.slice(0, 200);
+        }
+      }
+    } catch (err) {
+      console.error('[ITL Logs] Erro ao carregar arquivo de logs local:', err);
+    }
+  };
+
   // Helper function to save snapshot to local file store
   const saveToLocalFile = () => {
     try {
@@ -570,7 +595,6 @@ async function startServer() {
         cameras: cameras.filter((c) => c.id && !deletedCameraIds.has(c.id)),
         recordings: recordings.filter((r) => r.id && !deletedRecordingIds.has(r.id)),
         users: users.filter((u) => u.id && !deletedUserIds.has(u.id)),
-        logs,
         backupConfig,
         notificationConfig,
         plans: plans.filter((p) => p.id && !deletedPlanIds.has(p.id)),
@@ -592,6 +616,7 @@ async function startServer() {
 
   // Helper function to load snapshot from local file store
   const loadFromLocalFile = () => {
+    loadFromLocalLogsFile();
     try {
       if (fs.existsSync(LOCAL_STORE_FILE)) {
         const raw = fs.readFileSync(LOCAL_STORE_FILE, 'utf-8');
@@ -636,7 +661,6 @@ async function startServer() {
         if (parsed.users && Array.isArray(parsed.users)) {
           users = parsed.users.filter((u: any) => u.id && !deletedUserIds.has(u.id));
         }
-        if (parsed.logs && Array.isArray(parsed.logs)) logs = parsed.logs;
         if (parsed.backupConfig) backupConfig = parsed.backupConfig;
         if (parsed.notificationConfig) notificationConfig = parsed.notificationConfig;
         if (parsed.plans && Array.isArray(parsed.plans)) {
@@ -1447,27 +1471,7 @@ async function startServer() {
   }
 
   async function syncLogToMysql(log: ActivityLog) {
-    saveToLocalFile();
-    if (!isPgActive || !pool) return;
-    try {
-      await queryPg(
-        `INSERT INTO activity_logs (id, user_id, user_name, action, category, details, ip_address, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET action=EXCLUDED.action, category=EXCLUDED.category, details=EXCLUDED.details`,
-        [
-          log.id,
-          log.userId || 'sys',
-          log.userName || 'Sistema ITL',
-          log.action || '',
-          log.category || 'SYSTEM',
-          log.details || '',
-          log.ipAddress || '127.0.0.1',
-          log.timestamp || new Date().toISOString().replace('T', ' ').substring(0, 19)
-        ]
-      );
-    } catch (e: any) {
-      console.error('[PostgreSQL Sync Error] Activity log:', e.message || e);
-    }
+    saveToLocalLogsFile();
   }
 
   async function syncPlanToMysql(plan: FinancialPlan) {
@@ -1812,27 +1816,8 @@ async function startServer() {
         recordings = Array.from(recMap.values()).filter((r) => !deletedRecordingIds.has(r.id));
       }
 
-      // Activity Logs
-      const logRows = await queryPg('SELECT * FROM activity_logs ORDER BY timestamp DESC LIMIT 200');
-      if (logRows && Array.isArray(logRows)) {
-        const dbLogs = logRows.map((row: any) => ({
-          id: row.id,
-          userId: row.user_id,
-          userName: row.user_name,
-          action: row.action,
-          category: row.category,
-          details: row.details,
-          ipAddress: row.ip_address,
-          timestamp: row.timestamp,
-        }));
-
-        const logMap = new Map<string, ActivityLog>();
-        for (const l of dbLogs) logMap.set(l.id, l);
-        for (const l of logs) {
-          logMap.set(l.id, l);
-        }
-        logs = Array.from(logMap.values());
-      }
+      // Activity Logs (stored separately in local file)
+      loadFromLocalLogsFile();
 
       // Financial Plans
       const planRows = await queryPg('SELECT * FROM financial_plans');
@@ -2215,28 +2200,21 @@ async function startServer() {
     const targetName = dbConfig.dbName || process.env.DB_NAME || 'itl_cameras';
 
     const hostsToTry = [targetHost, '127.0.0.1', 'localhost'].filter((h, i, a) => a.indexOf(h) === i);
-    const candidatesPass = [
-      targetPassword,
-      'itl123.789',
-      'itl_pass_2026',
-      'postgres',
-      ''
-    ].filter((p, index, self) => p !== undefined && self.indexOf(p) === index);
-
-    const candidatesUser = [targetUser, 'itl_user', 'postgres'].filter((u, index, self) => self.indexOf(u) === index);
-
-    const credentials: Array<{ user: string; pass: string }> = [];
-    for (const u of candidatesUser) {
-      for (const p of candidatesPass) {
-        credentials.push({ user: u, pass: p });
-      }
-    }
+    const credentials: Array<{ user: string; pass: string }> = [
+      { user: targetUser, pass: targetPassword },
+      { user: 'itl_user', pass: 'itl123.789' },
+      { user: 'postgres', pass: 'postgres' },
+      { user: 'postgres', pass: '' },
+    ].filter((cred, index, self) => self.findIndex(c => c.user === cred.user && c.pass === cred.pass) === index);
 
     let connectedHost = '';
 
     for (const hostCandidate of hostsToTry) {
       if (isPgActive) break;
+      let hostRefused = false;
+
       for (const cred of credentials) {
+        if (hostRefused) break;
         let testPool: InstanceType<typeof Pool> | null = null;
         try {
           testPool = new pg.Pool({
@@ -2246,13 +2224,11 @@ async function startServer() {
             password: cred.pass,
             database: targetName,
             max: 10,
-            idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 1000,
+            idleTimeoutMillis: 10000,
+            connectionTimeoutMillis: 800,
           });
 
-          testPool.on('error', (err) => {
-            console.error('[PostgreSQL Pool Background Error]', err.message || err);
-          });
+          testPool.on('error', () => {});
 
           const client = await testPool.connect();
           await client.query('SELECT 1');
@@ -2276,11 +2252,15 @@ async function startServer() {
           process.env.DB_PASSWORD = cred.pass;
           saveToLocalFile();
 
-          console.log(`[PostgreSQL ITL] Conectado com SUCESSO ao PostgreSQL em ${connectedHost}:${targetPort} (banco '${targetName}', usuário '${cred.user}')`);
+          console.log(`[PostgreSQL ITL] Conectado com SUCESSO ao PostgreSQL em ${connectedHost}:${targetPort}`);
           break;
         } catch (err: any) {
           if (testPool) {
             try { await testPool.end(); } catch (e) {}
+          }
+          if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'EHOSTUNREACH' || err.code === 'ETIMEDOUT') {
+            hostRefused = true;
+            break;
           }
           // If database doesn't exist, try creating it via root database 'postgres'
           if (err.code === '3D000') {
@@ -2591,8 +2571,8 @@ async function startServer() {
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
     };
     logs.unshift(newLog);
-    if (logs.length > 100) logs = logs.slice(0, 100);
-    saveToLocalFile();
+    if (logs.length > 200) logs = logs.slice(0, 200);
+    saveToLocalLogsFile();
   };
 
   // ---------------- API ENDPOINTS ----------------
@@ -2836,9 +2816,20 @@ async function startServer() {
         (c.streamKey && c.streamKey.replace(/^cam[_-]/, '') === rawKeyNum)
     );
 
+    const isRtmpCam = matchedCam && (matchedCam.protocol === 'RTMP' || !!matchedCam.rtmpUrl || !!matchedCam.fullRtmpUrl || matchedCam.streamKey?.includes('rtmp') || (matchedCam.videoStreamUrl && matchedCam.videoStreamUrl.includes('rtmp')));
+    const effectiveIsSub = isSub && (!isRtmpCam && !!matchedCam?.subStreamUrl);
+
+    if (isSub && (isRtmpCam || !matchedCam?.subStreamUrl)) {
+      const mainSubPath = subPath.replace(/[-_]sub/, '');
+      const mainFile = path.join(hlsDir, mainSubPath);
+      if (fs.existsSync(mainFile) || matchedCam) {
+        targetFile = mainFile;
+      }
+    }
+
     // Ensure FFmpeg process is started on demand if file doesn't exist
     if (!fs.existsSync(targetFile) && matchedCam) {
-      startCameraRtspStream(matchedCam, false, isSub);
+      startCameraRtspStream(matchedCam, false, effectiveIsSub);
     }
 
     // If file doesn't exist yet (initial 1-3s generation delay), wait up to 3.5s

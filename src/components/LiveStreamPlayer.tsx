@@ -41,17 +41,18 @@ const cleanDoubleUrl = (url: string | undefined | null): string => {
 };
 
 const getInitialVideoUrl = (cam: Camera, useSubStream = false) => {
+  const isRtmp = cam.protocol === 'RTMP' || !!cam.rtmpUrl || !!cam.fullRtmpUrl || (cam.videoStreamUrl && cam.videoStreamUrl.includes('rtmp'));
   if (cam.videoStreamUrl && cam.videoStreamUrl.trim() !== '') {
     let url = cleanDoubleUrl(cam.videoStreamUrl);
     if (url.includes('/live/') && !url.endsWith('.m3u8')) url += '.m3u8';
-    if (useSubStream && url.includes('/live/') && !url.includes('_sub.m3u8')) {
+    if (useSubStream && url.includes('/live/') && !url.includes('_sub.m3u8') && !isRtmp && cam.subStreamUrl) {
       url = url.replace(/\.m3u8$/, '_sub.m3u8');
     }
     return url;
   }
   const key = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
-  const suffix = useSubStream ? '_sub.m3u8' : '.m3u8';
+  const suffix = (useSubStream && !isRtmp && cam.subStreamUrl) ? '_sub.m3u8' : (useSubStream && !isRtmp ? '_sub.m3u8' : '.m3u8');
   return `/live/cam_${cleanKey}${suffix}`;
 };
 
