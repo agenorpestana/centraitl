@@ -2771,21 +2771,14 @@ async function startServer() {
     const actualKey = streamInfo.streamKey;
     const hlsFile = path.join('/tmp/hls', `${actualKey}.m3u8`);
 
-    // Wait up to 3 seconds for worker to generate or confirm HLS
-    for (let i = 0; i < 12; i++) {
+    // Wait up to 8 seconds for worker to generate or confirm HLS
+    for (let i = 0; i < 32; i++) {
       if (fs.existsSync(hlsFile)) break;
       await new Promise((r) => setTimeout(r, 250));
     }
 
     const health = streamManager.getHealth(actualKey);
     const isHlsActive = fs.existsSync(hlsFile);
-
-    const isRtspPrivateIp = matchedCam.rtspUrl && (
-      matchedCam.rtspUrl.includes('192.168.') ||
-      matchedCam.rtspUrl.includes('10.') ||
-      matchedCam.rtspUrl.includes('172.16.') ||
-      matchedCam.rtspUrl.includes('127.0.0.1')
-    );
 
     const isSuccess = isHlsActive && (health.status === 'online' || health.status === 'starting');
 
@@ -2794,13 +2787,11 @@ async function startServer() {
 
     let msg = '';
     if (isSuccess) {
-      msg = 'Sinal de vídeo HLS retransmitido e conectado com sucesso pelo servidor!';
-    } else if (isRtspPrivateIp) {
-      msg = `Câmera com IP privado local (${matchedCam.rtspUrl}) é inacessível diretamente pelo servidor em nuvem. Para retransmitir, envie fluxo RTMP para rtmp://${req.headers.host || 'centralitl.unityautomacoes.com.br'}:1935/live/${actualKey} ou use redirecionamento de porta/VPN.`;
+      msg = 'Sinal de vídeo RTSP/HLS conectado e transmitindo com sucesso!';
     } else {
       msg = health.lastError 
         ? `Falha ao conectar: ${health.lastError}` 
-        : 'Sinal da câmera indisponível ou sem pacotes de vídeo no momento. Verifique se a câmera/encoder está ligada e transmitindo.';
+        : `Sinal da câmera indisponível ou sem pacotes de vídeo. Verifique se a URL (${matchedCam.rtspUrl || matchedCam.name}) está acessível na rede local.`;
     }
 
     return res.json({

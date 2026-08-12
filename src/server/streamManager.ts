@@ -184,10 +184,10 @@ export class StreamManager {
       }
     }
 
-    // Candidate 2: RTMP URLs (only if explicitly defined by user or for RTMP cameras)
+    // Candidate 2: External RTMP URLs (only if explicitly defined and not pointing to our own local server for RTSP cameras)
     const rawRtmpList = cam.protocol === 'RTMP'
       ? [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl]
-      : [cam.rtmpUrl, cam.fullRtmpUrl];
+      : [];
 
     const rtmpCandidates = rawRtmpList.filter((u): u is string => Boolean(u && typeof u === 'string' && u.trim().length > 0));
 
@@ -518,6 +518,9 @@ export class StreamManager {
         }
 
         streamState.status = 'offline';
+        try {
+          if (fs.existsSync(hlsPath)) fs.unlinkSync(hlsPath);
+        } catch (e) {}
       });
 
       proc.on('error', (err) => {
