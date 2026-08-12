@@ -2780,9 +2780,6 @@ async function startServer() {
     const health = streamManager.getHealth(actualKey);
     const isHlsActive = fs.existsSync(hlsFile);
 
-    updateMemoryCamStatus(key, true);
-    updateMemoryCamStatus(actualKey, true);
-
     const isRtspPrivateIp = matchedCam.rtspUrl && (
       matchedCam.rtspUrl.includes('192.168.') ||
       matchedCam.rtspUrl.includes('10.') ||
@@ -2790,20 +2787,31 @@ async function startServer() {
       matchedCam.rtspUrl.includes('127.0.0.1')
     );
 
-    let msg = 'Conexão e fluxo de vídeo estabelecidos com sucesso!';
-    if (isRtspPrivateIp) {
-      msg = 'URL RTSP aponta para IP privado local (ex: 192.168.x.x). Retransmissão HLS em tempo real ativada com sucesso pelo servidor!';
+    const isSuccess = isHlsActive && (health.status === 'online' || health.status === 'starting');
+
+    updateMemoryCamStatus(key, isSuccess);
+    updateMemoryCamStatus(actualKey, isSuccess);
+
+    let msg = '';
+    if (isSuccess) {
+      msg = 'Sinal de vídeo HLS retransmitido e conectado com sucesso pelo servidor!';
+    } else if (isRtspPrivateIp) {
+      msg = `Câmera com IP privado local (${matchedCam.rtspUrl}) é inacessível diretamente pelo servidor em nuvem. Para retransmitir, envie fluxo RTMP para rtmp://${req.headers.host || 'centralitl.unityautomacoes.com.br'}:1935/live/${actualKey} ou use redirecionamento de porta/VPN.`;
+    } else {
+      msg = health.lastError 
+        ? `Falha ao conectar: ${health.lastError}` 
+        : 'Sinal da câmera indisponível ou sem pacotes de vídeo no momento. Verifique se a câmera/encoder está ligada e transmitindo.';
     }
 
     return res.json({
-      success: true,
+      success: isSuccess,
       protocol: matchedCam.protocol || 'RTSP',
       targetUrl: matchedCam.rtspUrl || matchedCam.rtmpUrl || health.maskedSource,
       streamKey: actualKey,
       hlsActive: isHlsActive,
-      status: 'ONLINE',
+      status: isSuccess ? 'ONLINE' : 'OFFLINE',
       message: msg,
-      codecs: 'H264 / AAC (HLS)',
+      codecs: isSuccess ? 'H264 / AAC (HLS)' : 'Inativo',
       logs: health.logs || [],
     });
   });

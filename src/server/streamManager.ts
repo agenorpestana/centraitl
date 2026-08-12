@@ -190,9 +190,14 @@ export class StreamManager {
     }
 
     // Candidate 2: RTMP URLs (only if explicitly defined by user or for RTMP cameras)
-    const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
+    const rawRtmpList = cam.protocol === 'RTMP'
+      ? [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl]
+      : [cam.rtmpUrl, cam.fullRtmpUrl];
+
+    const rtmpCandidates = rawRtmpList.filter((u): u is string => Boolean(u && typeof u === 'string' && u.trim().length > 0));
+
     for (const candidate of rtmpCandidates) {
-      let str = (candidate as string).trim();
+      let str = candidate.trim();
       if (str.startsWith('rtmp://')) {
         if (str.endsWith('/live') || str.endsWith('/live/')) {
           const cleanBase = str.replace(/\/+$/, '');
@@ -229,9 +234,9 @@ export class StreamManager {
       }
     }
 
-    // Candidate 4: Synthetic live test pattern ONLY for demo cameras or when no other source exists
-    const isDemoCam = Boolean(cam.isDemo) || cam.id?.toLowerCase().includes('demo') || cam.name?.toLowerCase().includes('demo');
-    if (isDemoCam || sources.length === 0) {
+    // Candidate 4: Synthetic test pattern ONLY if camera explicitly requested DEMO/SYNTHETIC protocol or zero sources exist
+    const isExplicitDemo = cam.protocol === 'DEMO' || cam.protocol === 'SYNTHETIC';
+    if (sources.length === 0 || isExplicitDemo) {
       sources.push({ type: 'SYNTHETIC', url: `synthetic:${streamKey}` });
     }
 

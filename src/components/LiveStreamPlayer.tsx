@@ -323,7 +323,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
 
     setConnectionState('LOADING');
-    // Allow up to 20s for HLS segment generation when many cameras load concurrently
+    // Allow up to 10s for HLS segment generation
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
@@ -332,7 +332,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
         }
         return curr;
       });
-    }, 20000);
+    }, 10000);
   };
 
   const handleVideoError = () => {
@@ -382,14 +382,14 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             backBufferLength: 10,
             liveSyncDurationCount: 2,
             liveMaxLatencyDurationCount: 5,
-            manifestLoadingTimeOut: 20000,
-            manifestLoadingMaxRetry: 10,
-            manifestLoadingRetryDelay: 1000,
-            levelLoadingTimeOut: 20000,
-            levelLoadingMaxRetry: 10,
-            levelLoadingRetryDelay: 1000,
-            fragLoadingTimeOut: 20000,
-            fragLoadingMaxRetry: 10,
+            manifestLoadingTimeOut: 8000,
+            manifestLoadingMaxRetry: 4,
+            manifestLoadingRetryDelay: 800,
+            levelLoadingTimeOut: 8000,
+            levelLoadingMaxRetry: 4,
+            levelLoadingRetryDelay: 800,
+            fragLoadingTimeOut: 8000,
+            fragLoadingMaxRetry: 4,
           });
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);
