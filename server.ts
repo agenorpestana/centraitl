@@ -213,8 +213,10 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     '-map', '0:v:0?'
   );
 
+  const isRtmpStream = cam.protocol === 'RTMP' || streamSource.startsWith('rtmp://') || !!cam.rtmpUrl;
+
   if (isSubStream) {
-    if (cam.subStreamUrl && cam.subStreamUrl.trim()) {
+    if ((cam.subStreamUrl && cam.subStreamUrl.trim()) || isRtmpStream) {
       ffmpegArgs.push('-c:v', 'copy');
     } else {
       ffmpegArgs.push(
