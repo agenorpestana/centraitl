@@ -121,7 +121,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
   // Sync state whenever camera prop changes
   useEffect(() => {
-    const initialUrl = cleanDoubleUrl(getInitialVideoUrl(camera));
+    const initialUrl = cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream));
     setVideoUrl(initialUrl);
     setStreamMode(camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO');
     setTempUrlInput(cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || initialUrl));
@@ -131,7 +131,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       setConnectionState('LOADING');
     }
     setRetryCount(0);
-  }, [camera.id, camera.videoStreamUrl, camera.rtspUrl, camera.rtmpUrl, camera.fullRtmpUrl, camera.protocol, camera.isLiveWebcam, camera.status]);
+  }, [camera.id, camera.videoStreamUrl, camera.rtspUrl, camera.rtmpUrl, camera.fullRtmpUrl, camera.protocol, camera.isLiveWebcam, camera.status, useSubStream]);
 
   // Fullscreen event listener
   useEffect(() => {

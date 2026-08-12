@@ -57,6 +57,7 @@ function getValidStreamSource(cam: any): string {
   if (!cam) return '';
   const key = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
+  const defaultKey = `cam_${cleanKey}`;
 
   // ONVIF protocol support
   if (cam.protocol === 'ONVIF' || (cam.onvifIp && cam.onvifIp.trim())) {
@@ -79,18 +80,30 @@ function getValidStreamSource(cam: any): string {
     }
   }
 
-  // Prioritize RTMP if camera protocol is RTMP or has rtmpUrl
-  const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
-  for (const candidate of rtmpCandidates) {
-    let str = candidate.trim();
-    if (str.startsWith('rtmp://')) {
-      if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
-        str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
-      }
-      return str;
+  // Helper to ensure RTMP URL contains the stream key
+  const formatRtmpCandidate = (candidateStr: string): string => {
+    let str = candidateStr.trim();
+    if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
+      str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
     }
-    if (str.startsWith('http://') || str.startsWith('https://')) {
-      return str;
+    if (str.startsWith('rtmp://')) {
+      const urlNoScheme = str.replace(/^rtmp:\/\//, '');
+      const pathSegments = urlNoScheme.split('/').filter(Boolean);
+      if (pathSegments.length <= 2 || str.endsWith('/live') || str.endsWith('/live/')) {
+        str = `${str.replace(/\/$/, '')}/${defaultKey}`;
+      }
+    }
+    return str;
+  };
+
+  // Prioritize RTMP if camera protocol is RTMP or has RTMP URL fields
+  if (cam.protocol === 'RTMP' || cam.rtmpUrl || cam.fullRtmpUrl || cam.rtmpServerUrl) {
+    const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
+    for (const candidate of rtmpCandidates) {
+      const formatted = formatRtmpCandidate(candidate);
+      if (formatted.startsWith('rtmp://') || formatted.startsWith('http://') || formatted.startsWith('https://')) {
+        return formatted;
+      }
     }
   }
 
@@ -102,7 +115,7 @@ function getValidStreamSource(cam: any): string {
     return cam.rtspUrl.trim();
   }
 
-  return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/cam_${cleanKey}`;
+  return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/${defaultKey}`;
 }
 
 const cameraProcessStartTimes = new Map<string, number>();
@@ -176,9 +189,11 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     '-map', '0:v:0?'
   );
 
-  if (isSubStream && (!cam.subStreamUrl || !cam.subStreamUrl.trim())) {
+  if (isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim()) {
+    ffmpegArgs.push('-c:v', 'copy');
+  } else if (isSubStream && cam.protocol !== 'RTMP' && !streamSource.startsWith('rtmp://')) {
     ffmpegArgs.push(
-      '-vf', 'scale=640:-2',
+      '-vf', 'scale=640:-2,format=yuv420p',
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-tune', 'zerolatency',
