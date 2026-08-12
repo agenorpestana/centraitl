@@ -51,10 +51,9 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
 }) => {
   const getCurrentHost = () => {
     if (typeof window !== 'undefined' && window.location && window.location.hostname) {
-      const h = window.location.hostname;
-      if (h && h !== 'localhost' && h !== '127.0.0.1') return h;
+      return window.location.hostname;
     }
-    return 'monitoramento.unityautomacoes.com.br';
+    return 'localhost';
   };
 
   const currentHost = getCurrentHost();
@@ -65,6 +64,9 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
   const [name, setName] = useState(camera.name || '');
   const [protocol, setProtocol] = useState<'RTSP' | 'RTMP'>(
     camera.protocol === 'RTMP' ? 'RTMP' : 'RTSP'
+  );
+  const [connectionType, setConnectionType] = useState<'LOCAL' | 'REMOTE'>(
+    camera.connectionType || (camera.protocol === 'RTMP' ? 'REMOTE' : 'LOCAL')
   );
   const [rtspUrl, setRtspUrl] = useState(camera.rtspUrl || '');
   const [streamKey, setStreamKey] = useState(
@@ -142,9 +144,10 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
     const updatedData: Partial<Camera> = {
       name: name.trim(),
       protocol,
+      connectionType,
       rtspUrl: protocol === 'RTSP' ? rtspUrl.trim() : '',
       streamKey: validKey,
-      rtmpServerUrl: rtmpServerUrl.trim(),
+      rtmpServerUrl: protocol === 'RTMP' ? rtmpServerUrl.trim() : '',
       rtmpUrl: protocol === 'RTMP' ? rtmpStreamSource : '',
       fullRtmpUrl: protocol === 'RTMP' ? rtmpStreamSource : '',
       stateUf,
@@ -223,7 +226,10 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={() => setProtocol('RTSP')}
+                onClick={() => {
+                  setProtocol('RTSP');
+                  setConnectionType('LOCAL');
+                }}
                 className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center space-x-2 transition ${
                   protocol === 'RTSP'
                     ? 'bg-slate-800 border-emerald-500 text-emerald-400 shadow-md'
@@ -236,7 +242,10 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setProtocol('RTMP')}
+                onClick={() => {
+                  setProtocol('RTMP');
+                  setConnectionType('REMOTE');
+                }}
                 className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center space-x-2 transition ${
                   protocol === 'RTMP'
                     ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 shadow-md'
@@ -245,6 +254,48 @@ export const CameraEditModal: React.FC<CameraEditModalProps> = ({
               >
                 <RadioTower className="w-4 h-4" />
                 <span>RTMP (Servidor / Push)</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Network Location / Connection Type Toggle */}
+          <div>
+            <label className="block text-xs font-bold text-slate-200 mb-1.5">
+              Origem da Rede / Arquitetura:
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setConnectionType('LOCAL')}
+                className={`p-3 rounded-xl border text-left text-xs transition ${
+                  connectionType === 'LOCAL'
+                    ? 'bg-cyan-500/10 border-cyan-500/80 text-cyan-300'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                }`}
+              >
+                <div className="font-bold flex items-center space-x-1.5 mb-1">
+                  <span>🏠 Rede Local (LAN / Intranet)</span>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-tight">
+                  IPs privados (ex: 192.168.x.x). O servidor transcodifica diretamente via RTSP para HLS local.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setConnectionType('REMOTE')}
+                className={`p-3 rounded-xl border text-left text-xs transition ${
+                  connectionType === 'REMOTE'
+                    ? 'bg-purple-500/10 border-purple-500/80 text-purple-300'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                }`}
+              >
+                <div className="font-bold flex items-center space-x-1.5 mb-1">
+                  <span>☁️ Nuvem / Remota (RTMP / DDNS)</span>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-tight">
+                  Câmera ou OBS enviando fluxo RTMP para a nuvem ou IP público com NAT.
+                </p>
               </button>
             </div>
           </div>

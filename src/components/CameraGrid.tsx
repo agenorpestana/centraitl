@@ -274,6 +274,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                     key={`${camera.id}-dvr-${autoRefreshKey}`}
                     camera={camera}
                     isMuted={isMuted}
+                    isGridMode={true}
                     onSelectCamera={() => onSelectCamera(camera)}
                     showOverlayControls={false}
                     hideBottomCard={true}
@@ -574,6 +575,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                     key={`${camera.id}-${autoRefreshKey}`}
                     camera={camera}
                     isMuted={isMuted}
+                    isGridMode={true}
                     onSelectCamera={onSelectCamera}
                     showOverlayControls={true}
                   />

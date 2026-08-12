@@ -15,6 +15,8 @@ export interface StreamHealth {
   restartCount: number;
   lastError: string | null;
   maskedSource: string;
+  activeProfile?: string;
+  activeTransport?: string;
   lastAccessTime: number;
   logs: string[];
 }
@@ -23,6 +25,7 @@ export interface Camera {
   id: string;
   name: string;
   protocol?: string;
+  connectionType?: 'LOCAL' | 'REMOTE';
   rtspUrl?: string;
   rtmpUrl?: string;
   fullRtmpUrl?: string;
@@ -32,11 +35,21 @@ export interface Camera {
   [key: string]: any;
 }
 
+export interface StreamSource {
+  type: 'RTSP' | 'RTMP' | 'HTTP';
+  url: string;
+  transport?: 'tcp' | 'udp' | 'auto';
+  mode?: 'copy' | 'transcode';
+  profileName?: string;
+}
+
 interface StreamState {
   streamKey: string;
   camera: Camera;
   rawSource: string;
   maskedSource: string;
+  activeProfile: string;
+  activeTransport: string;
   process: ChildProcess | null;
   startTime: number;
   lastAccessTime: number;
@@ -45,6 +58,7 @@ interface StreamState {
   status: StreamHealthStatus;
   lastError: string | null;
   logs: string[];
+  sourceIndex: number;
 }
 
 export class StreamManager {
@@ -92,57 +106,147 @@ export class StreamManager {
   }
 
   /**
-   * Resolves the primary video stream source URL for a given camera object.
+   * Derive standardized stream key for a camera with optional sub-stream profile.
    */
-  public getValidStreamSource(cam: Camera): string {
-    if (!cam) return '';
-
-    // Prioritize explicit RTSP URL if specified
-    if (cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'))) {
-      if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
-        return cam.rtspUrl.trim();
-      }
+  public getStreamKey(cam: Camera, profile = 'default'): string {
+    let baseKey = 'cam_unknown';
+    if (cam.streamKey && cam.streamKey.trim()) {
+      baseKey = cam.streamKey.trim().replace(/^cam-/, 'cam_');
+    } else if (cam.id) {
+      const cleanId = cam.id.replace(/^cam-/, '').replace(/^cam_/, '');
+      baseKey = `cam_${cleanId}`;
     }
-
-    // RTMP candidates
-    const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
-    for (const candidate of rtmpCandidates) {
-      let str = (candidate as string).trim();
-      if (str.startsWith('rtmp://')) {
-        if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
-          str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
-        }
-        return str;
-      }
-      if (str.startsWith('http://') || str.startsWith('https://')) {
-        return str;
-      }
-    }
-
-    if (cam.videoStreamUrl && cam.videoStreamUrl.trim()) {
-      return cam.videoStreamUrl.trim();
-    }
-
-    if (cam.rtspUrl && cam.rtspUrl.trim()) {
-      return cam.rtspUrl.trim();
-    }
-
-    const key = this.getStreamKey(cam);
-    return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/${key}`;
+    return profile === 'sub' ? `${baseKey}_sub` : baseKey;
   }
 
   /**
-   * Derive standardized stream key for a camera.
+   * Helper to convert Main Stream RTSP URL to Hardware Sub-stream RTSP URL.
    */
-  public getStreamKey(cam: Camera): string {
-    if (cam.streamKey && cam.streamKey.trim()) {
-      return cam.streamKey.trim().replace(/^cam-/, 'cam_');
+  public getSubstreamRtspUrl(url: string): string {
+    if (!url || !url.trim().startsWith('rtsp://')) return url;
+    let clean = url.trim();
+    if (clean.includes('subtype=0')) {
+      return clean.replace('subtype=0', 'subtype=1');
     }
-    if (cam.id) {
-      const cleanId = cam.id.replace(/^cam-/, '').replace(/^cam_/, '');
-      return `cam_${cleanId}`;
+    if (clean.includes('subtype=main')) {
+      return clean.replace('subtype=main', 'subtype=sub');
     }
-    return 'cam_unknown';
+    if (clean.includes('/cam/realmonitor') && !clean.includes('subtype=')) {
+      return clean + (clean.includes('?') ? '&' : '?') + 'subtype=1';
+    }
+    if (clean.includes('/Streaming/Channels/101')) {
+      return clean.replace('/Streaming/Channels/101', '/Streaming/Channels/102');
+    }
+    if (clean.includes('/Channels/1')) {
+      return clean.replace('/Channels/1', '/Channels/2');
+    }
+    if (clean.includes('/h264/ch1/main')) {
+      return clean.replace('/h264/ch1/main', '/h264/ch1/sub');
+    }
+    if (clean.includes('stream=0')) {
+      return clean.replace('stream=0', 'stream=1');
+    }
+    return clean;
+  }
+
+  /**
+   * Returns a list of candidate video stream sources in priority order.
+   */
+  public getValidSources(cam: Camera, profile = 'default'): StreamSource[] {
+    if (!cam) return [];
+
+    const streamKey = this.getStreamKey(cam, profile);
+    const baseStreamKey = this.getStreamKey(cam, 'default');
+    const sources: StreamSource[] = [];
+    const isSub = profile === 'sub';
+
+    // Candidates for RTSP
+    if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
+      const mainRtsp = cam.rtspUrl.trim();
+      const subRtsp = this.getSubstreamRtspUrl(mainRtsp);
+      const activeRtsp = isSub ? subRtsp : mainRtsp;
+
+      if (isSub && subRtsp !== mainRtsp) {
+        // Hardware Substream Candidates
+        sources.push({ type: 'RTSP', url: subRtsp, transport: 'tcp', mode: 'copy', profileName: 'RTSP/TCP (Hardware Substream Copy)' });
+        sources.push({ type: 'RTSP', url: subRtsp, transport: 'tcp', mode: 'transcode', profileName: 'RTSP/TCP (Hardware Substream Transcode)' });
+        sources.push({ type: 'RTSP', url: subRtsp, transport: 'udp', mode: 'copy', profileName: 'RTSP/UDP (Hardware Substream Copy)' });
+      } else {
+        // Standard Candidates
+        sources.push({ type: 'RTSP', url: activeRtsp, transport: 'tcp', mode: 'copy', profileName: `RTSP/TCP (Remux Copy ${isSub ? 'Grid SD' : 'Full HD'})` });
+        sources.push({ type: 'RTSP', url: activeRtsp, transport: 'tcp', mode: 'transcode', profileName: `RTSP/TCP (Transcode ${isSub ? 'Grid SD 360p' : 'Full HD 1080p'})` });
+        sources.push({ type: 'RTSP', url: activeRtsp, transport: 'udp', mode: 'copy', profileName: 'RTSP/UDP (Remux Copy)' });
+        sources.push({ type: 'RTSP', url: activeRtsp, transport: 'udp', mode: 'transcode', profileName: 'RTSP/UDP (Transcode)' });
+      }
+
+      if (isSub && subRtsp !== mainRtsp) {
+        sources.push({ type: 'RTSP', url: mainRtsp, transport: 'tcp', mode: 'transcode', profileName: 'RTSP/TCP Main Stream SD Transcode' });
+      }
+    }
+
+    // Candidate 2: External RTMP URLs (only if explicitly defined and not pointing to our own local server for RTSP cameras)
+    const rawRtmpList = cam.protocol === 'RTMP'
+      ? [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl]
+      : [];
+
+    const rtmpCandidates = rawRtmpList.filter((u): u is string => Boolean(u && typeof u === 'string' && u.trim().length > 0));
+
+    for (const candidate of rtmpCandidates) {
+      let str = candidate.trim();
+      if (str.startsWith('rtmp://')) {
+        if (str.endsWith('/live') || str.endsWith('/live/')) {
+          const cleanBase = str.replace(/\/+$/, '');
+          str = `${cleanBase}/${baseStreamKey}`;
+        } else if (!str.includes(baseStreamKey) && !str.includes(baseStreamKey.replace('cam_', ''))) {
+          const cleanBase = str.replace(/\/+$/, '');
+          str = `${cleanBase}/${baseStreamKey}`;
+        }
+        if (!sources.some((s) => s.url === str)) {
+          sources.push({ type: 'RTMP', url: str });
+        }
+      } else if (str.startsWith('http://') || str.startsWith('https://')) {
+        if (!sources.some((s) => s.url === str)) {
+          sources.push({ type: 'HTTP', url: str });
+        }
+      }
+    }
+
+    // Candidate 3: videoStreamUrl
+    if (cam.videoStreamUrl && cam.videoStreamUrl.trim()) {
+      const vUrl = cam.videoStreamUrl.trim();
+      if (!sources.some((s) => s.url === vUrl)) {
+        const type = vUrl.startsWith('rtsp://') ? 'RTSP' : vUrl.startsWith('rtmp://') ? 'RTMP' : 'HTTP';
+        sources.push({ type, url: vUrl });
+      }
+    }
+
+    // Default RTMP server stream ONLY for cameras explicitly set to RTMP protocol when no other RTMP URL exists
+    if (cam.protocol === 'RTMP' && !sources.some((s) => s.type === 'RTMP')) {
+      const host = process.env.APP_DOMAIN || 'localhost';
+      const defaultRtmp = `rtmp://${host}:1935/live/${baseStreamKey}`;
+      if (!sources.some((s) => s.url === defaultRtmp)) {
+        sources.push({ type: 'RTMP', url: defaultRtmp });
+      }
+    }
+
+    // If RTMP is primary protocol, sort RTMP candidates before RTSP
+    if (cam.protocol === 'RTMP') {
+      sources.sort((a, b) => {
+        if (a.type === 'RTMP' && b.type !== 'RTMP') return -1;
+        if (a.type !== 'RTMP' && b.type === 'RTMP') return 1;
+        return 0;
+      });
+    }
+
+    return sources;
+  }
+
+  /**
+   * Single primary source resolver for backward compatibility.
+   */
+  public getValidStreamSource(cam: Camera): string {
+    const sources = this.getValidSources(cam);
+    return sources[0]?.url || '';
   }
 
   /**
@@ -153,7 +257,7 @@ export class StreamManager {
       throw new Error('Camera is required');
     }
 
-    const streamKey = this.getStreamKey(camera);
+    const streamKey = this.getStreamKey(camera, profile);
     const hlsPath = path.join(this.hlsDir, `${streamKey}.m3u8`);
     const hlsUrl = `/live/${streamKey}.m3u8`;
     const now = Date.now();
@@ -178,13 +282,8 @@ export class StreamManager {
     // Check capacity before spawning a new stream
     this.enforceCapacityLimit(streamKey);
 
-    // Spawn stream worker
-    const streamSource = this.getValidStreamSource(camera);
-    if (!streamSource) {
-      return { streamKey, hlsPath, hlsUrl, status: 'offline' };
-    }
-
-    this.startWorker(camera, streamKey, streamSource, profile);
+    // Spawn stream worker with primary source (index 0)
+    this.startWorker(camera, streamKey, 0, profile);
 
     const streamState = this.streams.get(streamKey);
     return {
@@ -196,53 +295,127 @@ export class StreamManager {
   }
 
   /**
-   * Spawn FFmpeg worker for stream conversion.
+   * Spawn FFmpeg worker with automated source fallback progression.
    */
-  private startWorker(camera: Camera, streamKey: string, streamSource: string, profile: string) {
+  private startWorker(camera: Camera, streamKey: string, sourceIndex = 0, profile = 'default') {
     this.ensureHlsDir();
 
-    const now = Date.now();
+    // Clean stale HLS segment files on worker launch
+    try {
+      const hlsPathFile = path.join(this.hlsDir, `${streamKey}.m3u8`);
+      if (fs.existsSync(hlsPathFile)) {
+        fs.unlinkSync(hlsPathFile);
+      }
+      const files = fs.readdirSync(this.hlsDir);
+      for (const file of files) {
+        if (file.startsWith(`${streamKey}_`) && file.endsWith('.ts')) {
+          fs.unlinkSync(path.join(this.hlsDir, file));
+        }
+      }
+    } catch (e) {}
+
+    const sources = this.getValidSources(camera, profile);
+
+    if (!sources || sources.length === 0 || sourceIndex >= sources.length) {
+      console.log(`[StreamManager] Nenhuma fonte RTSP/RTMP ativa para ${camera.name || streamKey}`);
+      const hlsPath = path.join(this.hlsDir, `${streamKey}.m3u8`);
+      const streamState: StreamState = {
+        streamKey,
+        camera,
+        rawSource: '',
+        maskedSource: '',
+        activeProfile: 'Inativo',
+        activeTransport: 'Inativo',
+        process: null,
+        startTime: Date.now(),
+        lastAccessTime: Date.now(),
+        restartCount: 0,
+        lastRestartTime: Date.now(),
+        status: 'offline',
+        lastError: 'Sinal indisponível: Nenhuma URL de transmissão válida encontrada.',
+        logs: [`[${new Date().toLocaleTimeString()}] Sem fonte de vídeo disponível.`],
+        sourceIndex: 0,
+      };
+      this.streams.set(streamKey, streamState);
+      return;
+    }
+
+    const activeSource = sources[sourceIndex];
+    const maskedSource = this.maskCredentials(activeSource.url);
+    const hlsPath = path.join(this.hlsDir, `${streamKey}.m3u8`);
     const existing = this.streams.get(streamKey);
     const restartCount = existing ? existing.restartCount + 1 : 0;
-    const maskedSource = this.maskCredentials(streamSource);
-    const hlsPath = path.join(this.hlsDir, `${streamKey}.m3u8`);
 
     const logList: string[] = [
-      `[${new Date().toLocaleTimeString()}] Starting media worker for ${camera.name || streamKey}`,
-      `Source: ${maskedSource}`,
+      `[${new Date().toLocaleTimeString()}] Iniciando worker #${sourceIndex + 1} (${activeSource.type}) para ${camera.name || streamKey}`,
+      `Fonte: ${maskedSource}`,
     ];
 
-    const isRtsp = streamSource.startsWith('rtsp://') || (camera.protocol && camera.protocol.toUpperCase() === 'RTSP');
+    let ffmpegArgs: string[] = [];
 
-    const ffmpegArgs: string[] = [
-      '-fflags', '+nobuffer+discardcorrupt+genpts',
-      '-flags', 'low_delay',
-    ];
+    if (activeSource.type === 'RTSP') {
+      const isSubStream = profile === 'sub' || streamKey.endsWith('_sub');
 
-    if (isRtsp) {
-      ffmpegArgs.push(
-        '-rtsp_transport', 'tcp',
-        '-stimeout', '10000000',
+      ffmpegArgs = [
+        '-hide_banner', '-nostdin',
+        '-loglevel', 'warning',
+        '-fflags', '+nobuffer+discardcorrupt+genpts',
+        '-flags', 'low_delay',
+        '-max_delay', '500000',
+        '-rtsp_transport', activeSource.transport || 'tcp',
+        '-stimeout', '10000000', // 10s socket timeout
+        '-analyzeduration', '5000000',
+        '-probesize', '5000000',
         '-use_wallclock_as_timestamps', '1',
-        '-avoid_negative_ts', 'make_zero',
-        '-analyzeduration', '2000000',
-        '-probesize', '2000000',
-        '-i', streamSource,
-        '-map', '0:v:0?',
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-tune', 'zerolatency',
-        '-pix_fmt', 'yuv420p',
-        '-g', '30',
-        '-crf', '26',
-        '-map', '0:a:0?',
-        '-c:a', 'aac',
-        '-ac', '2',
-        '-ar', '44100',
-        '-b:a', '64k'
-      );
-    } else {
-      if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
+        '-i', activeSource.url,
+      ];
+
+      if (activeSource.mode === 'copy' && !isSubStream) {
+        // High speed remux copy for native H.264 Main Stream
+        ffmpegArgs.push(
+          '-map', '0:v:0?',
+          '-c:v', 'copy',
+          '-an'
+        );
+      } else {
+        // Transcode mode for H.264/H.265/MJPEG or Substream Grid scaling
+        ffmpegArgs.push(
+          '-map', '0:v:0?',
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-tune', 'zerolatency',
+          '-pix_fmt', 'yuv420p'
+        );
+
+        if (isSubStream) {
+          // Grid mode: 640x360 SD resolution at 15fps, 350kbps bitrate
+          ffmpegArgs.push(
+            '-vf', "scale='min(640,iw)':-2",
+            '-r', '15',
+            '-crf', '30',
+            '-b:v', '350k',
+            '-maxrate', '450k',
+            '-bufsize', '900k'
+          );
+        } else {
+          // Main mode: Full HD / Native resolution
+          ffmpegArgs.push(
+            '-crf', '24',
+            '-b:v', '2200k',
+            '-maxrate', '3000k',
+            '-bufsize', '4500k'
+          );
+        }
+
+        ffmpegArgs.push('-an');
+      }
+    } else { // RTMP or HTTP
+      const isSubStream = profile === 'sub' || streamKey.endsWith('_sub');
+      ffmpegArgs = [
+        '-fflags', '+nobuffer',
+        '-flags', 'low_delay',
+      ];
+      if (activeSource.url.startsWith('http://') || activeSource.url.startsWith('https://')) {
         ffmpegArgs.push(
           '-reconnect', '1',
           '-reconnect_at_eof', '1',
@@ -250,59 +423,77 @@ export class StreamManager {
           '-reconnect_delay_max', '5'
         );
       }
-      ffmpegArgs.push(
-        '-analyzeduration', '1500000',
-        '-probesize', '1500000',
-        '-i', streamSource,
-        '-map', '0:v:0?',
-        '-c:v', 'copy',
-        '-map', '0:a:0?',
-        '-c:a', 'aac',
-        '-ac', '2',
-        '-ar', '44100',
-        '-b:a', '128k'
-      );
+      ffmpegArgs.push('-i', activeSource.url, '-map', '0:v:0?');
+
+      if (isSubStream) {
+        ffmpegArgs.push(
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-tune', 'zerolatency',
+          '-pix_fmt', 'yuv420p',
+          '-vf', "scale='min(640,iw)':-2",
+          '-r', '15',
+          '-crf', '30',
+          '-b:v', '350k',
+          '-maxrate', '450k',
+          '-bufsize', '900k',
+          '-an'
+        );
+      } else {
+        ffmpegArgs.push(
+          '-c:v', 'copy',
+          '-an'
+        );
+      }
     }
 
     ffmpegArgs.push(
       '-f', 'hls',
       '-hls_time', String(this.hlsSegmentSeconds),
       '-hls_list_size', String(this.hlsListSize),
-      '-hls_flags', 'delete_segments+omit_endlist+discont_start',
-      '-y',
+      '-hls_flags', 'delete_segments+omit_endlist+independent_segments+program_date_time',
+      '-hls_segment_filename', path.join(this.hlsDir, `${streamKey}_%03d.ts`),
       hlsPath
     );
+
+    console.log(`[StreamManager] Lançando FFmpeg para '${camera.name || camera.id}' (${streamKey}) [Fonte ${sourceIndex + 1}/${sources.length}: ${activeSource.profileName || activeSource.type}]`);
 
     const streamState: StreamState = {
       streamKey,
       camera,
-      rawSource: streamSource,
+      rawSource: activeSource.url,
       maskedSource,
+      activeProfile: activeSource.profileName || activeSource.type,
+      activeTransport: activeSource.transport || 'tcp',
       process: null,
-      startTime: now,
-      lastAccessTime: now,
+      startTime: Date.now(),
+      lastAccessTime: Date.now(),
       restartCount,
-      lastRestartTime: now,
+      lastRestartTime: Date.now(),
       status: 'starting',
       lastError: null,
       logs: logList,
+      sourceIndex,
     };
 
-    console.log(`[StreamManager] Starting FFmpeg stream worker for camera '${camera.name || camera.id}' (${streamKey}) via ${maskedSource}...`);
-
     try {
-      const proc = spawn(this.ffmpegPath, ffmpegArgs);
+      const proc = spawn(this.ffmpegPath, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
       streamState.process = proc;
 
-      proc.stderr.on('data', (chunk: Buffer) => {
-        const line = chunk.toString().trim();
-        if (line) {
-          // Mask sensitive URLs in FFmpeg output lines
+      proc.stderr.on('data', (data) => {
+        const lines = data.toString().split('\n');
+        for (const line of lines) {
+          if (!line.trim()) continue;
           const safeLine = this.maskCredentials(line);
           logList.push(safeLine);
           if (logList.length > 30) logList.shift();
 
-          if (safeLine.includes('Invalid data found') || safeLine.includes('Decoder') || safeLine.includes('HEVC') || safeLine.includes('h265')) {
+          if (safeLine.includes('Opening') || safeLine.includes('Stream mapping') || safeLine.includes('frame=')) {
+            if (streamState.status === 'starting') {
+              streamState.status = 'online';
+            }
+          }
+          if (safeLine.includes('Invalid data found') || safeLine.includes('Decoder') || safeLine.includes('Connection refused') || safeLine.includes('Operation timed out') || safeLine.includes('Failed to read')) {
             streamState.lastError = safeLine;
           }
         }
@@ -310,29 +501,44 @@ export class StreamManager {
 
       proc.on('exit', (code) => {
         const runTimeMs = Date.now() - streamState.startTime;
-        console.log(`[StreamManager] Stream worker for '${streamKey}' exited with code ${code} after ${Math.round(runTimeMs / 1000)}s`);
-        logList.push(`Process exited with code ${code}`);
+        console.log(`[StreamManager] Worker '${streamKey}' (fonte ${activeSource.type}) saiu com código ${code} após ${Math.round(runTimeMs / 1000)}s`);
+        logList.push(`Processo finalizado com código ${code}`);
 
-        if (code !== 0 && runTimeMs < 3000) {
-          streamState.status = 'codecUnsupported';
-          streamState.lastError = `FFmpeg worker exited rapidly (code ${code}). Stream source or codec may be incompatible.`;
-        } else {
-          streamState.status = 'offline';
-        }
         streamState.process = null;
+
+        // If process exited and another candidate source exists, trigger fallback
+        if (sourceIndex < sources.length - 1) {
+          console.log(`[StreamManager] Fonte ${activeSource.type} para '${streamKey}' falhou. Alternando automaticamente para fonte #${sourceIndex + 2} (${sources[sourceIndex + 1].type})...`);
+          logList.push(`[Fallback] Alternando para fonte #${sourceIndex + 2} (${sources[sourceIndex + 1].type})...`);
+          
+          setTimeout(() => {
+            this.startWorker(camera, streamKey, sourceIndex + 1, profile);
+          }, 300);
+          return;
+        }
+
+        streamState.status = 'offline';
+        try {
+          if (fs.existsSync(hlsPath)) fs.unlinkSync(hlsPath);
+        } catch (e) {}
       });
 
       proc.on('error', (err) => {
-        console.error(`[StreamManager] FFmpeg process spawn error for '${streamKey}':`, err.message);
-        logList.push(`FFmpeg error: ${err.message}`);
+        console.error(`[StreamManager] Erro de spawn no FFmpeg para '${streamKey}':`, err.message);
+        logList.push(`Erro FFmpeg: ${err.message}`);
         streamState.lastError = err.message;
-        streamState.status = 'offline';
         streamState.process = null;
+
+        if (sourceIndex < sources.length - 1) {
+          this.startWorker(camera, streamKey, sourceIndex + 1, profile);
+        } else {
+          streamState.status = 'offline';
+        }
       });
 
       this.streams.set(streamKey, streamState);
     } catch (err: any) {
-      console.error(`[StreamManager] Failed to launch worker for '${streamKey}':`, err);
+      console.error(`[StreamManager] Falha ao lançar worker para '${streamKey}':`, err);
       streamState.lastError = err?.message || String(err);
       streamState.status = 'offline';
       this.streams.set(streamKey, streamState);
@@ -474,6 +680,8 @@ export class StreamManager {
       restartCount: stream.restartCount,
       lastError: stream.lastError,
       maskedSource: stream.maskedSource,
+      activeProfile: stream.activeProfile,
+      activeTransport: stream.activeTransport,
       lastAccessTime: stream.lastAccessTime,
       logs: stream.logs,
     };

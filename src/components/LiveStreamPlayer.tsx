@@ -30,6 +30,8 @@ interface LiveStreamPlayerProps {
   onSelectCamera?: (cam: Camera) => void;
   showOverlayControls?: boolean;
   hideBottomCard?: boolean;
+  quality?: 'auto' | 'sub' | 'main';
+  isGridMode?: boolean;
 }
 
 const cleanDoubleUrl = (url: string | undefined | null): string => {
@@ -39,14 +41,17 @@ const cleanDoubleUrl = (url: string | undefined | null): string => {
   return cleaned;
 };
 
-const getInitialVideoUrl = (cam: Camera) => {
-  if (cam.videoStreamUrl && cam.videoStreamUrl.trim() !== '') {
+const getStreamUrlForQuality = (cam: Camera, quality: 'sub' | 'main') => {
+  if (cam.videoStreamUrl && cam.videoStreamUrl.trim() !== '' && !cam.videoStreamUrl.includes('/live/')) {
     let url = cleanDoubleUrl(cam.videoStreamUrl);
     if (url.includes('/live/') && !url.endsWith('.m3u8')) url += '.m3u8';
     return url;
   }
   const key = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
+  if (quality === 'sub') {
+    return `/live/cam_${cleanKey}_sub.m3u8`;
+  }
   return `/live/cam_${cleanKey}.m3u8`;
 };
 
@@ -60,9 +65,14 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   onSelectCamera,
   showOverlayControls = true,
   hideBottomCard = false,
+  quality = 'auto',
+  isGridMode = false,
 }) => {
   const streamKey = camera.streamKey || (camera.id ? (camera.id.startsWith('cam-') ? `cam_${camera.id.replace('cam-', '')}` : camera.id) : 'stream');
   const cleanKey = streamKey.replace(/^cam-/, '').replace(/^cam_/, '');
+
+  const initialQuality: 'sub' | 'main' = quality === 'sub' ? 'sub' : (quality === 'main' ? 'main' : (isGridMode || hideBottomCard ? 'sub' : 'main'));
+  const [streamQuality, setStreamQuality] = useState<'sub' | 'main'>(initialQuality);
 
   const [streamMode, setStreamMode] = useState<'VIDEO' | 'WEBCAM'>(
     camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO'
@@ -74,11 +84,18 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');
   const [streamHealth, setStreamHealth] = useState<{ status: string; lastError?: string | null; logs?: string[] } | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string>(() => cleanDoubleUrl(getInitialVideoUrl(camera)));
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const activeQuality: 'sub' | 'main' = isFullscreen ? 'main' : streamQuality;
+  const [videoUrl, setVideoUrl] = useState<string>(() => cleanDoubleUrl(getStreamUrlForQuality(camera, activeQuality)));
+  
+  useEffect(() => {
+    setVideoUrl(cleanDoubleUrl(getStreamUrlForQuality(camera, activeQuality)));
+  }, [camera, activeQuality]);
+
   const [isEditingUrl, setIsEditingUrl] = useState(false);
   const [tempUrlInput, setTempUrlInput] = useState(() => cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || videoUrl));
 
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [isVisible, setIsVisible] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -140,7 +157,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
   // Sync state whenever camera prop changes
   useEffect(() => {
-    const initialUrl = cleanDoubleUrl(getInitialVideoUrl(camera));
+    const initialUrl = cleanDoubleUrl(getStreamUrlForQuality(camera, activeQuality));
     setVideoUrl(initialUrl);
     setStreamMode(camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO');
     setTempUrlInput(cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || initialUrl));
@@ -150,7 +167,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       setConnectionState('LOADING');
     }
     setRetryCount(0);
-  }, [camera.id, camera.videoStreamUrl, camera.rtspUrl, camera.rtmpUrl, camera.fullRtmpUrl, camera.protocol, camera.isLiveWebcam, camera.status]);
+  }, [camera.id, camera.videoStreamUrl, camera.rtspUrl, camera.rtmpUrl, camera.fullRtmpUrl, camera.protocol, camera.isLiveWebcam, camera.status, activeQuality]);
 
   // Fullscreen event listener
   useEffect(() => {
@@ -306,7 +323,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
 
     setConnectionState('LOADING');
-    // Allow up to 20s for HLS segment generation when many cameras load concurrently
+    // Allow up to 10s for HLS segment generation
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
@@ -315,7 +332,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
         }
         return curr;
       });
-    }, 20000);
+    }, 10000);
   };
 
   const handleVideoError = () => {
@@ -365,19 +382,24 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             backBufferLength: 10,
             liveSyncDurationCount: 2,
             liveMaxLatencyDurationCount: 5,
-            manifestLoadingTimeOut: 20000,
-            manifestLoadingMaxRetry: 10,
-            manifestLoadingRetryDelay: 1000,
-            levelLoadingTimeOut: 20000,
-            levelLoadingMaxRetry: 10,
-            levelLoadingRetryDelay: 1000,
-            fragLoadingTimeOut: 20000,
-            fragLoadingMaxRetry: 10,
+            manifestLoadingTimeOut: 8000,
+            manifestLoadingMaxRetry: 4,
+            manifestLoadingRetryDelay: 800,
+            levelLoadingTimeOut: 8000,
+            levelLoadingMaxRetry: 4,
+            levelLoadingRetryDelay: 800,
+            fragLoadingTimeOut: 8000,
+            fragLoadingMaxRetry: 4,
           });
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);
           hlsInstance.on(HlsClass.Events.MANIFEST_PARSED, () => {
-            videoElement.play().catch(() => {});
+            videoElement.muted = true;
+            videoElement.play().catch((err) => {
+              console.warn('[Autoplay Blocked]:', err);
+              videoElement.muted = true;
+              videoElement.play().catch(() => {});
+            });
           });
           hlsInstance.on(HlsClass.Events.FRAG_PARSED, () => {
             if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
@@ -591,24 +613,39 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           </div>
         )}
 
-        {/* Bottom-right Discrete Native Fullscreen Trigger Button inside image */}
-        <button
-          onClick={toggleFullscreen}
-          className="absolute bottom-2.5 right-2.5 p-2 bg-slate-950/80 hover:bg-emerald-500 text-slate-200 hover:text-slate-950 rounded-xl border border-slate-700 transition z-20 shadow-lg flex items-center gap-1.5 text-xs font-bold"
-          title={isFullscreen ? 'Sair da Tela Cheia (ESC)' : 'Expandir para Tela Cheia Total'}
-        >
-          {isFullscreen ? (
-            <>
-              <Minimize2 className="w-4 h-4" />
-              <span className="hidden sm:inline">Sair Tela Cheia</span>
-            </>
-          ) : (
-            <>
-              <Maximize2 className="w-4 h-4 text-emerald-400" />
-              <span className="hidden sm:inline">Tela Cheia</span>
-            </>
-          )}
-        </button>
+        {/* Bottom-right Discrete Controls: Quality Toggle & Native Fullscreen Trigger */}
+        <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5 z-20">
+          <button
+            type="button"
+            onClick={() => setStreamQuality(streamQuality === 'sub' ? 'main' : 'sub')}
+            className={`px-2.5 py-1.5 rounded-xl border transition shadow-lg flex items-center gap-1 text-[11px] font-extrabold ${
+              activeQuality === 'main'
+                ? 'bg-emerald-950/90 text-emerald-300 border-emerald-500/80 hover:bg-emerald-900'
+                : 'bg-cyan-950/90 text-cyan-300 border-cyan-500/80 hover:bg-cyan-900'
+            }`}
+            title={activeQuality === 'main' ? 'Qualidade: Full HD 1080p (Clique para Grid SD 360p)' : 'Qualidade: Grid SD 360p (Clique para Full HD 1080p)'}
+          >
+            <span>{activeQuality === 'main' ? 'HD 1080p' : 'SD 360p'}</span>
+          </button>
+
+          <button
+            onClick={toggleFullscreen}
+            className="p-2 bg-slate-950/80 hover:bg-emerald-500 text-slate-200 hover:text-slate-950 rounded-xl border border-slate-700 transition shadow-lg flex items-center gap-1.5 text-xs font-bold"
+            title={isFullscreen ? 'Sair da Tela Cheia (ESC)' : 'Expandir para Tela Cheia Total'}
+          >
+            {isFullscreen ? (
+              <>
+                <Minimize2 className="w-4 h-4" />
+                <span className="hidden sm:inline">Sair Tela Cheia</span>
+              </>
+            ) : (
+              <>
+                <Maximize2 className="w-4 h-4 text-emerald-400" />
+                <span className="hidden sm:inline">Tela Cheia</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* 2. INFORMATION & CONTROLS CARDS (POSITIONS BELOW THE VIDEO IMAGE) */}
@@ -629,12 +666,13 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               <h4 className="font-bold text-sm text-slate-100 truncate">{camera.name}</h4>
               <span
                 className={`px-2 py-0.5 rounded text-[10px] font-bold border shrink-0 ${
-                  camera.protocol === 'RTSP'
+                  camera.connectionType === 'LOCAL' || camera.protocol === 'RTSP'
                     ? 'bg-cyan-950/90 text-cyan-300 border-cyan-800'
                     : 'bg-emerald-950/90 text-emerald-400 border-emerald-800'
                 }`}
+                title={camera.connectionType === 'LOCAL' || camera.protocol === 'RTSP' ? 'Rede Local / Transcodificação HLS Direta' : 'Transmissão RTMP Nuvem'}
               >
-                {camera.protocol || 'RTMP'}
+                {camera.connectionType === 'LOCAL' || camera.protocol === 'RTSP' ? 'RTSP LAN' : camera.protocol || 'RTMP'}
               </span>
             </div>
 
