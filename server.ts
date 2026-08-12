@@ -53,30 +53,56 @@ const deletedPlanIds = new Set<string>();
 const deletedInvoiceIds = new Set<string>();
 const activeTokensMap: Record<string, string> = {};
 
-function getValidStreamSource(cam: any): string {
+function getValidStreamSource(cam: any, isSubStream = false): string {
   if (!cam) return '';
   const key = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
   const defaultKey = `cam_${cleanKey}`;
 
+  if (isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim()) {
+    return cam.subStreamUrl.trim();
+  }
+
   // ONVIF protocol support
   if (cam.protocol === 'ONVIF' || (cam.onvifIp && cam.onvifIp.trim())) {
-    if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
-      return cam.rtspUrl.trim();
+    if (isSubStream) {
+      if (cam.subStreamUrl && cam.subStreamUrl.trim().startsWith('rtsp://')) {
+        return cam.subStreamUrl.trim();
+      }
+    } else {
+      if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
+        return cam.rtspUrl.trim();
+      }
     }
     const user = cam.onvifUsername || 'admin';
     const pass = cam.onvifPassword || '';
     const auth = (user || pass) ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : '';
     const ip = (cam.onvifIp || '192.168.1.100').trim();
     const port = cam.onvifPort || 554;
-    const profile = cam.onvifProfile || 'onvif1';
+    const profile = isSubStream ? (cam.onvifSubProfile || 'onvif2') : (cam.onvifProfile || 'onvif1');
     return `rtsp://${auth}${ip}:${port}/${profile}`;
   }
 
   // Prioritize RTSP if camera protocol is RTSP or has rtspUrl starting with rtsp://
   if (cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'))) {
-    if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
-      return cam.rtspUrl.trim();
+    if (isSubStream) {
+      if (cam.subStreamUrl && cam.subStreamUrl.trim().startsWith('rtsp://')) {
+        return cam.subStreamUrl.trim();
+      }
+      if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
+        const mainUrl = cam.rtspUrl.trim();
+        if (mainUrl.includes('subtype=0')) {
+          return mainUrl.replace('subtype=0', 'subtype=1');
+        }
+        if (mainUrl.includes('onvif1')) {
+          return mainUrl.replace('onvif1', 'onvif2');
+        }
+        return mainUrl;
+      }
+    } else {
+      if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
+        return cam.rtspUrl.trim();
+      }
     }
   }
 
@@ -131,9 +157,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   if (key && deletedCameraIds.has(key)) return;
   if (cleanKey && deletedCameraIds.has(`cam-${cleanKey}`)) return;
 
-  let streamSource = isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim()
-    ? cam.subStreamUrl.trim()
-    : getValidStreamSource(cam);
+  let streamSource = getValidStreamSource(cam, isSubStream);
 
   if (streamSource.includes('localhost:1935') || streamSource.includes('127.0.0.1:1935') || streamSource.includes('aerocam.itlfibra.com:1935')) {
     streamSource = streamSource.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
@@ -170,7 +194,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
-      '-stimeout', '10000000',
+      '-timeout', '5000000',
       '-use_wallclock_as_timestamps', '1'
     );
   } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
@@ -189,17 +213,19 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     '-map', '0:v:0?'
   );
 
-  if (isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim()) {
-    ffmpegArgs.push('-c:v', 'copy');
-  } else if (isSubStream && cam.protocol !== 'RTMP' && !streamSource.startsWith('rtmp://')) {
-    ffmpegArgs.push(
-      '-vf', 'scale=640:-2,format=yuv420p',
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-tune', 'zerolatency',
-      '-r', '15',
-      '-b:v', '400k'
-    );
+  if (isSubStream) {
+    if (cam.subStreamUrl && cam.subStreamUrl.trim()) {
+      ffmpegArgs.push('-c:v', 'copy');
+    } else {
+      ffmpegArgs.push(
+        '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-r', '15',
+        '-b:v', '350k'
+      );
+    }
   } else {
     ffmpegArgs.push('-c:v', 'copy');
   }
@@ -2430,7 +2456,7 @@ async function startServer() {
 
     const ffmpegArgs: string[] = [];
     if (inputSource.startsWith('rtsp://')) {
-      ffmpegArgs.push('-rtsp_transport', 'tcp', '-stimeout', '10000000');
+      ffmpegArgs.push('-rtsp_transport', 'tcp', '-timeout', '5000000');
     } else if (inputSource.startsWith('rtmp://') || inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
       ffmpegArgs.push(
         '-reconnect', '1',

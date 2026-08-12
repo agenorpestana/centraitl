@@ -136,11 +136,14 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   // Fullscreen event listener
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      const activeFS = !!document.fullscreenElement;
+      setIsFullscreen(activeFS);
+      const urlToUse = cleanDoubleUrl(getInitialVideoUrl(camera, activeFS ? false : useSubStream));
+      setVideoUrl(urlToUse);
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
+  }, [camera, useSubStream]);
 
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
