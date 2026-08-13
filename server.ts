@@ -2411,6 +2411,124 @@ async function startServer() {
     return { prunedCount, currentGB: Math.max(0, currentMB / 1024) };
   }
 
+  function scanAndReconcileRecordingsFromDisk() {
+    const dirsToScan = [
+      recordingsDir,
+      '/var/www/itl-recordings',
+      '/tmp/recordings',
+      path.join(process.cwd(), 'public', 'recordings'),
+    ];
+
+    let addedCount = 0;
+
+    for (const dirPath of dirsToScan) {
+      if (!fs.existsSync(dirPath)) continue;
+      try {
+        const files = fs.readdirSync(dirPath);
+        for (const file of files) {
+          if (!file.toLowerCase().endsWith('.mp4')) continue;
+          const fullPath = path.join(dirPath, file);
+
+          let targetPath = fullPath;
+          if (dirPath !== recordingsDir) {
+            targetPath = path.join(recordingsDir, file);
+            if (!fs.existsSync(targetPath)) {
+              try {
+                fs.copyFileSync(fullPath, targetPath);
+              } catch (e) {
+                continue;
+              }
+            }
+          }
+
+          try {
+            const stats = fs.statSync(targetPath);
+            if (stats.size < 500) continue; // Skip unplayable/corrupt zero-byte files
+
+            const relativeUrl = `/recordings/${file}`;
+
+            // Check if already registered
+            const alreadyRegistered = recordings.some(
+              (r) => r.streamUrl === relativeUrl || (r.id && r.id.includes(file.replace(/[^a-zA-Z0-9_-]/g, '_')))
+            );
+            if (alreadyRegistered) continue;
+
+            let parsedCamId = '';
+            let timestamp = Math.round(stats.birthtimeMs || stats.mtimeMs || Date.now());
+
+            const match = file.match(/^rec(?:_auto)?_([a-zA-Z0-9_-]+)_(\d{10,13})\.mp4$/i);
+            if (match) {
+              parsedCamId = match[1];
+              timestamp = parseInt(match[2], 10);
+              if (timestamp < 10000000000) timestamp *= 1000;
+            }
+
+            let targetCam = cameras.find((c) => {
+              if (!parsedCamId) return false;
+              const cleanParsed = parsedCamId.replace(/[^a-zA-Z0-9]/g, '');
+              const cleanCamId = c.id.replace(/[^a-zA-Z0-9]/g, '');
+              const cleanStreamKey = (c.streamKey || '').replace(/[^a-zA-Z0-9]/g, '');
+              return c.id === parsedCamId || cleanCamId === cleanParsed || cleanStreamKey === cleanParsed;
+            });
+
+            const camId = targetCam ? targetCam.id : (parsedCamId || 'cam-auto');
+            const camName = targetCam ? targetCam.name : (parsedCamId ? `Câmera ${parsedCamId}` : 'Câmera ITL');
+
+            const startTime = new Date(timestamp);
+            const endTime = new Date(stats.mtimeMs || timestamp);
+            let durationSec = Math.max(1, Math.round((endTime.getTime() - startTime.getTime()) / 1000));
+            if (durationSec > 3600 || durationSec <= 0) {
+              const fileSizeMB = stats.size / (1024 * 1024);
+              durationSec = Math.max(5, Math.min(300, Math.round(fileSizeMB * 8)));
+            }
+
+            const fileSizeMB = Math.max(0.1, +(stats.size / (1024 * 1024)).toFixed(1));
+
+            const thumbFileName = `thumb_disk_${file.replace('.mp4', '.jpg')}`;
+            const thumbPath = path.join(recordingsDir, thumbFileName);
+            if (!fs.existsSync(thumbPath)) {
+              try {
+                execAsync(`ffmpeg -y -ss 00:00:01 -i "${targetPath}" -vframes 1 -q:v 2 "${thumbPath}"`).catch(() => {});
+              } catch (e) {}
+            }
+
+            const thumbUrl = fs.existsSync(thumbPath)
+              ? `/recordings/${thumbFileName}`
+              : (targetCam && targetCam.thumbnailUrl && !targetCam.thumbnailUrl.includes('unsplash')
+                  ? targetCam.thumbnailUrl
+                  : `/api/cameras/${camId}/snapshot`);
+
+            const recId = `rec-disk-${file.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+            const newRec: CloudRecording = {
+              id: recId,
+              cameraId: camId,
+              cameraName: camName,
+              startTime: formatDateTime(startTime),
+              endTime: formatDateTime(endTime),
+              durationSeconds: durationSec,
+              fileSizeMB,
+              thumbnailUrl: thumbUrl,
+              streamUrl: relativeUrl,
+              isE2EELocked: true,
+              tags: ['Gravação Restaurada do Disco', 'Nuvem Real HD', targetCam ? (targetCam.location || 'Central ITL') : 'Central ITL'],
+            };
+
+            recordings.unshift(newRec);
+            syncRecordingToMysql(newRec);
+            addedCount++;
+          } catch (e) {}
+        }
+      } catch (e) {}
+    }
+
+    if (addedCount > 0) {
+      if (recordings.length > 5000) recordings = recordings.slice(0, 5000);
+      saveToLocalFile();
+      console.log(`[Disk Scanner] ${addedCount} gravação(ões) do disco foram reconciliadas e disponibilizadas no cofre!`);
+    }
+  }
+
   function startAutoRecordingForCamera(cam: Camera) {
     if (!cam || !cam.id) return;
 
@@ -2594,6 +2712,10 @@ async function startServer() {
   }
 
   function checkAndStartAllAutoRecordings() {
+    try {
+      scanAndReconcileRecordingsFromDisk();
+    } catch (e) {}
+
     cameras.forEach((cam) => {
       // Ensure cloud recording is enabled by default
       if (cam.cloudRecordingsActive === undefined) {
@@ -2612,6 +2734,11 @@ async function startServer() {
   // Start continuous 24/7 background recording for all cameras immediately and every 10s
   setTimeout(checkAndStartAllAutoRecordings, 2000);
   setInterval(checkAndStartAllAutoRecordings, 10000);
+  setInterval(() => {
+    try {
+      scanAndReconcileRecordingsFromDisk();
+    } catch (e) {}
+  }, 30000);
 
   // Helper log function (saved exclusively to local file itl_logs.json)
   const addLog = (userName: string, action: string, category: ActivityLog['category'], details?: string) => {
@@ -4151,9 +4278,21 @@ async function startServer() {
 
   // Recordings Endpoints (Real Stream Capture Engine for RTMP, RTSP & HLS)
   app.get('/api/recordings', (req, res) => {
+    try {
+      scanAndReconcileRecordingsFromDisk();
+    } catch (e) {}
     const reqUser = getUserFromReq(req);
     const filtered = filterRecordingsForUser(reqUser, recordings);
     res.json(filtered);
+  });
+
+  app.post('/api/recordings/scan', (req, res) => {
+    try {
+      scanAndReconcileRecordingsFromDisk();
+      return res.json({ success: true, count: recordings.length, message: 'Varredura e sincronização do disco concluídas!' });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, error: e.message || e });
+    }
   });
 
   app.get('/api/recordings/active', (req, res) => {

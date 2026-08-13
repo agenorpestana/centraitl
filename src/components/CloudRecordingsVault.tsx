@@ -210,18 +210,37 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
     } catch (e) {}
   };
 
+  const [isScanningDisk, setIsScanningDisk] = useState<boolean>(false);
+
+  const handleScanDisk = async () => {
+    setIsScanningDisk(true);
+    try {
+      await fetch('/api/recordings/scan', { method: 'POST' });
+    } catch (e) {}
+    setTimeout(() => setIsScanningDisk(false), 1000);
+  };
+
   // Filter recordings strictly for user accessible cameras
   const effectiveRecordings = useMemo(() => {
+    if (activeUser.role === 'ADMIN') {
+      const list = [...recordings];
+      list.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+      return list;
+    }
+
     const allowedIds = new Set(userAccessibleCameras.map((c) => c.id));
     const allowedNames = new Set(userAccessibleCameras.map((c) => c.name));
+    const allowedCleanIds = new Set(userAccessibleCameras.map((c) => c.id.replace(/^cam[-_]/i, '')));
 
-    let list = recordings.filter(
-      (r) => allowedIds.has(r.cameraId) || allowedNames.has(r.cameraName)
-    );
+    let list = recordings.filter((r) => {
+      if (allowedIds.has(r.cameraId) || allowedNames.has(r.cameraName)) return true;
+      const cleanRecCamId = (r.cameraId || '').replace(/^cam[-_]/i, '');
+      return allowedCleanIds.has(cleanRecCamId);
+    });
 
     list.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
     return list;
-  }, [recordings, userAccessibleCameras]);
+  }, [recordings, userAccessibleCameras, activeUser]);
 
   const [activeRecording, setActiveRecording] = useState<CloudRecording | null>(effectiveRecordings[0] || null);
 
@@ -480,6 +499,16 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleScanDisk}
+            disabled={isScanningDisk}
+            className="flex items-center gap-1.5 text-xs font-bold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+            title="Varrer disco para encontrar e sincronizar fatias de vídeo capturadas no servidor"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isScanningDisk ? 'animate-spin text-emerald-400' : 'text-slate-400'}`} />
+            <span>{isScanningDisk ? 'Sincronizando...' : 'Sincronizar Disco'}</span>
+          </button>
           <span className="text-[11px] font-mono text-emerald-400 bg-emerald-950 border border-emerald-800/60 px-2.5 py-1 rounded-lg shrink-0">
             HD Real RTMP/RTSP
           </span>
