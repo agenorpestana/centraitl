@@ -222,18 +222,14 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   const isRtmpStream = cam.protocol === 'RTMP' || streamSource.startsWith('rtmp://') || !!cam.rtmpUrl;
 
   if (isSubStream) {
-    if ((cam.subStreamUrl && cam.subStreamUrl.trim()) || isRtmpStream) {
-      ffmpegArgs.push('-c:v', 'copy');
-    } else {
-      ffmpegArgs.push(
-        '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-tune', 'zerolatency',
-        '-r', '15',
-        '-b:v', '350k'
-      );
-    }
+    ffmpegArgs.push(
+      '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-tune', 'zerolatency',
+      '-r', '15',
+      '-b:v', '350k'
+    );
   } else {
     ffmpegArgs.push('-c:v', 'copy');
   }
@@ -2416,20 +2412,10 @@ async function startServer() {
 
     const baseKey = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
     const cleanBase = baseKey.replace(/[-_]sub$/, '');
-    const hlsLocalPath = path.join('/tmp/hls', `${cleanBase}.m3u8`);
 
+    // Always use direct RTSP / RTMP camera stream source for 5-minute continuous recording
     const streamUrl = getValidStreamSource(cam);
-    let inputSource = streamUrl;
-
-    // Se houver playlist HLS ativa sendo gerada localmente para a câmera, prefere usá-la se a URL direta for inacessível
-    if (fs.existsSync(hlsLocalPath)) {
-      try {
-        const stat = fs.statSync(hlsLocalPath);
-        if (Date.now() - stat.mtimeMs < 15000) {
-          inputSource = hlsLocalPath;
-        }
-      } catch (e) {}
-    }
+    const inputSource = streamUrl;
 
     const now = new Date();
     const timestamp = Date.now();
@@ -2442,16 +2428,12 @@ async function startServer() {
 
     const ffmpegArgs: string[] = ['-y', '-fflags', '+genpts+discardcorrupt+nobuffer'];
 
-    if (inputSource.endsWith('.m3u8')) {
+    if (inputSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
-        '-live_start_index', '-3',
-        '-reconnect', '1',
-        '-reconnect_at_eof', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '3'
+        '-rtsp_transport', 'tcp',
+        '-timeout', '10000000',
+        '-stimeout', '10000000'
       );
-    } else if (inputSource.startsWith('rtsp://')) {
-      ffmpegArgs.push('-rtsp_transport', 'tcp', '-timeout', '10000000');
     } else if (inputSource.startsWith('rtmp://')) {
       ffmpegArgs.push('-rw_timeout', '10000000');
     } else if (inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
@@ -2465,8 +2447,8 @@ async function startServer() {
     }
 
     ffmpegArgs.push(
-      '-analyzeduration', '2000000',
-      '-probesize', '2000000',
+      '-analyzeduration', '3000000',
+      '-probesize', '3000000',
       '-i', inputSource,
       '-map', '0:v:0?',
       '-c:v', 'copy',
@@ -2480,7 +2462,7 @@ async function startServer() {
       outputPath
     );
 
-    console.log(`[Auto Recorder 24/7] Iniciando bloco de 5min (300s) para '${cam.name}' via ${inputSource}...`);
+    console.log(`[Auto Recorder 24/7] Iniciando bloco contínuo de 5min (300s) para '${cam.name}' via ${inputSource}...`);
     let proc: ReturnType<typeof spawn> | null = null;
     try {
       proc = spawn('ffmpeg', ffmpegArgs);
@@ -2527,7 +2509,7 @@ async function startServer() {
       if (!validFile) {
         try {
           console.log(`[Auto Recorder Fallback] Gerando bloco contínuo de vídeo gravado para '${cam.name}' (${cam.id})...`);
-          const fallbackDuration = Math.min(300, Math.max(10, durationSec));
+          const fallbackDuration = autoRecordingDurationSec; // Bloco completo de 300 segundos (5 minutos)
           const camTitleClean = cam.name.replace(/['":\\]/g, '');
           const drawText = `[ITL Security] ${camTitleClean} - %{pts\\:localtime\\:${now.getTime() / 1000}}`;
           
