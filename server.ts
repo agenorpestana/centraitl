@@ -662,7 +662,9 @@ async function startServer() {
           parsed.deletedInvoiceIds.forEach((id: string) => deletedInvoiceIds.add(id));
         }
         if (parsed.cameras && Array.isArray(parsed.cameras)) {
-          cameras = parsed.cameras.filter((c: any) => c.id && !deletedCameraIds.has(c.id));
+          cameras = parsed.cameras
+            .filter((c: any) => c.id && !deletedCameraIds.has(c.id))
+            .map((c: any) => ({ ...c, cloudRecordingsActive: c.cloudRecordingsActive !== false }));
         }
         if (parsed.recordings && Array.isArray(parsed.recordings)) {
           // Strictly exclude legacy mock auto-generated items
@@ -1404,7 +1406,7 @@ async function startServer() {
           cam.fps || 30,
           cam.resolution || '1080p',
           safeStorage,
-          cam.cloudRecordingsActive ? 1 : 0,
+          cam.cloudRecordingsActive !== false ? 1 : 0,
           cam.motionSensitivity || 7,
           cam.aiDetectionEnabled ? 1 : 0,
           cam.twoWayAudioEnabled ? 1 : 0,
@@ -1742,7 +1744,7 @@ async function startServer() {
             fps: row.fps || 30,
             resolution: row.resolution || '1080p',
             storageUsedGB: parseFloat(row.storage_used_gb || 0),
-            cloudRecordingsActive: Boolean(row.cloud_recordings_active),
+            cloudRecordingsActive: row.cloud_recordings_active === null || row.cloud_recordings_active === undefined ? true : Boolean(row.cloud_recordings_active),
             motionSensitivity: row.motion_sensitivity || 7,
             aiDetectionEnabled: Boolean(row.ai_detection_enabled),
             twoWayAudioEnabled: Boolean(row.two_way_audio_enabled),
@@ -2411,11 +2413,17 @@ async function startServer() {
 
   function startAutoRecordingForCamera(cam: Camera) {
     if (!cam || !cam.id) return;
+
+    // Ensure camera object has active flag default
+    if (cam.cloudRecordingsActive === undefined) {
+      cam.cloudRecordingsActive = true;
+    }
+
     if (activeAutoRecordingProcesses.has(cam.id)) {
       const proc = activeAutoRecordingProcesses.get(cam.id);
       const startTime = activeAutoRecordingStartTimes.get(cam.id) || Date.now();
       
-      // Watchdog check: If process hung for > 330 seconds, force terminate and restart!
+      // Watchdog check: If process actively running and hasn't exceeded time limit + 30s, keep running
       if (proc && proc.exitCode === null && !proc.killed && Date.now() - startTime < (autoRecordingDurationSec + 30) * 1000) {
         return; // Already actively recording a slice
       }
@@ -2439,7 +2447,6 @@ async function startServer() {
     if (!streamUrl) return;
 
     // ALWAYS connect directly to camera stream RTSP/RTMP URL for recordings!
-    // NEVER use local temporary HLS playlists (.m3u8) as recording input because live segment deletion causes file corruption.
     const inputSource = streamUrl;
 
     const now = new Date();
@@ -2459,12 +2466,13 @@ async function startServer() {
     if (inputSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-timeout', '5000000',
+        '-stimeout', '10000000',
+        '-timeout', '10000000',
         '-use_wallclock_as_timestamps', '1'
       );
     } else if (inputSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '5000000',
+        '-rw_timeout', '10000000',
         '-analyzeduration', '2000000',
         '-probesize', '2000000'
       );
@@ -2481,17 +2489,19 @@ async function startServer() {
       '-analyzeduration', '2000000',
       '-probesize', '2000000',
       '-i', inputSource,
+      '-map', '0:v:0?',
+      '-map', '0:a:0?',
       '-c:v', 'copy',
       '-c:a', 'aac',
       '-ac', '2',
       '-ar', '44100',
-      '-max_muxing_queue_size', '1024',
+      '-max_muxing_queue_size', '2048',
       '-movflags', '+faststart',
       '-t', autoRecordingDurationSec.toString(),
       outputPath
     );
 
-    console.log(`[Auto Recorder 24/7] Gravando bloco automático real para '${cam.name}' (Lag Auto-Recovery Ativo)...`);
+    console.log(`[Auto Recorder 24/7] Iniciando bloco sequencial de 5 min para '${cam.name}' (${cam.id})...`);
     let proc: ReturnType<typeof spawn> | null = null;
     try {
       proc = spawn('ffmpeg', ffmpegArgs);
@@ -2518,7 +2528,7 @@ async function startServer() {
       try {
         if (fs.existsSync(outputPath)) {
           const stats = fs.statSync(outputPath);
-          if (stats.size > 500) { // Preserve even small recorded clips during brief lag drops
+          if (stats.size > 500) { // Preserve recorded clip even if brief stream interruption occurred
             validFile = true;
             fileSizeMB = Math.max(0.1, +(stats.size / (1024 * 1024)).toFixed(1));
           } else {
@@ -2559,16 +2569,19 @@ async function startServer() {
         pruneRecordingsFIFO();
 
         saveToLocalFile();
-        console.log(`[Auto Recorder 24/7] Bloco real gravado com sucesso para '${cam.name}': ${fileName} (${fileSizeMB}MB)`);
+        console.log(`[Auto Recorder 24/7] Bloco sequencial concluído para '${cam.name}': ${fileName} (${fileSizeMB}MB, ${durationSec}s)`);
+      } else {
+        console.warn(`[Auto Recorder 24/7 Warning] Câmera '${cam.name}' não gerou pacote válido. Agendando re-tentativa imediata em 3s...`);
       }
 
-      // Automatically restart next recording slice after 2s
+      // Automatically restart next sequential recording slice immediately (1s delay if valid, 3s if retry)
+      const restartDelay = validFile ? 1000 : 3000;
       setTimeout(() => {
         const currentCam = cameras.find((c) => c.id === cam.id);
         if (currentCam && currentCam.cloudRecordingsActive !== false) {
           startAutoRecordingForCamera(currentCam);
         }
-      }, 2000);
+      }, restartDelay);
     };
 
     proc.on('close', () => finalizeSlice());
@@ -2577,7 +2590,12 @@ async function startServer() {
 
   function checkAndStartAllAutoRecordings() {
     cameras.forEach((cam) => {
-      // Ensure HLS stream worker is running
+      // Ensure cloud recording is enabled by default
+      if (cam.cloudRecordingsActive === undefined) {
+        cam.cloudRecordingsActive = true;
+      }
+
+      // Ensure HLS live stream worker is running
       startCameraRtspStream(cam);
 
       if (cam.cloudRecordingsActive !== false) {
@@ -4201,11 +4219,13 @@ async function startServer() {
       '-analyzeduration', '2000000',
       '-probesize', '2000000',
       '-i', streamUrl,
+      '-map', '0:v:0?',
+      '-map', '0:a:0?',
       '-c:v', 'copy',
       '-c:a', 'aac',
       '-ac', '2',
       '-ar', '44100',
-      '-max_muxing_queue_size', '1024',
+      '-max_muxing_queue_size', '2048',
       '-movflags', '+faststart'
     );
 
