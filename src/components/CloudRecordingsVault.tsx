@@ -211,13 +211,58 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
   };
 
   const [isScanningDisk, setIsScanningDisk] = useState<boolean>(false);
+  const [isRepairingAll, setIsRepairingAll] = useState<boolean>(false);
+  const [repairNotice, setRepairNotice] = useState<string>('');
 
   const handleScanDisk = async () => {
     setIsScanningDisk(true);
     try {
-      await fetch('/api/recordings/scan', { method: 'POST' });
+      const res = await fetch('/api/recordings/scan', { method: 'POST' });
+      const data = await res.json();
+      if (data.message) {
+        setRepairNotice(data.message);
+        setTimeout(() => setRepairNotice(''), 4000);
+      }
     } catch (e) {}
     setTimeout(() => setIsScanningDisk(false), 1000);
+  };
+
+  const handleRepairAll = async () => {
+    setIsRepairingAll(true);
+    try {
+      const res = await fetch('/api/recordings/repair-all', { method: 'POST' });
+      const data = await res.json();
+      if (data.message) {
+        setRepairNotice(data.message);
+        setTimeout(() => setRepairNotice(''), 5000);
+      }
+    } catch (e) {}
+    setTimeout(() => setIsRepairingAll(false), 1500);
+  };
+
+  const handleRepairSingle = async (recId: string) => {
+    try {
+      setRepairNotice('Reparando índice do vídeo e cabeçalho MP4...');
+      const res = await fetch(`/api/recordings/${recId}/repair`, { method: 'POST' });
+      const data = await res.json();
+      if (data.message) {
+        setRepairNotice(data.message);
+        setTimeout(() => setRepairNotice(''), 4000);
+        if (videoRef.current) {
+          videoRef.current.load();
+          videoRef.current.play().catch(() => {});
+        }
+      }
+    } catch (e) {
+      setRepairNotice('Erro ao tentar reparar o arquivo.');
+      setTimeout(() => setRepairNotice(''), 3000);
+    }
+  };
+
+  const handleVideoError = async () => {
+    if (!activeRecording) return;
+    console.warn('[Video Player] Erro ao carregar arquivo MP4. Tentando auto-reparação do cabeçalho...');
+    handleRepairSingle(activeRecording.id);
   };
 
   // Filter recordings strictly for user accessible cameras
@@ -498,7 +543,22 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {repairNotice && (
+            <span className="text-[11px] font-mono text-amber-300 bg-amber-950/80 border border-amber-800/80 px-2.5 py-1 rounded-lg animate-fade-in">
+              {repairNotice}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleRepairAll}
+            disabled={isRepairingAll}
+            className="flex items-center gap-1.5 text-xs font-bold text-amber-300 hover:text-white bg-amber-950/60 hover:bg-amber-900/60 border border-amber-700/60 px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+            title="Reparar índices e cabeçalhos de todos os arquivos MP4 interrompidos no servidor"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isRepairingAll ? 'animate-spin text-amber-400' : 'text-amber-400'}`} />
+            <span>{isRepairingAll ? 'Reparando...' : 'Reparar MP4s'}</span>
+          </button>
           <button
             type="button"
             onClick={handleScanDisk}
@@ -627,6 +687,7 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
                   crossOrigin="anonymous"
                   playsInline
                   autoPlay={isPlaying}
+                  onError={handleVideoError}
                   onTimeUpdate={(e) => {
                     setCurrentTime(Math.floor(e.currentTarget.currentTime));
                   }}
@@ -652,7 +713,7 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
 
                     <div className="absolute top-3 right-3 z-30 bg-slate-950/90 backdrop-blur-md px-3 py-1.5 rounded-xl border border-slate-800 text-xs font-mono text-emerald-400 flex items-center space-x-1.5 shadow-2xl">
                       <Shield className="w-3.5 h-3.5" />
-                      <span>FATIA FATURADA 5MIN</span>
+                      <span>{activeRecording.durationSeconds >= 270 ? 'BLOCO COMPLETO 5MIN' : `FATIA PARCIAL ${Math.floor(activeRecording.durationSeconds / 60)}M${activeRecording.durationSeconds % 60}S`}</span>
                     </div>
                   </>
                 )}
@@ -734,24 +795,40 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
                     ))}
                   </div>
 
-                  <button
-                    onClick={handleDownloadClip}
-                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium rounded-xl flex items-center space-x-1.5 transition"
-                  >
-                    <Download className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Baixar Clipe MP4</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleRepairSingle(activeRecording.id)}
+                      className="px-2.5 py-1.5 bg-amber-950/60 hover:bg-amber-900/60 text-amber-300 border border-amber-800/60 text-xs font-medium rounded-xl flex items-center space-x-1.5 transition"
+                      title="Reparar índice MP4 e metadados deste vídeo"
+                    >
+                      <RefreshCw className="w-3 h-3 text-amber-400" />
+                      <span>Reparar Vídeo</span>
+                    </button>
+                    <button
+                      onClick={handleDownloadClip}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium rounded-xl flex items-center space-x-1.5 transition"
+                    >
+                      <Download className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Baixar Clipe MP4</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
               {/* Active Recording Information */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-300">
                 <div>
-                  <h4 className="font-bold text-white text-sm flex items-center gap-2">
-                    {activeRecording.cameraName}
-                    <span className="text-[10px] bg-slate-800 text-emerald-400 font-mono px-2 py-0.5 rounded border border-slate-700">
-                      Bloco 5 min (Completo)
-                    </span>
+                  <h4 className="font-bold text-white text-sm flex items-center gap-2 flex-wrap">
+                    <span>{activeRecording.cameraName}</span>
+                    {activeRecording.durationSeconds >= 270 ? (
+                      <span className="text-[10px] bg-emerald-950/80 text-emerald-400 font-mono px-2 py-0.5 rounded border border-emerald-800/80">
+                        Bloco Completo (5 min)
+                      </span>
+                    ) : (
+                      <span className="text-[10px] bg-amber-950/80 text-amber-300 font-mono px-2 py-0.5 rounded border border-amber-800/80">
+                        Fatia Parcial ({Math.floor(activeRecording.durationSeconds / 60)}m{activeRecording.durationSeconds % 60}s)
+                      </span>
+                    )}
                   </h4>
                   <p className="text-slate-400 font-mono text-[11px] pt-0.5">
                     Início: <strong className="text-white">{activeRecording.startTime}</strong> | Fim: <strong className="text-white">{activeRecording.endTime}</strong> | Tamanho: {activeRecording.fileSizeMB} MB
@@ -977,21 +1054,45 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
 
                       <div className="relative shrink-0">
                         <img src={thumbUrl} className="w-11 h-11 rounded-lg object-cover border border-slate-800" />
-                        <span className="absolute -bottom-1 -right-1 bg-emerald-500 text-slate-950 text-[8px] font-black px-1 rounded border border-slate-950">
-                          5m
+                        <span
+                          className={`absolute -bottom-1 -right-1 text-slate-950 text-[8px] font-black px-1 rounded border border-slate-950 ${
+                            rec.durationSeconds >= 270 ? 'bg-emerald-400' : 'bg-amber-400'
+                          }`}
+                        >
+                          {rec.durationSeconds >= 270
+                            ? '5m'
+                            : `${Math.floor(rec.durationSeconds / 60)}m${rec.durationSeconds % 60}s`}
                         </span>
                       </div>
 
                       <div className="truncate">
                         <h5 className="font-bold text-xs truncate text-white">{rec.cameraName}</h5>
                         <p className="text-[10px] font-mono text-slate-400">{rec.startTime}</p>
-                        <p className="text-[10px] text-emerald-400 font-mono">
-                          5 min (Completo) • {rec.fileSizeMB} MB
+                        <p
+                          className={`text-[10px] font-mono ${
+                            rec.durationSeconds >= 270 ? 'text-emerald-400' : 'text-amber-300'
+                          }`}
+                        >
+                          {rec.durationSeconds >= 270
+                            ? '5 min (Completo)'
+                            : `Fatia (${Math.floor(rec.durationSeconds / 60)}m${rec.durationSeconds % 60}s)`}{' '}
+                          • {rec.fileSizeMB} MB
                         </p>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        title="Reparar vídeo e cabeçalho MP4"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRepairSingle(rec.id);
+                        }}
+                        className="p-1.5 hover:bg-amber-500/20 text-slate-500 hover:text-amber-300 rounded-lg transition"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      </button>
                       <button
                         type="button"
                         title="Excluir gravação"

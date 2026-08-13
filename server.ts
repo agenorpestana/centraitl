@@ -9,7 +9,7 @@ const { Pool } = pg;
 import initSqlJs from 'sql.js';
 import { spawn, exec, ChildProcess } from 'child_process';
 
-function execAsync(cmd: string, timeoutMs = 5000): Promise<void> {
+function execAsync(cmd: string, timeoutMs = 15000): Promise<void> {
   return new Promise((resolve) => {
     try {
       const proc = exec(cmd, { timeout: timeoutMs }, () => resolve());
@@ -18,6 +18,80 @@ function execAsync(cmd: string, timeoutMs = 5000): Promise<void> {
       resolve();
     }
   });
+}
+
+function execWithOutput(cmd: string, timeoutMs = 15000): Promise<{ stdout: string; stderr: string; error?: any }> {
+  return new Promise((resolve) => {
+    try {
+      exec(cmd, { timeout: timeoutMs }, (error, stdout, stderr) => {
+        resolve({ stdout: stdout || '', stderr: stderr || '', error });
+      });
+    } catch (e) {
+      resolve({ stdout: '', stderr: '', error: e });
+    }
+  });
+}
+
+async function getMp4Duration(filePath: string): Promise<number> {
+  if (!fs.existsSync(filePath)) return 0;
+  try {
+    const res = await execWithOutput(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`, 8000);
+    const parsed = parseFloat((res.stdout || '').trim());
+    if (!isNaN(parsed) && parsed > 0) {
+      return Math.round(parsed);
+    }
+  } catch (e) {}
+
+  try {
+    const res = await execWithOutput(`ffmpeg -i "${filePath}" 2>&1`, 8000);
+    const match = (res.stderr || res.stdout || '').match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
+    if (match) {
+      const hours = parseInt(match[1], 10);
+      const minutes = parseInt(match[2], 10);
+      const seconds = parseFloat(match[3]);
+      const totalSec = Math.round(hours * 3600 + minutes * 60 + seconds);
+      if (totalSec > 0) return totalSec;
+    }
+  } catch (e) {}
+
+  return 0;
+}
+
+async function repairAndFinalizeMp4(inputPath: string, outputPath: string): Promise<boolean> {
+  if (!fs.existsSync(inputPath)) return false;
+  const tempOut = outputPath + '.tmp_fixed.mp4';
+  try {
+    // 1st attempt: Fast copy remux with moov atom repair and faststart
+    await execAsync(`ffmpeg -y -err_detect ignore_err -i "${inputPath}" -c copy -movflags +faststart "${tempOut}"`, 25000);
+    if (fs.existsSync(tempOut) && fs.statSync(tempOut).size > 1000) {
+      if (inputPath !== outputPath) {
+        try { fs.unlinkSync(inputPath); } catch (e) {}
+      }
+      fs.renameSync(tempOut, outputPath);
+      return true;
+    }
+  } catch (e) {}
+
+  // 2nd attempt: If stream copy failed due to broken timestamps or codec mismatch, transcode ultrafast
+  try {
+    await execAsync(`ffmpeg -y -err_detect ignore_err -i "${inputPath}" -c:v libx264 -preset ultrafast -crf 24 -c:a aac -b:a 96k -movflags +faststart "${tempOut}"`, 35000);
+    if (fs.existsSync(tempOut) && fs.statSync(tempOut).size > 1000) {
+      if (inputPath !== outputPath) {
+        try { fs.unlinkSync(inputPath); } catch (e) {}
+      }
+      fs.renameSync(tempOut, outputPath);
+      return true;
+    }
+  } catch (e) {}
+
+  if (fs.existsSync(tempOut)) {
+    try { fs.unlinkSync(tempOut); } catch (e) {}
+  }
+
+  if (inputPath === outputPath && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 500) {
+    return true;
+  }
+  return false;
 }
 import { createServer as createViteServer } from 'vite';
 import { discoverOnvifDevices, probeOnvifDevice, sendOnvifPtzCommand } from './src/utils/onvifHelper';
@@ -2411,9 +2485,10 @@ async function startServer() {
     return { prunedCount, currentGB: Math.max(0, currentMB / 1024) };
   }
 
-  function scanAndReconcileRecordingsFromDisk() {
+  async function scanAndReconcileRecordingsFromDisk() {
     const dirsToScan = [
       recordingsDir,
+      '/var/www/centralitl.unityautomacoes.com.br/recordings',
       '/var/www/itl-recordings',
       '/tmp/recordings',
       path.join(process.cwd(), 'public', 'recordings'),
@@ -2426,6 +2501,8 @@ async function startServer() {
       try {
         const files = fs.readdirSync(dirPath);
         for (const file of files) {
+          // Skip temporary part files currently recording
+          if (file.endsWith('.part.mp4') || file.endsWith('.tmp_fixed.mp4')) continue;
           if (!file.toLowerCase().endsWith('.mp4')) continue;
           const fullPath = path.join(dirPath, file);
 
@@ -2443,20 +2520,24 @@ async function startServer() {
 
           try {
             const stats = fs.statSync(targetPath);
-            if (stats.size < 500) continue; // Skip unplayable/corrupt zero-byte files
+            if (stats.size < 500) continue; // Skip unplayable zero-byte files
 
             const relativeUrl = `/recordings/${file}`;
 
             // Check if already registered
-            const alreadyRegistered = recordings.some(
+            const existingIndex = recordings.findIndex(
               (r) => r.streamUrl === relativeUrl || (r.id && r.id.includes(file.replace(/[^a-zA-Z0-9_-]/g, '_')))
             );
-            if (alreadyRegistered) continue;
+
+            // If already registered and has valid non-zero duration, skip
+            if (existingIndex >= 0 && recordings[existingIndex].durationSeconds > 0) {
+              continue;
+            }
 
             let parsedCamId = '';
             let timestamp = Math.round(stats.birthtimeMs || stats.mtimeMs || Date.now());
 
-            const match = file.match(/^rec(?:_auto)?_([a-zA-Z0-9_-]+)_(\d{10,13})\.mp4$/i);
+            const match = file.match(/^rec(?:_auto|_real)?_([a-zA-Z0-9_-]+)_(\d{10,13})\.mp4$/i);
             if (match) {
               parsedCamId = match[1];
               timestamp = parseInt(match[2], 10);
@@ -2474,21 +2555,25 @@ async function startServer() {
             const camId = targetCam ? targetCam.id : (parsedCamId || 'cam-auto');
             const camName = targetCam ? targetCam.name : (parsedCamId ? `Câmera ${parsedCamId}` : 'Câmera ITL');
 
-            const startTime = new Date(timestamp);
-            const endTime = new Date(stats.mtimeMs || timestamp);
-            let durationSec = Math.max(1, Math.round((endTime.getTime() - startTime.getTime()) / 1000));
-            if (durationSec > 3600 || durationSec <= 0) {
+            // Fast repair pass to ensure file is playable and has FastStart headers
+            await repairAndFinalizeMp4(targetPath, targetPath);
+
+            // Probe true real duration directly from the video file
+            let realDurationSec = await getMp4Duration(targetPath);
+            if (!realDurationSec || realDurationSec <= 0) {
               const fileSizeMB = stats.size / (1024 * 1024);
-              durationSec = Math.max(5, Math.min(300, Math.round(fileSizeMB * 8)));
+              realDurationSec = Math.max(5, Math.min(300, Math.round(fileSizeMB * 8)));
             }
 
+            const startTime = new Date(timestamp);
+            const endTime = new Date(timestamp + realDurationSec * 1000);
             const fileSizeMB = Math.max(0.1, +(stats.size / (1024 * 1024)).toFixed(1));
 
             const thumbFileName = `thumb_disk_${file.replace('.mp4', '.jpg')}`;
             const thumbPath = path.join(recordingsDir, thumbFileName);
             if (!fs.existsSync(thumbPath)) {
               try {
-                execAsync(`ffmpeg -y -ss 00:00:01 -i "${targetPath}" -vframes 1 -q:v 2 "${thumbPath}"`).catch(() => {});
+                await execAsync(`ffmpeg -y -ss 00:00:01 -i "${targetPath}" -vframes 1 -q:v 2 "${thumbPath}"`, 8000);
               } catch (e) {}
             }
 
@@ -2500,23 +2585,32 @@ async function startServer() {
 
             const recId = `rec-disk-${file.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 
+            const isFullSlice = realDurationSec >= 270;
+            const sliceTag = isFullSlice
+              ? 'Bloco Completo (5 min)'
+              : `Fatia Parcial (${Math.floor(realDurationSec / 60)}m${realDurationSec % 60}s)`;
+
             const newRec: CloudRecording = {
               id: recId,
               cameraId: camId,
               cameraName: camName,
               startTime: formatDateTime(startTime),
               endTime: formatDateTime(endTime),
-              durationSeconds: durationSec,
+              durationSeconds: realDurationSec,
               fileSizeMB,
               thumbnailUrl: thumbUrl,
               streamUrl: relativeUrl,
               isE2EELocked: true,
-              tags: ['Gravação Restaurada do Disco', 'Nuvem Real HD', targetCam ? (targetCam.location || 'Central ITL') : 'Central ITL'],
+              tags: [sliceTag, 'Nuvem Real HD', targetCam ? (targetCam.location || 'Central ITL') : 'Central ITL'],
             };
 
-            recordings.unshift(newRec);
+            if (existingIndex >= 0) {
+              recordings[existingIndex] = newRec;
+            } else {
+              recordings.unshift(newRec);
+              addedCount++;
+            }
             syncRecordingToMysql(newRec);
-            addedCount++;
           } catch (e) {}
         }
       } catch (e) {}
@@ -2525,7 +2619,7 @@ async function startServer() {
     if (addedCount > 0) {
       if (recordings.length > 5000) recordings = recordings.slice(0, 5000);
       saveToLocalFile();
-      console.log(`[Disk Scanner] ${addedCount} gravação(ões) do disco foram reconciliadas e disponibilizadas no cofre!`);
+      console.log(`[Disk Scanner] ${addedCount} gravação(ões) do disco foram reconciliadas e reparadas!`);
     }
   }
 
@@ -2555,7 +2649,7 @@ async function startServer() {
           if (proc && proc.exitCode === null && !proc.killed) {
             try { proc.kill('SIGKILL'); } catch (e) {}
           }
-        }, 1000);
+        }, 1500);
       }
       activeAutoRecordingProcesses.delete(cam.id);
       activeAutoRecordingStartTimes.delete(cam.id);
@@ -2571,53 +2665,60 @@ async function startServer() {
     const timestamp = Date.now();
     const cleanCamId = cam.id.replace(/[^a-zA-Z0-9_-]/g, '_');
     const fileName = `rec_auto_${cleanCamId}_${timestamp}.mp4`;
+    const partFileName = `rec_auto_${cleanCamId}_${timestamp}.part.mp4`;
     const thumbFileName = `thumb_auto_${cleanCamId}_${timestamp}.jpg`;
     const outputPath = path.join(recordingsDir, fileName);
+    const partPath = path.join(recordingsDir, partFileName);
     const thumbPath = path.join(recordingsDir, thumbFileName);
     const relativeUrl = `/recordings/${fileName}`;
 
+    // Robust FFmpeg options for 24/7 capture without dropping connection on brief network latency
     const ffmpegArgs: string[] = [
       '-y',
-      '-fflags', '+nobuffer+discardcorrupt+genpts',
+      '-avoid_negative_ts', 'make_zero',
+      '-fflags', '+genpts+discardcorrupt',
     ];
 
     if (inputSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-timeout', '5000000',
-        '-use_wallclock_as_timestamps', '1'
+        '-stimeout', '20000000', // 20 seconds timeout prevents premature aborts
+        '-timeout', '20000000',
+        '-max_delay', '5000000',
+        '-rtbufsize', '100M'
       );
     } else if (inputSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '5000000',
-        '-analyzeduration', '2000000',
-        '-probesize', '2000000'
+        '-rw_timeout', '20000000',
+        '-analyzeduration', '5000000',
+        '-probesize', '5000000'
       );
     } else if (inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
       ffmpegArgs.push(
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5'
+        '-reconnect_delay_max', '10'
       );
     }
 
+    // Capture using fragmented MP4 during recording so every chunk is self-contained and uncorrupted!
     ffmpegArgs.push(
-      '-analyzeduration', '2000000',
-      '-probesize', '2000000',
+      '-analyzeduration', '5000000',
+      '-probesize', '5000000',
       '-i', inputSource,
       '-map', '0:v:0?',
       '-map', '0:a?',
       '-c:v', 'copy',
       '-c:a', 'aac',
-      '-max_muxing_queue_size', '2048',
-      '-movflags', '+faststart',
+      '-b:a', '128k',
+      '-max_muxing_queue_size', '4096',
+      '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
       '-t', autoRecordingDurationSec.toString(),
-      outputPath
+      partPath
     );
 
-    console.log(`[Auto Recorder 24/7] Iniciando bloco sequencial de 5 min para '${cam.name}' (${cam.id})...`);
-    console.log(`[Auto Recorder FFmpeg Args]: ffmpeg ${ffmpegArgs.join(' ')}`);
+    console.log(`[Auto Recorder 24/7] Gravando bloco de 5 min para '${cam.name}' (${cam.id})...`);
     let proc: ReturnType<typeof spawn> | null = null;
     try {
       proc = spawn('ffmpeg', ffmpegArgs);
@@ -2626,8 +2727,8 @@ async function startServer() {
 
       proc.stderr?.on('data', (data) => {
         const msg = data.toString().trim();
-        if (msg) {
-          console.log(`[Auto Recorder FFmpeg Err - ${cam.name}]: ${msg}`);
+        if (msg && (msg.includes('Error') || msg.includes('fatal'))) {
+          console.log(`[Auto Recorder FFmpeg Notice - ${cam.name}]: ${msg}`);
         }
       });
     } catch (e: any) {
@@ -2636,38 +2737,59 @@ async function startServer() {
     }
 
     let isFinalized = false;
-    const finalizeSlice = () => {
+    const finalizeSlice = async () => {
       if (isFinalized) return;
       isFinalized = true;
       activeAutoRecordingProcesses.delete(cam.id);
       activeAutoRecordingStartTimes.delete(cam.id);
 
       const endTime = new Date();
-      const durationSec = Math.max(1, Math.round((endTime.getTime() - now.getTime()) / 1000));
+      let sourceFileToProcess = partPath;
+      if (!fs.existsSync(partPath) && fs.existsSync(outputPath)) {
+        sourceFileToProcess = outputPath;
+      }
 
       let validFile = false;
       let fileSizeMB = 0;
+      let realDurationSec = Math.max(1, Math.round((endTime.getTime() - now.getTime()) / 1000));
 
-      try {
-        if (fs.existsSync(outputPath)) {
-          const stats = fs.statSync(outputPath);
-          if (stats.size > 500) { // Preserve recorded clip even if brief stream interruption occurred
+      if (fs.existsSync(sourceFileToProcess)) {
+        const stats = fs.statSync(sourceFileToProcess);
+        if (stats.size > 2000) { // Valid data captured
+          // Repair and convert into standard FastStart MP4 for instant browser playback
+          const repaired = await repairAndFinalizeMp4(sourceFileToProcess, outputPath);
+          if (repaired && fs.existsSync(outputPath)) {
+            const finalStats = fs.statSync(outputPath);
+            fileSizeMB = Math.max(0.1, +(finalStats.size / (1024 * 1024)).toFixed(1));
+            
+            // Probe exact duration from the repaired file
+            const probedDur = await getMp4Duration(outputPath);
+            if (probedDur > 0) realDurationSec = probedDur;
             validFile = true;
-            fileSizeMB = Math.max(0.1, +(stats.size / (1024 * 1024)).toFixed(1));
-          } else {
-            try { fs.unlinkSync(outputPath); } catch (e) {}
           }
+        } else {
+          try { fs.unlinkSync(sourceFileToProcess); } catch (e) {}
         }
-      } catch (e) {}
+      }
+
+      // Cleanup remaining .part file if exists
+      if (fs.existsSync(partPath)) {
+        try { fs.unlinkSync(partPath); } catch (e) {}
+      }
 
       if (validFile) {
         // Extract real snapshot image from the captured MP4 video!
-        execAsync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`).catch(() => {});
+        await execAsync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`, 8000).catch(() => {});
 
         const hasThumb = fs.existsSync(thumbPath);
         const thumbUrl = hasThumb
           ? `/recordings/${thumbFileName}`
           : (cam.thumbnailUrl && !cam.thumbnailUrl.includes('unsplash') ? cam.thumbnailUrl : `/api/cameras/${cam.id}/snapshot`);
+
+        const isFullSlice = realDurationSec >= 270;
+        const sliceTag = isFullSlice
+          ? 'Bloco Completo (5 min)'
+          : `Fatia Parcial (${Math.floor(realDurationSec / 60)}m${realDurationSec % 60}s)`;
 
         const newRec: CloudRecording = {
           id: `rec-auto-${cam.id}-${timestamp}`,
@@ -2675,12 +2797,12 @@ async function startServer() {
           cameraName: cam.name,
           startTime: formatDateTime(now),
           endTime: formatDateTime(endTime),
-          durationSeconds: durationSec,
+          durationSeconds: realDurationSec,
           fileSizeMB,
           thumbnailUrl: thumbUrl,
           streamUrl: relativeUrl,
           isE2EELocked: cam.isE2EEEncrypted ?? true,
-          tags: ['Gravação Automática 24/7', 'Nuvem Real HD', cam.location || 'Central ITL'],
+          tags: [sliceTag, 'Nuvem Real HD', cam.location || 'Central ITL'],
         };
 
         recordings.unshift(newRec);
@@ -2692,12 +2814,12 @@ async function startServer() {
         pruneRecordingsFIFO();
 
         saveToLocalFile();
-        console.log(`[Auto Recorder 24/7] Bloco sequencial concluído para '${cam.name}': ${fileName} (${fileSizeMB}MB, ${durationSec}s)`);
+        console.log(`[Auto Recorder 24/7] Gravação finalizada para '${cam.name}': ${fileName} (${fileSizeMB}MB, ${realDurationSec}s - ${sliceTag})`);
       } else {
-        console.warn(`[Auto Recorder 24/7 Warning] Câmera '${cam.name}' não gerou pacote válido. Agendando re-tentativa imediata em 3s...`);
+        console.warn(`[Auto Recorder 24/7 Warning] Câmera '${cam.name}' não gerou fluxo de vídeo aproveitável. Retentando em 3s...`);
       }
 
-      // Automatically restart next sequential recording slice immediately (1s delay if valid, 3s if retry)
+      // Automatically restart next recording slice (1s delay if completed, 3s if retry)
       const restartDelay = validFile ? 1000 : 3000;
       setTimeout(() => {
         const currentCam = cameras.find((c) => c.id === cam.id);
@@ -2707,8 +2829,8 @@ async function startServer() {
       }, restartDelay);
     };
 
-    proc.on('close', () => finalizeSlice());
-    proc.on('error', () => finalizeSlice());
+    proc.on('close', () => { finalizeSlice(); });
+    proc.on('error', () => { finalizeSlice(); });
   }
 
   function checkAndStartAllAutoRecordings() {
@@ -4329,51 +4451,57 @@ async function startServer() {
     const now = new Date();
     const timestamp = Date.now();
     const cleanCamId = cam.id.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const fileName = `rec_${cleanCamId}_${timestamp}.mp4`;
+    const fileName = `rec_real_${cleanCamId}_${timestamp}.mp4`;
+    const partFileName = `rec_real_${cleanCamId}_${timestamp}.part.mp4`;
     const outputPath = path.join(recordingsDir, fileName);
+    const partPath = path.join(recordingsDir, partFileName);
     const relativeUrl = `/recordings/${fileName}`;
 
     const ffmpegArgs: string[] = [
       '-y',
-      '-fflags', '+nobuffer+discardcorrupt+genpts',
+      '-avoid_negative_ts', 'make_zero',
+      '-fflags', '+genpts+discardcorrupt',
     ];
 
     if (streamUrl.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-timeout', '5000000',
-        '-use_wallclock_as_timestamps', '1'
+        '-stimeout', '20000000',
+        '-timeout', '20000000',
+        '-max_delay', '5000000',
+        '-rtbufsize', '100M'
       );
     } else if (streamUrl.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '5000000',
-        '-analyzeduration', '2000000',
-        '-probesize', '2000000'
+        '-rw_timeout', '20000000',
+        '-analyzeduration', '5000000',
+        '-probesize', '5000000'
       );
     } else if (streamUrl.startsWith('http://') || streamUrl.startsWith('https://')) {
       ffmpegArgs.push(
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5'
+        '-reconnect_delay_max', '10'
       );
     }
 
+    const durLimit = durationSeconds ? Math.min(3600, Math.max(10, parseInt(durationSeconds))) : 300;
+
     ffmpegArgs.push(
-      '-analyzeduration', '2000000',
-      '-probesize', '2000000',
+      '-analyzeduration', '5000000',
+      '-probesize', '5000000',
       '-i', streamUrl,
       '-map', '0:v:0?',
       '-map', '0:a?',
       '-c:v', 'copy',
       '-c:a', 'aac',
-      '-max_muxing_queue_size', '2048',
-      '-movflags', '+faststart'
+      '-b:a', '128k',
+      '-max_muxing_queue_size', '4096',
+      '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+      '-t', durLimit.toString(),
+      partPath
     );
-
-    const durLimit = durationSeconds ? Math.min(3600, Math.max(10, parseInt(durationSeconds))) : 300;
-    ffmpegArgs.push('-t', durLimit.toString());
-    ffmpegArgs.push(outputPath);
 
     console.log(`[FFmpeg Real Recorder] Iniciando gravação ao vivo da câmera '${cam.name}' em ${outputPath}...`);
     let proc: ReturnType<typeof spawn> | null = null;
@@ -4397,47 +4525,74 @@ async function startServer() {
       process: proc,
     };
 
-    const finalizeRecording = () => {
+    const finalizeRecording = async () => {
       if (!activeRecordings.has(cam.id)) return;
       activeRecordings.delete(cam.id);
 
       const endTime = new Date();
-      const durationSec = Math.max(1, Math.round((endTime.getTime() - now.getTime()) / 1000));
+      let sourceFileToProcess = partPath;
+      if (!fs.existsSync(partPath) && fs.existsSync(outputPath)) {
+        sourceFileToProcess = outputPath;
+      }
+
+      let validFile = false;
       let fileSizeMB = 0.5;
+      let realDurationSec = Math.max(1, Math.round((endTime.getTime() - now.getTime()) / 1000));
       let thumbUrl = (cam.thumbnailUrl && !cam.thumbnailUrl.includes('unsplash')) ? cam.thumbnailUrl : `/api/cameras/${cam.id}/snapshot`;
 
-      try {
-        if (fs.existsSync(outputPath)) {
-          const stats = fs.statSync(outputPath);
-          fileSizeMB = Math.max(0.1, +(stats.size / (1024 * 1024)).toFixed(1));
-          const thumbFileName = `thumb_real_${cleanCamId}_${timestamp}.jpg`;
-          const thumbPath = path.join(recordingsDir, thumbFileName);
-          try {
-            execAsync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`).catch(() => {});
-            if (fs.existsSync(thumbPath)) {
-              thumbUrl = `/recordings/${thumbFileName}`;
-            }
-          } catch (e) {}
+      if (fs.existsSync(sourceFileToProcess)) {
+        const stats = fs.statSync(sourceFileToProcess);
+        if (stats.size > 2000) {
+          const repaired = await repairAndFinalizeMp4(sourceFileToProcess, outputPath);
+          if (repaired && fs.existsSync(outputPath)) {
+            const finalStats = fs.statSync(outputPath);
+            fileSizeMB = Math.max(0.1, +(finalStats.size / (1024 * 1024)).toFixed(1));
+            const probedDur = await getMp4Duration(outputPath);
+            if (probedDur > 0) realDurationSec = probedDur;
+            validFile = true;
+
+            const thumbFileName = `thumb_real_${cleanCamId}_${timestamp}.jpg`;
+            const thumbPath = path.join(recordingsDir, thumbFileName);
+            try {
+              await execAsync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`, 8000);
+              if (fs.existsSync(thumbPath)) {
+                thumbUrl = `/recordings/${thumbFileName}`;
+              }
+            } catch (e) {}
+          }
         }
-      } catch (e) {}
+      }
 
-      const newRec: CloudRecording = {
-        id: `rec-real-${cam.id}-${timestamp}`,
-        cameraId: cam.id,
-        cameraName: cam.name,
-        startTime: formatDateTime(now),
-        endTime: formatDateTime(endTime),
-        durationSeconds: durationSec,
-        fileSizeMB,
-        thumbnailUrl: thumbUrl,
-        streamUrl: relativeUrl,
-        isE2EELocked: cam.isE2EEEncrypted ?? true,
-        tags: ['Gravação Real Ao Vivo', 'RTMP/RTSP/HLS', cam.location || 'Central ITL'],
-      };
+      if (fs.existsSync(partPath)) {
+        try { fs.unlinkSync(partPath); } catch (e) {}
+      }
 
-      recordings.unshift(newRec);
-      saveToLocalFile();
-      addLog('ITL System', `Gravação real concluída para câmera ${cam.name} (${durationSec}s)`, 'RECORDING');
+      if (validFile) {
+        const isFullSlice = realDurationSec >= 270;
+        const sliceTag = isFullSlice
+          ? 'Bloco Completo (5 min)'
+          : `Fatia Parcial (${Math.floor(realDurationSec / 60)}m${realDurationSec % 60}s)`;
+
+        const newRec: CloudRecording = {
+          id: `rec-real-${cam.id}-${timestamp}`,
+          cameraId: cam.id,
+          cameraName: cam.name,
+          startTime: formatDateTime(now),
+          endTime: formatDateTime(endTime),
+          durationSeconds: realDurationSec,
+          fileSizeMB,
+          thumbnailUrl: thumbUrl,
+          streamUrl: relativeUrl,
+          isE2EELocked: cam.isE2EEEncrypted ?? true,
+          tags: [sliceTag, 'Gravação Real Ao Vivo', cam.location || 'Central ITL'],
+        };
+
+        recordings.unshift(newRec);
+        syncRecordingToMysql(newRec);
+        pruneRecordingsFIFO();
+        saveToLocalFile();
+        addLog('ITL System', `Gravação real concluída para câmera ${cam.name} (${realDurationSec}s)`, 'RECORDING');
+      }
     };
 
     proc.on('close', (code) => {
@@ -4460,6 +4615,75 @@ async function startServer() {
       cameraId: cam.id,
       startTime: session.startTimeStr,
     });
+  });
+
+  app.post('/api/recordings/:id/repair', async (req, res) => {
+    const { id } = req.params;
+    const rec = recordings.find((r) => r.id === id);
+    if (!rec) return res.status(404).json({ error: 'Gravação não encontrada' });
+
+    const fileName = path.basename(rec.streamUrl);
+    const filePath = path.join(recordingsDir, fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Arquivo MP4 físico não encontrado no disco' });
+    }
+
+    try {
+      const repaired = await repairAndFinalizeMp4(filePath, filePath);
+      const probedDur = await getMp4Duration(filePath);
+      const stats = fs.statSync(filePath);
+
+      if (probedDur > 0) {
+        rec.durationSeconds = probedDur;
+      }
+      rec.fileSizeMB = Math.max(0.1, +(stats.size / (1024 * 1024)).toFixed(1));
+
+      const isFullSlice = (rec.durationSeconds || 0) >= 270;
+      rec.tags = rec.tags.filter((t) => !t.startsWith('Bloco') && !t.startsWith('Fatia'));
+      rec.tags.unshift(isFullSlice ? 'Bloco Completo (5 min)' : `Fatia Parcial (${Math.floor(rec.durationSeconds / 60)}m${rec.durationSeconds % 60}s)`);
+
+      saveToLocalFile();
+      syncRecordingToMysql(rec);
+
+      return res.json({
+        success: true,
+        repaired,
+        recording: rec,
+        message: 'Vídeo reparado e cabeçalho faststart regravado com sucesso!',
+      });
+    } catch (e: any) {
+      return res.status(500).json({ error: `Erro ao reparar vídeo: ${e.message || e}` });
+    }
+  });
+
+  app.post('/api/recordings/repair-all', async (req, res) => {
+    try {
+      await scanAndReconcileRecordingsFromDisk();
+      let repairedCount = 0;
+
+      for (const rec of recordings) {
+        if (!rec.streamUrl || !rec.streamUrl.endsWith('.mp4')) continue;
+        const fileName = path.basename(rec.streamUrl);
+        const filePath = path.join(recordingsDir, fileName);
+        if (fs.existsSync(filePath)) {
+          const ok = await repairAndFinalizeMp4(filePath, filePath);
+          const dur = await getMp4Duration(filePath);
+          if (dur > 0) rec.durationSeconds = dur;
+          if (ok) repairedCount++;
+        }
+      }
+
+      saveToLocalFile();
+      return res.json({
+        success: true,
+        repairedCount,
+        totalRecordings: recordings.length,
+        message: `${repairedCount} arquivo(s) de vídeo reparados e sincronizados!`,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message || e });
+    }
   });
 
   app.post('/api/recordings/stop', (req, res) => {
