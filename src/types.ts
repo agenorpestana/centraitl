@@ -157,6 +157,10 @@ export interface BackupConfig {
   status: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED';
   storagePath?: string;
   storageLimitGB?: number;
+  googleDriveConnected?: boolean;
+  googleDriveAccount?: string;
+  googleDriveFolderId?: string;
+  lastGoogleDriveSync?: string;
 }
 
 export interface NotificationConfig {
