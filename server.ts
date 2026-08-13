@@ -2466,13 +2466,12 @@ async function startServer() {
     if (inputSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-stimeout', '10000000',
-        '-timeout', '10000000',
+        '-timeout', '5000000',
         '-use_wallclock_as_timestamps', '1'
       );
     } else if (inputSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '10000000',
+        '-rw_timeout', '5000000',
         '-analyzeduration', '2000000',
         '-probesize', '2000000'
       );
@@ -2490,11 +2489,9 @@ async function startServer() {
       '-probesize', '2000000',
       '-i', inputSource,
       '-map', '0:v:0?',
-      '-map', '0:a:0?',
+      '-map', '0:a?',
       '-c:v', 'copy',
       '-c:a', 'aac',
-      '-ac', '2',
-      '-ar', '44100',
       '-max_muxing_queue_size', '2048',
       '-movflags', '+faststart',
       '-t', autoRecordingDurationSec.toString(),
@@ -2502,11 +2499,19 @@ async function startServer() {
     );
 
     console.log(`[Auto Recorder 24/7] Iniciando bloco sequencial de 5 min para '${cam.name}' (${cam.id})...`);
+    console.log(`[Auto Recorder FFmpeg Args]: ffmpeg ${ffmpegArgs.join(' ')}`);
     let proc: ReturnType<typeof spawn> | null = null;
     try {
       proc = spawn('ffmpeg', ffmpegArgs);
       activeAutoRecordingProcesses.set(cam.id, proc);
       activeAutoRecordingStartTimes.set(cam.id, Date.now());
+
+      proc.stderr?.on('data', (data) => {
+        const msg = data.toString().trim();
+        if (msg) {
+          console.log(`[Auto Recorder FFmpeg Err - ${cam.name}]: ${msg}`);
+        }
+      });
     } catch (e: any) {
       console.error('[Auto Recorder FFmpeg Spawn Error]:', e.message || e);
       return;
@@ -4220,11 +4225,9 @@ async function startServer() {
       '-probesize', '2000000',
       '-i', streamUrl,
       '-map', '0:v:0?',
-      '-map', '0:a:0?',
+      '-map', '0:a?',
       '-c:v', 'copy',
       '-c:a', 'aac',
-      '-ac', '2',
-      '-ar', '44100',
       '-max_muxing_queue_size', '2048',
       '-movflags', '+faststart'
     );
