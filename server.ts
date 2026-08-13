@@ -59,52 +59,7 @@ function getValidStreamSource(cam: any, isSubStream = false): string {
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
   const defaultKey = `cam_${cleanKey}`;
 
-  if (isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim()) {
-    return cam.subStreamUrl.trim();
-  }
-
-  // ONVIF protocol support
-  if (cam.protocol === 'ONVIF' || (cam.onvifIp && cam.onvifIp.trim())) {
-    if (isSubStream) {
-      if (cam.subStreamUrl && cam.subStreamUrl.trim().startsWith('rtsp://')) {
-        return cam.subStreamUrl.trim();
-      }
-    } else {
-      if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
-        return cam.rtspUrl.trim();
-      }
-    }
-    const user = cam.onvifUsername || 'admin';
-    const pass = cam.onvifPassword || '';
-    const auth = (user || pass) ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : '';
-    const ip = (cam.onvifIp || '192.168.1.100').trim();
-    const port = cam.onvifPort || 554;
-    const profile = isSubStream ? (cam.onvifSubProfile || 'onvif2') : (cam.onvifProfile || 'onvif1');
-    return `rtsp://${auth}${ip}:${port}/${profile}`;
-  }
-
-  // Prioritize RTSP if camera protocol is RTSP or has rtspUrl starting with rtsp://
-  if (cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'))) {
-    if (isSubStream) {
-      if (cam.subStreamUrl && cam.subStreamUrl.trim().startsWith('rtsp://')) {
-        return cam.subStreamUrl.trim();
-      }
-      if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
-        const mainUrl = cam.rtspUrl.trim();
-        if (mainUrl.includes('subtype=0')) {
-          return mainUrl.replace('subtype=0', 'subtype=1');
-        }
-        if (mainUrl.includes('onvif1')) {
-          return mainUrl.replace('onvif1', 'onvif2');
-        }
-        return mainUrl;
-      }
-    } else {
-      if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
-        return cam.rtspUrl.trim();
-      }
-    }
-  }
+  const isPrivateIp = (url: string) => /rtsp:\/\/(?:[^@]*@)?(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|127\.0\.0\.1|localhost)/i.test(url);
 
   // Helper to ensure RTMP URL contains the stream key
   const formatRtmpCandidate = (candidateStr: string): string => {
@@ -122,8 +77,7 @@ function getValidStreamSource(cam: any, isSubStream = false): string {
     return str;
   };
 
-  // Prioritize RTMP if camera protocol is RTMP or has RTMP URL fields
-  if (cam.protocol === 'RTMP' || cam.rtmpUrl || cam.fullRtmpUrl || cam.rtmpServerUrl) {
+  const getRtmpFallback = (): string => {
     const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
     for (const candidate of rtmpCandidates) {
       const formatted = formatRtmpCandidate(candidate);
@@ -131,17 +85,68 @@ function getValidStreamSource(cam: any, isSubStream = false): string {
         return formatted;
       }
     }
+    return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/${defaultKey}`;
+  };
+
+  if (isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim()) {
+    const subUrl = cam.subStreamUrl.trim();
+    if (!isPrivateIp(subUrl)) return subUrl;
+  }
+
+  // ONVIF protocol support
+  if (cam.protocol === 'ONVIF' || (cam.onvifIp && cam.onvifIp.trim())) {
+    if (isSubStream) {
+      if (cam.subStreamUrl && cam.subStreamUrl.trim().startsWith('rtsp://') && !isPrivateIp(cam.subStreamUrl)) {
+        return cam.subStreamUrl.trim();
+      }
+    } else {
+      if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://') && !isPrivateIp(cam.rtspUrl)) {
+        return cam.rtspUrl.trim();
+      }
+    }
+    const user = cam.onvifUsername || 'admin';
+    const pass = cam.onvifPassword || '';
+    const auth = (user || pass) ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : '';
+    const ip = (cam.onvifIp || '192.168.1.100').trim();
+    const port = cam.onvifPort || 554;
+    const profile = isSubStream ? (cam.onvifSubProfile || 'onvif2') : (cam.onvifProfile || 'onvif1');
+    const onvifRtsp = `rtsp://${auth}${ip}:${port}/${profile}`;
+    if (!isPrivateIp(onvifRtsp)) return onvifRtsp;
+    return getRtmpFallback();
+  }
+
+  // Prioritize RTSP if camera protocol is RTSP or has rtspUrl starting with rtsp://
+  if (cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'))) {
+    if (isSubStream) {
+      if (cam.subStreamUrl && cam.subStreamUrl.trim().startsWith('rtsp://') && !isPrivateIp(cam.subStreamUrl)) {
+        return cam.subStreamUrl.trim();
+      }
+      if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
+        const mainUrl = cam.rtspUrl.trim();
+        let subCandidate = mainUrl;
+        if (mainUrl.includes('subtype=0')) subCandidate = mainUrl.replace('subtype=0', 'subtype=1');
+        else if (mainUrl.includes('onvif1')) subCandidate = mainUrl.replace('onvif1', 'onvif2');
+        if (!isPrivateIp(subCandidate)) return subCandidate;
+      }
+    } else {
+      if (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://') && !isPrivateIp(cam.rtspUrl)) {
+        return cam.rtspUrl.trim();
+      }
+    }
+    // If RTSP URL uses private IP space, fall back to public RTMP server
+    return getRtmpFallback();
+  }
+
+  // Prioritize RTMP if camera protocol is RTMP or has RTMP URL fields
+  if (cam.protocol === 'RTMP' || cam.rtmpUrl || cam.fullRtmpUrl || cam.rtmpServerUrl) {
+    return getRtmpFallback();
   }
 
   if (cam.videoStreamUrl && cam.videoStreamUrl.trim()) {
     return cam.videoStreamUrl.trim();
   }
 
-  if (cam.rtspUrl && cam.rtspUrl.trim()) {
-    return cam.rtspUrl.trim();
-  }
-
-  return `rtmp://monitoramento.unityautomacoes.com.br:1935/live/${defaultKey}`;
+  return getRtmpFallback();
 }
 
 const cameraProcessStartTimes = new Map<string, number>();
@@ -2414,22 +2419,8 @@ async function startServer() {
       activeAutoRecordingStartTimes.delete(cam.id);
     }
 
-    const baseKey = cam.streamKey || (cam.id ? (cam.id.startsWith('cam-') ? `cam_${cam.id.replace('cam-', '')}` : cam.id) : 'stream');
-    const cleanBase = baseKey.replace(/[-_]sub$/, '');
-    const hlsLocalPath = path.join('/tmp/hls', `${cleanBase}.m3u8`);
-
     const streamUrl = getValidStreamSource(cam);
-    let inputSource = streamUrl;
-
-    // Se houver playlist HLS ativa sendo gerada localmente para a câmera, prefere usá-la se a URL direta for inacessível
-    if (fs.existsSync(hlsLocalPath)) {
-      try {
-        const stat = fs.statSync(hlsLocalPath);
-        if (Date.now() - stat.mtimeMs < 15000) {
-          inputSource = hlsLocalPath;
-        }
-      } catch (e) {}
-    }
+    const inputSource = streamUrl;
 
     const now = new Date();
     const timestamp = Date.now();
@@ -2451,16 +2442,16 @@ async function startServer() {
         '-reconnect_delay_max', '3'
       );
     } else if (inputSource.startsWith('rtsp://')) {
-      ffmpegArgs.push('-rtsp_transport', 'tcp', '-timeout', '10000000');
+      ffmpegArgs.push('-rtsp_transport', 'tcp', '-stimeout', '15000000', '-timeout', '15000000');
     } else if (inputSource.startsWith('rtmp://')) {
-      ffmpegArgs.push('-rw_timeout', '10000000');
+      ffmpegArgs.push('-rw_timeout', '15000000');
     } else if (inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
       ffmpegArgs.push(
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '5',
-        '-rw_timeout', '10000000'
+        '-rw_timeout', '15000000'
       );
     }
 
