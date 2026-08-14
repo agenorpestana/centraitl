@@ -373,15 +373,6 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     cam.subStreamUrl.trim() !== cam.rtmpUrl &&
     /sub|subtype=1|onvif2|stream2|ch0_1/i.test(cam.subStreamUrl);
 
-  const mainKey = (cam.streamKey || cam.id || '').replace(/^cam_/, 'cam-');
-  const mainHlsPath = path.join('/tmp/hls', `${mainKey}.m3u8`);
-  const isMainActive = isCameraHlsActivelyStreaming(mainKey) && fs.existsSync(mainHlsPath);
-
-  // If transcoded sub-stream is requested and main stream is already live, ingest from main HLS to save camera connections & bandwidth!
-  if (isSubStream && !hasNativeHardwareSubStream && isMainActive) {
-    streamSource = mainHlsPath;
-  }
-
   if (!streamSource) return;
 
   // If already running with the exact same URL and process is alive, keep running!
@@ -2978,32 +2969,13 @@ async function startServer() {
     }
 
     const rawKey = cam.streamKey || cam.id;
-    const keyUnderscore = rawKey.replace(/^cam-/, 'cam_');
-    const localHlsFile = path.join('/tmp/hls', `${rawKey}.m3u8`);
-    const localHlsFile2 = path.join('/tmp/hls', `${keyUnderscore}.m3u8`);
+    const cleanRawKey = rawKey.replace(/^cam-/, '').replace(/^cam_/, '');
 
-    const isLocalHlsActive = isCameraHlsActivelyStreaming(rawKey);
-    let activeHlsPath = '';
-    if (isLocalHlsActive) {
-      if (fs.existsSync(localHlsFile)) activeHlsPath = localHlsFile;
-      else if (fs.existsSync(localHlsFile2)) activeHlsPath = localHlsFile2;
-    }
+    // Ensure live stream worker is running for live preview
+    startCameraRtspStream(cam, false, false);
 
-    // ALWAYS ensure the single main HLS worker is running for this camera
-    if (!isLocalHlsActive || !activeHlsPath) {
-      startCameraRtspStream(cam, false, false);
-    }
-
-    // Capture source priority:
-    // 1. Local HLS stream file /tmp/hls/cam_xxx.m3u8 (Zero extra connection to camera hardware, Zero CPU!)
-    // 2. Fallback to direct camera URL only if HLS is initializing
-    let inputSource = activeHlsPath;
-    let isFromLocalHls = true;
-
-    if (!inputSource) {
-      inputSource = getValidStreamSource(cam, false);
-      isFromLocalHls = false;
-    }
+    // Direct stream capture directly from camera source (100% full continuous 5-minute chunks with 0% CPU via native stream copy)
+    const inputSource = getValidStreamSource(cam, false);
     if (!inputSource) return;
 
     const now = new Date();
@@ -3023,53 +2995,47 @@ async function startServer() {
       '-fflags', '+genpts+discardcorrupt',
     ];
 
-    if (!isFromLocalHls) {
-      if (inputSource.startsWith('rtsp://')) {
-        ffmpegArgs.push(
-          '-rtsp_transport', 'tcp',
-          '-stimeout', '15000000',
-          '-max_delay', '500000',
-          '-buffer_size', '4096000',
-          '-reorder_queue_size', '1000'
-        );
-      } else if (inputSource.startsWith('rtmp://')) {
-        ffmpegArgs.push(
-          '-rw_timeout', '15000000',
-          '-analyzeduration', '3000000',
-          '-probesize', '3000000'
-        );
-      }
+    if (inputSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
-        '-analyzeduration', '2000000',
-        '-probesize', '2000000',
-        '-i', inputSource,
-        '-map', '0:v:0?',
-        '-map', '0:a?',
-        '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-b:a', '64k',
-        '-ac', '1',
-        '-max_muxing_queue_size', '4096',
-        '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
-        '-t', autoRecordingDurationSec.toString(),
-        partPath
+        '-rtsp_transport', 'tcp',
+        '-stimeout', '15000000',
+        '-use_wallclock_as_timestamps', '1',
+        '-max_delay', '500000',
+        '-buffer_size', '4096000',
+        '-reorder_queue_size', '1000'
       );
-    } else {
-      // Local HLS stream copy (100% Zero CPU overhead, 0 extra connections to IP camera)
+    } else if (inputSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-i', inputSource,
-        '-map', '0:v:0?',
-        '-map', '0:a?',
-        '-c:v', 'copy',
-        '-c:a', 'copy',
-        '-max_muxing_queue_size', '4096',
-        '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
-        '-t', autoRecordingDurationSec.toString(),
-        partPath
+        '-rw_timeout', '15000000',
+        '-analyzeduration', '3000000',
+        '-probesize', '3000000'
+      );
+    } else if (inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
+      ffmpegArgs.push(
+        '-reconnect', '1',
+        '-reconnect_at_eof', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5'
       );
     }
 
-    console.log(`[Auto Recorder 24/7] Gravando bloco contínuo de 5 min (${isFromLocalHls ? 'HLS Local Stream Copy (0% CPU)' : 'RTSP TCP'}) para '${cam.name}' (${cam.id})...`);
+    ffmpegArgs.push(
+      '-analyzeduration', '2000000',
+      '-probesize', '2000000',
+      '-i', inputSource,
+      '-map', '0:v:0?',
+      '-map', '0:a?',
+      '-c:v', 'copy',
+      '-c:a', 'aac',
+      '-b:a', '64k',
+      '-ac', '1',
+      '-max_muxing_queue_size', '4096',
+      '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+      '-t', autoRecordingDurationSec.toString(),
+      partPath
+    );
+
+    console.log(`[Auto Recorder 24/7] Gravando bloco contínuo de 5 min (Stream Copy 1080p direto) para '${cam.name}' (${cam.id})...`);
     
     let proc: ReturnType<typeof spawn> | null = null;
     const processStartTime = Date.now();
