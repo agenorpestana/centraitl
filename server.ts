@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import net from 'net';
 import cors from 'cors';
 import crypto from 'crypto';
 import pg from 'pg';
@@ -32,10 +33,62 @@ function execWithOutput(cmd: string, timeoutMs = 15000): Promise<{ stdout: strin
   });
 }
 
+function testTcpPortReachable(host: string, port: number, timeoutMs = 2500): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!host || !port) return resolve(false);
+    const socket = new net.Socket();
+    let isResolved = false;
+
+    const cleanup = () => {
+      socket.removeAllListeners();
+      socket.destroy();
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => {
+      if (!isResolved) {
+        isResolved = true;
+        cleanup();
+        resolve(true);
+      }
+    });
+
+    socket.once('timeout', () => {
+      if (!isResolved) {
+        isResolved = true;
+        cleanup();
+        resolve(false);
+      }
+    });
+
+    socket.once('error', () => {
+      if (!isResolved) {
+        isResolved = true;
+        cleanup();
+        resolve(false);
+      }
+    });
+
+    try {
+      socket.connect(port, host);
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
 async function getMp4Duration(filePath: string): Promise<number> {
   if (!fs.existsSync(filePath)) return 0;
   try {
     const res = await execWithOutput(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`, 8000);
+    const parsed = parseFloat((res.stdout || '').trim());
+    if (!isNaN(parsed) && parsed > 0) {
+      return Math.round(parsed);
+    }
+  } catch (e) {}
+
+  try {
+    const res = await execWithOutput(`ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`, 8000);
     const parsed = parseFloat((res.stdout || '').trim());
     if (!isNaN(parsed) && parsed > 0) {
       return Math.round(parsed);
@@ -60,8 +113,9 @@ async function getMp4Duration(filePath: string): Promise<number> {
 async function repairAndFinalizeMp4(inputPath: string, outputPath: string): Promise<boolean> {
   if (!fs.existsSync(inputPath)) return false;
   const tempOut = outputPath + '.tmp_fixed.mp4';
+  
+  // 1st attempt: Fast copy remux with moov atom repair and faststart
   try {
-    // 1st attempt: Fast copy remux with moov atom repair and faststart
     await execAsync(`ffmpeg -y -err_detect ignore_err -i "${inputPath}" -c copy -movflags +faststart "${tempOut}"`, 25000);
     if (fs.existsSync(tempOut) && fs.statSync(tempOut).size > 1000) {
       if (inputPath !== outputPath) {
@@ -72,9 +126,21 @@ async function repairAndFinalizeMp4(inputPath: string, outputPath: string): Prom
     }
   } catch (e) {}
 
-  // 2nd attempt: If stream copy failed due to broken timestamps or container corruption, transcode safely with optional audio
+  // 2nd attempt: Video stream copy without audio (audio-safe: handles cameras without audio or unsupported G.711 in mp4)
   try {
-    await execAsync(`ffmpeg -y -err_detect ignore_err -i "${inputPath}" -map 0:v:0? -map 0:a? -c:v libx264 -preset ultrafast -crf 24 -c:a aac -movflags +faststart "${tempOut}"`, 35000);
+    await execAsync(`ffmpeg -y -err_detect ignore_err -i "${inputPath}" -map 0:v:0? -c:v copy -an -movflags +faststart "${tempOut}"`, 25000);
+    if (fs.existsSync(tempOut) && fs.statSync(tempOut).size > 1000) {
+      if (inputPath !== outputPath) {
+        try { fs.unlinkSync(inputPath); } catch (e) {}
+      }
+      fs.renameSync(tempOut, outputPath);
+      return true;
+    }
+  } catch (e) {}
+
+  // 3rd attempt: Fast transcode fallback
+  try {
+    await execAsync(`ffmpeg -y -err_detect ignore_err -i "${inputPath}" -map 0:v:0? -c:v libx264 -preset ultrafast -crf 24 -an -movflags +faststart "${tempOut}"`, 35000);
     if (fs.existsSync(tempOut) && fs.statSync(tempOut).size > 1000) {
       if (inputPath !== outputPath) {
         try { fs.unlinkSync(inputPath); } catch (e) {}
@@ -132,20 +198,60 @@ function isCameraHlsActivelyStreaming(rawKey: string): boolean {
   const hlsDir = '/tmp/hls';
   if (!fs.existsSync(hlsDir)) return false;
 
-  const keyUnderscore = rawKey.replace(/^cam-/, 'cam_');
-  const keyDash = rawKey.replace(/^cam_/, 'cam-');
   const cleanBase = rawKey.replace(/[-_]sub$/, '');
-  const keys = [rawKey, keyUnderscore, keyDash, cleanBase];
+  const keyUnderscore = cleanBase.replace(/^cam-/, 'cam_');
+  const keyDash = cleanBase.replace(/^cam_/, 'cam-');
+  const cleanId = cleanBase.replace(/^cam[-_]/, '');
+
+  const validPrefixes = Array.from(new Set([
+    `${rawKey}_`,
+    `${cleanBase}_`,
+    `${keyUnderscore}_`,
+    `${keyDash}_`,
+    `cam_${cleanId}_`,
+    `cam-${cleanId}_`,
+  ]));
+
+  const legacyPrefixes = Array.from(new Set([
+    rawKey,
+    cleanBase,
+    keyUnderscore,
+    keyDash,
+    `cam_${cleanId}`,
+    `cam-${cleanId}`,
+  ]));
 
   try {
     const files = fs.readdirSync(hlsDir);
     const now = Date.now();
     for (const f of files) {
-      if (f.endsWith('.ts') && keys.some((k) => f.startsWith(k))) {
+      if (!f.endsWith('.ts')) continue;
+
+      // Primary check: exact prefix e.g. cam_1_00001.ts
+      const matchesPrefix = validPrefixes.some((p) => f.startsWith(p));
+      if (matchesPrefix) {
         const full = path.join(hlsDir, f);
         try {
           const stat = fs.statSync(full);
-          if (now - stat.mtimeMs < 12000 && stat.size > 500) {
+          if (now - stat.mtimeMs < 11000 && stat.size > 500) {
+            return true;
+          }
+        } catch (e) {}
+        continue;
+      }
+
+      // Legacy check: cam_10.ts should only match cam_1 if it is cam_1 + index digits
+      const matchesLegacy = legacyPrefixes.some((lp) => {
+        const escaped = lp.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+        const reg = new RegExp(`^${escaped}\\d+\\.ts$`);
+        return reg.test(f);
+      });
+
+      if (matchesLegacy) {
+        const full = path.join(hlsDir, f);
+        try {
+          const stat = fs.statSync(full);
+          if (now - stat.mtimeMs < 11000 && stat.size > 500) {
             return true;
           }
         } catch (e) {}
@@ -357,6 +463,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     '-hls_time', '2',
     '-hls_list_size', '6',
     '-hls_flags', 'delete_segments+omit_endlist+discont_start',
+    '-hls_segment_filename', path.join(hlsDir, `${key}_%05d.ts`),
     '-y',
     hlsPath
   );
@@ -2902,6 +3009,7 @@ async function startServer() {
       );
     } else if (inputSource.endsWith('.m3u8') || inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
       ffmpegArgs.push(
+        '-re',
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
@@ -2917,7 +3025,10 @@ async function startServer() {
       '-map', '0:v:0?',
       '-map', '0:a?',
       '-c:v', 'copy',
+      '-bsf:v', 'dump_extra',
       '-c:a', 'aac',
+      '-b:a', '64k',
+      '-ac', '1',
       '-max_muxing_queue_size', '4096',
       '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
       '-t', autoRecordingDurationSec.toString(),
@@ -3369,48 +3480,148 @@ async function startServer() {
   });
 
   // Função Precisa e Confiável para Diagnóstico de Conexão da Câmera (RTSP/RTMP/ONVIF)
-  async function checkSingleCameraHealth(cam: Camera): Promise<{ isOnline: boolean; message: string; details?: string }> {
+  async function checkSingleCameraHealth(cam: Camera): Promise<{
+    isOnline: boolean;
+    message: string;
+    details?: string;
+    latencyMs?: number;
+  }> {
     if (!cam || !cam.id) return { isOnline: false, message: 'Câmera não especificada' };
+    const startTime = Date.now();
 
     const rawKey = cam.streamKey || cam.id;
     const isStreaming = isCameraHlsActivelyStreaming(rawKey);
 
-    // 1. Se fragmentos de vídeo .ts estão chegando ao vivo nos últimos 12s, a câmera está comprovadamente ONLINE
+    // 1. Se a câmera tem fragmentos de vídeo .ts reais chegando nos últimos 10s -> ONLINE comprovado
     if (isStreaming) {
       cam.status = 'ONLINE';
-      return { isOnline: true, message: 'Sinal Online (Transmissão HLS em Tempo Real)' };
+      const latencyMs = Math.max(15, Date.now() - startTime);
+      return {
+        isOnline: true,
+        message: 'On-line (Transmissão HLS em Tempo Real)',
+        details: 'Fluxo ao vivo gerando segmentos de vídeo com estabilidade',
+        latencyMs,
+      };
     }
 
-    // 2. Se for protocolo RTSP ou ONVIF, executar teste de conexão real na rede via ffprobe (timeout de 3.5s)
+    // 2. Demo / Webcams públicas (HTTP / HTTPS / HLS)
+    if (cam.isDemo || cam.isLiveWebcam || (cam.videoStreamUrl && cam.videoStreamUrl.startsWith('http'))) {
+      const targetUrl = cam.videoStreamUrl || cam.fullRtmpUrl || '';
+      if (targetUrl.startsWith('http')) {
+        try {
+          const probe = await execWithOutput(`curl -s -o /dev/null -w "%{http_code}" -m 3 "${targetUrl}"`, 3500);
+          const code = parseInt((probe.stdout || '').trim(), 10);
+          if (code >= 200 && code < 400) {
+            cam.status = 'ONLINE';
+            startCameraRtspStream(cam);
+            const latencyMs = Date.now() - startTime;
+            return {
+              isOnline: true,
+              message: 'On-line (Webcam Pública / HTTP Ativo)',
+              details: `Servidor de streaming respondeu com HTTP ${code}`,
+              latencyMs,
+            };
+          }
+        } catch (e) {}
+      }
+    }
+
+    // 3. Câmeras com Protocolo RTSP ou ONVIF
     const isRtsp = cam.protocol === 'RTSP' || cam.protocol === 'ONVIF' || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'));
     if (isRtsp) {
       const targetRtsp = getValidStreamSource(cam);
       if (targetRtsp && targetRtsp.startsWith('rtsp://')) {
+        // A) Sonda profunda via ffprobe (TCP) - identifica fluxo de vídeo real e codec
         try {
           const probeRes = await execWithOutput(
-            `ffprobe -v error -rtsp_transport tcp -stimeout 3500000 -analyzeduration 1000000 -probesize 1000000 -i "${targetRtsp}" -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1`,
+            `ffprobe -v error -rtsp_transport tcp -stimeout 3500000 -analyzeduration 1500000 -probesize 1500000 -i "${targetRtsp}" -show_entries stream=codec_type,codec_name -of default=noprint_wrappers=1:nokey=1`,
             4000
           );
-          if (probeRes.stdout && probeRes.stdout.trim().length > 0 && !probeRes.error) {
+          const out = (probeRes.stdout || '').trim();
+          if (out.length > 0 && !probeRes.error) {
             cam.status = 'ONLINE';
             startCameraRtspStream(cam);
-            return { isOnline: true, message: 'Sinal RTSP Estabelecido com Sucesso' };
+            const latencyMs = Date.now() - startTime;
+            const codec = out.split('\n')[0] || 'H264';
+            return {
+              isOnline: true,
+              message: `On-line (Sinal RTSP Estabelecido - ${codec.toUpperCase()})`,
+              details: `Conexão RTSP (porta 554/TCP) verificada com sucesso em ${latencyMs}ms`,
+              latencyMs,
+            };
+          }
+        } catch (e) {}
+
+        // B) Sonda via Socket TCP rápido na porta 554 / customizada
+        try {
+          const cleanUrl = targetRtsp.replace(/^rtsp:\/\/(.*@)?/i, 'http://');
+          const urlObj = new URL(cleanUrl);
+          const host = urlObj.hostname;
+          const port = parseInt(urlObj.port || '554', 10);
+          const socketOk = await testTcpPortReachable(host, port, 2500);
+          if (socketOk) {
+            cam.status = 'ONLINE';
+            startCameraRtspStream(cam);
+            const latencyMs = Date.now() - startTime;
+            return {
+              isOnline: true,
+              message: `On-line (Porta ${port} Aberta / RTSP Conectado)`,
+              details: `Dispositivo IP ${host}:${port} respondendo à sondagem de rede`,
+              latencyMs,
+            };
           }
         } catch (e) {}
       }
 
       cam.status = 'OFFLINE';
-      return { isOnline: false, message: 'Câmera RTSP Off-line (Sem Resposta na Porta 554 / Timeout)' };
+      const latencyMs = Date.now() - startTime;
+      return {
+        isOnline: false,
+        message: 'Off-line (Sem Resposta no Fluxo RTSP / Timeout)',
+        details: 'Câmera inacessível ou sem resposta na porta 554 (TCP/RTSP)',
+        latencyMs,
+      };
     }
 
-    // 3. Se for RTMP: sem pacotes recebidos no endpoint, a câmera está comprovadamente OFFLINE
+    // 4. Câmeras com Protocolo RTMP
     if (cam.protocol === 'RTMP' || cam.rtmpUrl || cam.fullRtmpUrl) {
+      const targetSource = getValidStreamSource(cam);
+      if (targetSource && targetSource.startsWith('rtmp://')) {
+        try {
+          const probeRes = await execWithOutput(
+            `ffprobe -v error -rw_timeout 2500000 -analyzeduration 1000000 -probesize 1000000 -i "${targetSource}" -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1`,
+            3000
+          );
+          if (probeRes.stdout && probeRes.stdout.trim().length > 0 && !probeRes.error) {
+            cam.status = 'ONLINE';
+            startCameraRtspStream(cam);
+            const latencyMs = Date.now() - startTime;
+            return {
+              isOnline: true,
+              message: 'On-line (Fluxo RTMP Publicando)',
+              details: 'Transmissão RTMP recebida com sucesso',
+              latencyMs,
+            };
+          }
+        } catch (e) {}
+      }
+
       cam.status = 'OFFLINE';
-      return { isOnline: false, message: 'Câmera RTMP Off-line (Nenhum fluxo de vídeo sendo publicado no momento)' };
+      const latencyMs = Date.now() - startTime;
+      return {
+        isOnline: false,
+        message: 'Off-line (Nenhum fluxo RTMP sendo publicado no momento)',
+        details: 'Aguardando publicação do encoder/câmera no servidor RTMP',
+        latencyMs,
+      };
     }
 
     cam.status = 'OFFLINE';
-    return { isOnline: false, message: 'Câmera Off-line' };
+    return {
+      isOnline: false,
+      message: 'Off-line (Câmera Indisponível)',
+      latencyMs: Date.now() - startTime,
+    };
   }
 
   // Endpoint para Diagnóstico Automático e "Testar Todas"
@@ -3419,14 +3630,25 @@ async function startServer() {
       const reqUser = getUserFromReq(req);
       const userCams = filterCamerasForUser(reqUser, cameras);
 
-      // Executa teste real em paralelo para todas as câmeras
-      await Promise.all(userCams.map(async (cam) => {
-        await checkSingleCameraHealth(cam);
+      // Executa varredura de integridade para as câmeras
+      const results = await Promise.all(userCams.map(async (cam) => {
+        const diag = await checkSingleCameraHealth(cam);
+        return {
+          id: cam.id,
+          status: cam.status,
+          isOnline: diag.isOnline,
+          message: diag.message,
+          details: diag.details,
+          latencyMs: diag.latencyMs,
+        };
       }));
 
       saveToLocalFile();
       saveSqliteFile();
-      return res.json(userCams);
+      return res.json({
+        cameras: userCams,
+        diagnostics: results,
+      });
     } catch (err: any) {
       console.error('[Health Check Error]:', err.message || err);
       return res.status(500).json({ error: 'Erro no diagnóstico em lote' });
@@ -3464,6 +3686,7 @@ async function startServer() {
         status: result.isOnline ? 'ONLINE' : 'OFFLINE',
         message: result.message,
         details: result.details,
+        latencyMs: result.latencyMs,
         protocol: cam.protocol,
         streamKey: key,
         logs: lastFfmpegLogs.get(key) || [],

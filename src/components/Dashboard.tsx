@@ -211,15 +211,29 @@ export const Dashboard: React.FC<DashboardProps> = ({
     try {
       const res = await fetch(`/api/cameras/health-check?t=${Date.now()}`);
       if (res.ok) {
-        const updatedCams: Camera[] = await res.json();
+        const data = await res.json();
+        const updatedCams: Camera[] = Array.isArray(data) ? data : (data.cameras || []);
+        const diagnostics: any[] = data.diagnostics || [];
+
         if (Array.isArray(updatedCams) && updatedCams.length > 0) {
           const resultsMap: Record<string, { success: boolean; message: string }> = {};
-          updatedCams.forEach((c) => {
-            resultsMap[c.id] = {
-              success: c.status === 'ONLINE',
-              message: c.status === 'ONLINE' ? 'Sinal Conectado' : 'Sem Sinal / Off-line',
-            };
-          });
+          
+          if (diagnostics.length > 0) {
+            diagnostics.forEach((d) => {
+              resultsMap[d.id] = {
+                success: d.isOnline || d.status === 'ONLINE',
+                message: d.message || (d.isOnline ? 'Sinal Conectado' : 'Sem Sinal / Off-line'),
+              };
+            });
+          } else {
+            updatedCams.forEach((c) => {
+              resultsMap[c.id] = {
+                success: c.status === 'ONLINE',
+                message: c.status === 'ONLINE' ? 'Sinal Conectado' : 'Sem Sinal / Off-line',
+              };
+            });
+          }
+
           setCamTestResults(resultsMap);
           if (onUpdateCameras) {
             onUpdateCameras(updatedCams);
