@@ -110,38 +110,125 @@ export default function App() {
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
 
-  // Application Data States
-  const [cameras, setCameras] = useState<Camera[]>(INITIAL_CAMERAS);
-  const [recordings, setRecordings] = useState<CloudRecording[]>(INITIAL_RECORDINGS);
-  const [users, setUsers] = useState<User[]>(INITIAL_USERS);
-  const [logs, setLogs] = useState<ActivityLog[]>(INITIAL_LOGS);
-  const [backupConfig, setBackupConfig] = useState<BackupConfig>(INITIAL_BACKUP_CONFIG);
-  const [notificationConfig, setNotificationConfig] = useState<NotificationConfig>(INITIAL_NOTIFICATION_CONFIG);
+  // Application Data States with Instant LocalStorage Persistence
+  const [cameras, setCameras] = useState<Camera[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_cameras');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_CAMERAS;
+  });
+
+  const [recordings, setRecordings] = useState<CloudRecording[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_recordings');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_RECORDINGS;
+  });
+
+  const [users, setUsers] = useState<User[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_users');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_USERS;
+  });
+
+  const [logs, setLogs] = useState<ActivityLog[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_logs');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_LOGS;
+  });
+
+  const [backupConfig, setBackupConfig] = useState<BackupConfig>(() => {
+    try {
+      const stored = localStorage.getItem('itl_backup_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return INITIAL_BACKUP_CONFIG;
+  });
+
+  const [notificationConfig, setNotificationConfig] = useState<NotificationConfig>(() => {
+    try {
+      const stored = localStorage.getItem('itl_notification_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return INITIAL_NOTIFICATION_CONFIG;
+  });
+
   const [e2eeSettings, setE2eesettings] = useState<E2EESettings>(INITIAL_E2EE_SETTINGS);
 
   // Architecture States
-  const [architectureConfig, setArchitectureConfig] = useState<ArchitectureConfig>(INITIAL_ARCHITECTURE_CONFIG);
+  const [architectureConfig, setArchitectureConfig] = useState<ArchitectureConfig>(() => {
+    try {
+      const stored = localStorage.getItem('itl_architecture_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return INITIAL_ARCHITECTURE_CONFIG;
+  });
+
   const [streams, setStreams] = useState<StreamInfo[]>(INITIAL_STREAMS);
 
   // Financial States
-  const [plans, setPlans] = useState<FinancialPlan[]>(INITIAL_PLANS);
-  const [invoices, setInvoices] = useState<Invoice[]>([
-    {
-      id: 'inv-1001',
-      userId: 'user-superadmin-01',
-      userName: 'Super Admin Unity',
-      userEmail: 'admin@sistema.com.br',
-      planName: 'Plano Vizinhança Protegida ITL',
-      amount: 149.90,
-      originalAmount: 149.90,
-      dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-      status: 'PAID',
-      isProRata: false,
-      paymentDate: new Date().toISOString().split('T')[0],
-      createdAt: '2026-07-01',
-    },
-  ]);
-  const [mpConfig, setMpConfig] = useState<MercadoPagoConfig>(INITIAL_MP_CONFIG);
+  const [plans, setPlans] = useState<FinancialPlan[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_plans');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_PLANS;
+  });
+
+  const [invoices, setInvoices] = useState<Invoice[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_invoices');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [
+      {
+        id: 'inv-1001',
+        userId: 'user-superadmin-01',
+        userName: 'Super Admin Unity',
+        userEmail: 'admin@sistema.com.br',
+        planName: 'Plano Vizinhança Protegida ITL',
+        amount: 149.90,
+        originalAmount: 149.90,
+        dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        status: 'PAID',
+        isProRata: false,
+        paymentDate: new Date().toISOString().split('T')[0],
+        createdAt: '2026-07-01',
+      },
+    ];
+  });
+
+  const [mpConfig, setMpConfig] = useState<MercadoPagoConfig>(() => {
+    try {
+      const stored = localStorage.getItem('itl_mp_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return INITIAL_MP_CONFIG;
+  });
   const [isMpSettingsOpen, setIsMpSettingsOpen] = useState(false);
 
   // Modal States
@@ -149,8 +236,90 @@ export default function App() {
   const [isE2EEModalOpen, setIsE2EEModalOpen] = useState(false);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
-  // Fetch initial data from Express backend server if available
+  // Sync states to local storage to ensure 0ms latency and 0 data-loss on F5
   useEffect(() => {
+    try {
+      if (Array.isArray(cameras)) {
+        localStorage.setItem('itl_cameras', JSON.stringify(cameras));
+      }
+    } catch {}
+  }, [cameras]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(recordings)) {
+        localStorage.setItem('itl_recordings', JSON.stringify(recordings));
+      }
+    } catch {}
+  }, [recordings]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(users)) {
+        localStorage.setItem('itl_users', JSON.stringify(users));
+      }
+    } catch {}
+  }, [users]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(logs)) {
+        localStorage.setItem('itl_logs', JSON.stringify(logs));
+      }
+    } catch {}
+  }, [logs]);
+
+  useEffect(() => {
+    try {
+      if (backupConfig) {
+        localStorage.setItem('itl_backup_config', JSON.stringify(backupConfig));
+      }
+    } catch {}
+  }, [backupConfig]);
+
+  useEffect(() => {
+    try {
+      if (notificationConfig) {
+        localStorage.setItem('itl_notification_config', JSON.stringify(notificationConfig));
+      }
+    } catch {}
+  }, [notificationConfig]);
+
+  useEffect(() => {
+    try {
+      if (architectureConfig) {
+        localStorage.setItem('itl_architecture_config', JSON.stringify(architectureConfig));
+      }
+    } catch {}
+  }, [architectureConfig]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(plans)) {
+        localStorage.setItem('itl_plans', JSON.stringify(plans));
+      }
+    } catch {}
+  }, [plans]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(invoices)) {
+        localStorage.setItem('itl_invoices', JSON.stringify(invoices));
+      }
+    } catch {}
+  }, [invoices]);
+
+  useEffect(() => {
+    try {
+      if (mpConfig) {
+        localStorage.setItem('itl_mp_config', JSON.stringify(mpConfig));
+      }
+    } catch {}
+  }, [mpConfig]);
+
+  // Fetch initial data from Express backend server with instant fallback
+  useEffect(() => {
+    let isMounted = true;
     const fetchBackendData = async () => {
       try {
         const authHeaders = {
@@ -185,10 +354,16 @@ export default function App() {
           fetch('/api/v1/streams', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
         ]);
 
-        if (Array.isArray(cRes)) setCameras(cRes);
-        if (Array.isArray(rRes)) setRecordings(rRes);
+        if (!isMounted) return;
+
+        if (Array.isArray(cRes)) {
+          setCameras((prev) => (cRes.length > 0 ? cRes : prev.length > 0 ? prev : cRes));
+        }
+        if (Array.isArray(rRes)) {
+          setRecordings((prev) => (rRes.length > 0 ? rRes : prev.length > 0 ? prev : rRes));
+        }
         if (Array.isArray(uRes) && uRes.length > 0) setUsers(uRes);
-        if (Array.isArray(lRes)) setLogs(lRes);
+        if (Array.isArray(lRes) && lRes.length > 0) setLogs(lRes);
         if (bRes && bRes.schedule) setBackupConfig(bRes);
         if (nRes && nRes.pushEnabled !== undefined) setNotificationConfig(nRes);
         if (Array.isArray(pRes) && pRes.length > 0) setPlans(pRes);
@@ -197,11 +372,12 @@ export default function App() {
         if (archCfgRes && archCfgRes.primaryTopology) setArchitectureConfig(archCfgRes);
         if (Array.isArray(streamsRes)) setStreams(streamsRes);
       } catch (err) {
-        console.log('Servidor backend inicializado.');
+        console.log('Dados locais mantidos com sucesso.');
       }
     };
 
     fetchBackendData();
+    return () => { isMounted = false; };
   }, [activeUser.id]);
 
   // Periodic recordings sync
