@@ -2451,6 +2451,91 @@ async function startServer() {
   const activeAutoRecordingStartTimes = new Map<string, number>();
   const autoRecordingDurationSec = 300; // 5-minute rolling slices for real cloud storage
 
+  async function permanentlyDeleteRecording(id: string) {
+    if (!id) return;
+    deletedRecordingIds.add(id);
+
+    const targets = recordings.filter(
+      (r) => r.id === id || (r.streamUrl && r.streamUrl.includes(id)) || (id.startsWith('rec_') && r.streamUrl && r.streamUrl.includes(id.replace('.mp4', '')))
+    );
+
+    const filesToDelete = new Set<string>();
+    filesToDelete.add(id);
+
+    for (const target of targets) {
+      deletedRecordingIds.add(target.id);
+      if (target.streamUrl) {
+        const fileName = path.basename(target.streamUrl);
+        filesToDelete.add(fileName);
+        filesToDelete.add(fileName.replace('.mp4', '.part.mp4'));
+        filesToDelete.add(fileName.replace('.mp4', '.tmp_fixed.mp4'));
+        filesToDelete.add(`thumb_auto_${fileName.replace('rec_auto_', '').replace('.mp4', '.jpg')}`);
+        filesToDelete.add(`thumb_disk_${fileName.replace('.mp4', '.jpg')}`);
+        filesToDelete.add(`thumb_real_${fileName.replace('rec_real_', '').replace('.mp4', '.jpg')}`);
+        deletedRecordingIds.add(target.streamUrl);
+        deletedRecordingIds.add(fileName);
+      }
+      if (target.thumbnailUrl && target.thumbnailUrl.startsWith('/recordings/')) {
+        const thumbFile = path.basename(target.thumbnailUrl);
+        filesToDelete.add(thumbFile);
+        deletedRecordingIds.add(thumbFile);
+      }
+    }
+
+    if (id.endsWith('.mp4') || id.startsWith('rec_')) {
+      const baseName = id.replace('.mp4', '');
+      filesToDelete.add(`${baseName}.mp4`);
+      filesToDelete.add(`${baseName}.part.mp4`);
+      filesToDelete.add(`${baseName}.tmp_fixed.mp4`);
+      filesToDelete.add(`thumb_disk_${baseName}.jpg`);
+      filesToDelete.add(`thumb_auto_${baseName.replace('rec_auto_', '')}.jpg`);
+      filesToDelete.add(`thumb_real_${baseName.replace('rec_real_', '')}.jpg`);
+    }
+
+    // Unlink files from all recording dirs
+    const dirsToClean = [
+      recordingsDir,
+      '/var/www/centralitl.unityautomacoes.com.br/recordings',
+      '/var/www/itl-recordings',
+      '/tmp/recordings',
+      path.join(process.cwd(), 'public', 'recordings'),
+    ];
+
+    for (const dir of dirsToClean) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const dirFiles = fs.readdirSync(dir);
+        for (const df of dirFiles) {
+          if (filesToDelete.has(df) || Array.from(filesToDelete).some((f) => f && df.includes(f.replace('.mp4', '')))) {
+            const fullPath = path.join(dir, df);
+            try {
+              if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    }
+
+    // Delete from SQLite
+    if (sqliteDb) {
+      try {
+        sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url LIKE ?', [id, `%${id}%`]);
+        saveSqliteFile();
+      } catch (e) {}
+    }
+
+    // Delete from PostgreSQL
+    if (isPgActive && pool) {
+      try {
+        await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url LIKE ?', [id, `%${id}%`]);
+      } catch (e) {}
+    }
+
+    // Filter memory recordings
+    recordings = recordings.filter((r) => r.id !== id && !filesToDelete.has(path.basename(r.streamUrl || '')));
+    saveToLocalFile();
+  }
+
   function pruneRecordingsFIFO(customLimitGB?: number) {
     const maxGB = customLimitGB || backupConfig?.storageLimitGB || 40;
     const maxMB = maxGB * 1024;
@@ -2513,10 +2598,50 @@ async function startServer() {
       try {
         const files = fs.readdirSync(dirPath);
         for (const file of files) {
-          // Skip temporary part files currently recording
-          if (file.endsWith('.part.mp4') || file.endsWith('.tmp_fixed.mp4')) continue;
-          if (!file.toLowerCase().endsWith('.mp4')) continue;
           const fullPath = path.join(dirPath, file);
+
+          // If marked as deleted, immediately purge from disk
+          if (
+            deletedRecordingIds.has(file) ||
+            deletedRecordingIds.has(file.replace('.part.mp4', '.mp4')) ||
+            deletedRecordingIds.has(file.replace('.mp4', '')) ||
+            deletedRecordingIds.has(`/recordings/${file}`)
+          ) {
+            try { if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath); } catch (e) {}
+            continue;
+          }
+
+          // Handle orphaned .part.mp4 files (rescue if > 2KB and older than 15s)
+          if (file.endsWith('.part.mp4')) {
+            try {
+              const stat = fs.statSync(fullPath);
+              if (Date.now() - stat.mtimeMs > 15000) {
+                const targetMp4Path = path.join(recordingsDir, file.replace('.part.mp4', '.mp4'));
+                if (stat.size > 2000) {
+                  await repairAndFinalizeMp4(fullPath, targetMp4Path);
+                }
+                try { if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath); } catch (e) {}
+              }
+            } catch (e) {}
+            continue;
+          }
+
+          // Clean orphan thumbnail files if mp4 doesn't exist
+          if (file.endsWith('.jpg') && (file.startsWith('thumb_auto_') || file.startsWith('thumb_disk_') || file.startsWith('thumb_real_'))) {
+            const correspondingMp4 = file.replace(/^thumb_(?:auto|disk|real)_/, 'rec_auto_').replace('.jpg', '.mp4');
+            const correspondingMp4Alt = file.replace(/^thumb_disk_/, '').replace('.jpg', '.mp4');
+            if (
+              !fs.existsSync(path.join(recordingsDir, correspondingMp4)) &&
+              !fs.existsSync(path.join(recordingsDir, correspondingMp4Alt)) &&
+              !fs.existsSync(path.join(recordingsDir, file.replace(/^thumb_[a-z]+_/, '').replace('.jpg', '.mp4')))
+            ) {
+              try { if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath); } catch (e) {}
+            }
+            continue;
+          }
+
+          if (!file.toLowerCase().endsWith('.mp4')) continue;
+          if (file.endsWith('.tmp_fixed.mp4')) continue;
 
           let targetPath = fullPath;
           if (dirPath !== recordingsDir) {
@@ -2532,7 +2657,10 @@ async function startServer() {
 
           try {
             const stats = fs.statSync(targetPath);
-            if (stats.size < 500) continue; // Skip unplayable zero-byte files
+            if (stats.size < 1000) {
+              try { if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath); } catch (e) {}
+              continue;
+            }
 
             const relativeUrl = `/recordings/${file}`;
 
@@ -2628,10 +2756,21 @@ async function startServer() {
       } catch (e) {}
     }
 
+    // Prune any records whose physical file is completely gone from disk
+    recordings = recordings.filter((r) => {
+      if (deletedRecordingIds.has(r.id)) return false;
+      if (r.streamUrl && r.streamUrl.startsWith('/recordings/')) {
+        const fName = path.basename(r.streamUrl);
+        const fPath = path.join(recordingsDir, fName);
+        if (!fs.existsSync(fPath)) return false;
+      }
+      return true;
+    });
+
     if (addedCount > 0) {
       if (recordings.length > 5000) recordings = recordings.slice(0, 5000);
       saveToLocalFile();
-      console.log(`[Disk Scanner] ${addedCount} gravação(ões) do disco foram reconciliadas e reparadas!`);
+      console.log(`[Disk Scanner] ${addedCount} gravação(ões) do disco foram reconciliadas e reparadas! Total: ${recordings.length}`);
     }
   }
 
@@ -4723,26 +4862,9 @@ async function startServer() {
   app.delete('/api/recordings/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      deletedRecordingIds.add(id);
-      try { deleteRecordingFromSqlite(id); } catch (e) {}
-      deleteRecordingFromMysql(id).catch((e) => console.error('[Pg Delete Rec Error]:', e));
-      const target = recordings.find((r) => r.id === id);
-      if (target && target.streamUrl && target.streamUrl.startsWith('/recordings/')) {
-        const fileName = path.basename(target.streamUrl);
-        const fullFilePath = path.join(recordingsDir, fileName);
-        if (fs.existsSync(fullFilePath)) {
-          try { fs.unlinkSync(fullFilePath); } catch (e) {}
-        } else {
-          const legacyPath = path.join(process.cwd(), 'public', target.streamUrl);
-          if (fs.existsSync(legacyPath)) {
-            try { fs.unlinkSync(legacyPath); } catch (e) {}
-          }
-        }
-      }
-      recordings = recordings.filter((r) => r.id !== id);
-      saveToLocalFile();
-      addLog('ITL Admin', `Gravação em nuvem excluída: ${id}`, 'RECORDING');
-      return res.json({ success: true, message: 'Gravação removida com sucesso' });
+      await permanentlyDeleteRecording(id);
+      addLog('ITL Admin', `Gravação em nuvem excluída permanentemente: ${id}`, 'RECORDING');
+      return res.json({ success: true, message: 'Gravação removida permanentemente do banco, disco e JSON' });
     } catch (err: any) {
       console.error('[DELETE Recording Error]:', err);
       return res.status(500).json({ success: false, error: err.message || err });
@@ -4750,31 +4872,19 @@ async function startServer() {
   });
 
   app.post('/api/recordings/batch-delete', async (req, res) => {
-    const { ids } = req.body;
-    if (Array.isArray(ids) && ids.length > 0) {
-      const idSet = new Set(ids);
-      for (const id of ids) {
-        deleteRecordingFromSqlite(id);
-        deleteRecordingFromMysql(id).catch((e) => console.error('[Pg Delete Rec Error]:', e));
-        const target = recordings.find((r) => r.id === id);
-        if (target && target.streamUrl && target.streamUrl.startsWith('/recordings/')) {
-          const fileName = path.basename(target.streamUrl);
-          const fullFilePath = path.join(recordingsDir, fileName);
-          if (fs.existsSync(fullFilePath)) {
-            try { fs.unlinkSync(fullFilePath); } catch (e) {}
-          } else {
-            const legacyPath = path.join(process.cwd(), 'public', target.streamUrl);
-            if (fs.existsSync(legacyPath)) {
-              try { fs.unlinkSync(legacyPath); } catch (e) {}
-            }
-          }
+    try {
+      const { ids } = req.body;
+      if (Array.isArray(ids) && ids.length > 0) {
+        for (const id of ids) {
+          await permanentlyDeleteRecording(id);
         }
+        addLog('ITL Admin', `${ids.length} gravações em nuvem excluídas permanentemente em lote`, 'RECORDING');
       }
-      recordings = recordings.filter((r) => !idSet.has(r.id));
-      saveToLocalFile();
-      addLog('ITL Admin', `${ids.length} gravações em nuvem excluídas em lote`, 'RECORDING');
+      return res.json({ success: true, message: `${ids ? ids.length : 0} gravações removidas permanentemente` });
+    } catch (err: any) {
+      console.error('[BATCH DELETE Recording Error]:', err);
+      return res.status(500).json({ success: false, error: err.message || err });
     }
-    res.json({ success: true });
   });
 
   // Users & Permissions

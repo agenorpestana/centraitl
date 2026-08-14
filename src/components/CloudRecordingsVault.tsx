@@ -24,6 +24,10 @@ import {
   Video,
   CheckCircle2,
   RefreshCw,
+  Maximize,
+  Minimize,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { CloudRecording, User, Camera } from '../types';
 
@@ -84,6 +88,27 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
   const [recordingError, setRecordingError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const playerBoxRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+  const toggleFullscreen = () => {
+    if (!playerBoxRef.current) return;
+    if (!document.fullscreenElement) {
+      playerBoxRef.current.requestFullscreen().catch(() => {});
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen().catch(() => {});
+      setIsFullscreen(false);
+    }
+  };
+
+  useEffect(() => {
+    const onFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
 
   // Fetch storage limit from backend on mount
   useEffect(() => {
@@ -674,7 +699,16 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
         <div className="lg:col-span-2 space-y-3">
           {activeRecording ? (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl space-y-3 p-4">
-              <div className="relative aspect-video bg-black rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center">
+              {/* Clean Video View Container */}
+              <div
+                ref={playerBoxRef}
+                className="relative aspect-video bg-black rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center cursor-pointer group"
+                onClick={() => {
+                  if (isVaultUnlocked) {
+                    setIsPlaying(!isPlaying);
+                  }
+                }}
+              >
                 <video
                   key={activeRecording.id}
                   ref={videoRef}
@@ -694,99 +728,80 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
                   onEnded={() => setIsPlaying(false)}
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-contain"
                 />
 
-                {/* Real-time Recorded OSD Watermarks */}
-                {isVaultUnlocked && (
-                  <>
-                    <div className="absolute top-3 left-3 z-30 bg-slate-950/90 backdrop-blur-md px-3 py-1.5 rounded-xl border border-emerald-500/50 flex items-center space-x-2 text-xs font-mono shadow-2xl">
-                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                      <span className="text-emerald-400 font-black tracking-wider">REC REPRODUÇÃO NUVEM E2EE</span>
-                      <span className="text-slate-600">|</span>
-                      <span className="text-slate-300 font-semibold">{activeRecording.cameraName}</span>
-                      <span className="text-slate-600">|</span>
-                      <span className="text-white font-black text-xs sm:text-sm bg-slate-900/90 px-2.5 py-0.5 rounded-lg border border-slate-700">
-                        {getRecordedClockTime(activeRecording.startTime, currentTime)}
-                      </span>
-                    </div>
-
-                    <div className="absolute top-3 right-3 z-30 bg-slate-950/90 backdrop-blur-md px-3 py-1.5 rounded-xl border border-slate-800 text-xs font-mono text-emerald-400 flex items-center space-x-1.5 shadow-2xl">
-                      <Shield className="w-3.5 h-3.5" />
-                      <span>{activeRecording.durationSeconds >= 270 ? 'BLOCO COMPLETO 5MIN' : `FATIA PARCIAL ${Math.floor(activeRecording.durationSeconds / 60)}M${activeRecording.durationSeconds % 60}S`}</span>
-                    </div>
-                  </>
-                )}
-
-                {/* E2EE Lock Overlay if locked */}
+                {/* E2EE Lock Overlay only if locked */}
                 {!isVaultUnlocked && (
-                  <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center space-y-3 text-center p-6 z-40">
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute inset-0 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center space-y-3 text-center p-6 z-40"
+                  >
                     <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
                       <Lock className="w-6 h-6" />
                     </div>
-                    <p className="text-sm font-bold text-white">Conteúdo Criptografado E2EE</p>
+                    <p className="text-sm font-bold text-white">Gravação Protegida por Criptografia E2EE</p>
                     <p className="text-xs text-slate-400 max-w-sm">
-                      Forneça a frase secreta do cofre para decodificar e visualizar esta gravação em tempo real.
+                      Insira a chave mestra do cofre para reproduzir este clipe em alta definição.
                     </p>
                     <button
                       onClick={onUnlockVault}
                       className="px-4 py-2 bg-emerald-500 text-slate-950 font-bold text-xs rounded-xl shadow-lg hover:bg-emerald-400 transition"
                     >
-                      Digitar Chave Mestra
+                      Desbloquear Cofre
                     </button>
                   </div>
                 )}
-
-                {/* Play/Pause Overlay Button */}
-                {isVaultUnlocked && (
-                  <button
-                    onClick={() => setIsPlaying(!isPlaying)}
-                    className="absolute bottom-3 right-3 z-30 p-2.5 bg-slate-950/90 hover:bg-emerald-500 text-white hover:text-slate-950 rounded-xl transition shadow-2xl border border-white/20 flex items-center gap-1.5 text-xs font-bold"
-                  >
-                    {isPlaying ? (
-                      <>
-                        <Pause className="w-4 h-4 text-emerald-400" />
-                        <span>Pausar Gravação</span>
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-4 h-4 fill-current text-emerald-400" />
-                        <span>Reproduzir Gravação</span>
-                      </>
-                    )}
-                  </button>
-                )}
               </div>
 
-              {/* Timeline Scrubber Slider */}
-              <div className="space-y-2 bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <div className="flex items-center justify-between text-xs text-slate-400 font-mono">
-                  <span>00:00</span>
-                  <span className="text-emerald-400 font-semibold">
-                    {formatDuration(currentTime)} / {formatDuration(activeRecording.durationSeconds)} (Velocidade: {playbackSpeed}x)
+              {/* Clean Video Controls Below Image */}
+              <div className="space-y-2.5 bg-slate-950 p-3 rounded-xl border border-slate-800">
+                {/* Timeline Scrubber */}
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsPlaying(!isPlaying)}
+                    className="p-2 bg-slate-800 hover:bg-emerald-500 text-white hover:text-slate-950 rounded-lg transition shrink-0"
+                    title={isPlaying ? 'Pausar' : 'Reproduzir'}
+                  >
+                    {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 fill-current" />}
+                  </button>
+
+                  <input
+                    type="range"
+                    min={0}
+                    max={activeRecording.durationSeconds || 1}
+                    value={currentTime}
+                    onChange={(e) => handleSeek(parseInt(e.target.value, 10))}
+                    className="flex-1 accent-emerald-500 cursor-pointer h-2 bg-slate-800 rounded-lg"
+                  />
+
+                  <span className="text-xs font-mono text-slate-300 font-semibold shrink-0">
+                    {formatDuration(currentTime)} / {formatDuration(activeRecording.durationSeconds)}
                   </span>
-                  <span>{formatDuration(activeRecording.durationSeconds)}</span>
+
+                  <button
+                    type="button"
+                    onClick={toggleFullscreen}
+                    className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg transition shrink-0"
+                    title={isFullscreen ? 'Sair da Tela Cheia' : 'Tela Cheia'}
+                  >
+                    {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+                  </button>
                 </div>
 
-                <input
-                  type="range"
-                  min={0}
-                  max={activeRecording.durationSeconds}
-                  value={currentTime}
-                  onChange={(e) => handleSeek(parseInt(e.target.value, 10))}
-                  className="w-full accent-emerald-500 cursor-pointer h-2 bg-slate-800 rounded-lg"
-                />
-
-                <div className="flex items-center justify-between pt-1">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-[10px] text-slate-400">Velocidade:</span>
+                {/* Secondary controls and speed */}
+                <div className="flex items-center justify-between pt-1 border-t border-slate-900">
+                  <div className="flex items-center space-x-1.5">
+                    <span className="text-[11px] text-slate-400 font-medium mr-1">Velocidade:</span>
                     {[0.5, 1, 2, 4].map((speed) => (
                       <button
                         key={speed}
+                        type="button"
                         onClick={() => setPlaybackSpeed(speed)}
-                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition ${
+                        className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold transition ${
                           playbackSpeed === speed
-                            ? 'bg-emerald-500 text-slate-950'
+                            ? 'bg-emerald-500 text-slate-950 shadow'
                             : 'bg-slate-800 text-slate-400 hover:text-white'
                         }`}
                       >
@@ -797,50 +812,49 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
 
                   <div className="flex items-center gap-2">
                     <button
+                      type="button"
                       onClick={() => handleRepairSingle(activeRecording.id)}
-                      className="px-2.5 py-1.5 bg-amber-950/60 hover:bg-amber-900/60 text-amber-300 border border-amber-800/60 text-xs font-medium rounded-xl flex items-center space-x-1.5 transition"
-                      title="Reparar índice MP4 e metadados deste vídeo"
+                      className="px-2.5 py-1 bg-amber-950/40 hover:bg-amber-900/60 text-amber-300 border border-amber-800/50 text-[11px] font-medium rounded-lg flex items-center space-x-1 transition"
+                      title="Reparar índice e cabeçalho MP4"
                     >
                       <RefreshCw className="w-3 h-3 text-amber-400" />
                       <span>Reparar Vídeo</span>
                     </button>
                     <button
+                      type="button"
                       onClick={handleDownloadClip}
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium rounded-xl flex items-center space-x-1.5 transition"
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] font-medium rounded-lg flex items-center space-x-1 transition"
+                      title="Baixar arquivo MP4"
                     >
-                      <Download className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>Baixar Clipe MP4</span>
+                      <Download className="w-3 h-3 text-cyan-400" />
+                      <span>Baixar Clipe</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm(`Deseja realmente excluir a gravação de ${activeRecording.cameraName}?`)) {
+                          onDeleteRecording(activeRecording.id);
+                        }
+                      }}
+                      className="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 text-[11px] font-medium rounded-lg flex items-center space-x-1 transition"
+                      title="Excluir gravação permanentemente"
+                    >
+                      <Trash2 className="w-3 h-3 text-rose-400" />
+                      <span>Excluir</span>
                     </button>
                   </div>
                 </div>
               </div>
 
-              {/* Active Recording Information */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-300">
+              {/* Basic Recording Information Below Video */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-300 px-1 pt-1">
                 <div>
-                  <h4 className="font-bold text-white text-sm flex items-center gap-2 flex-wrap">
+                  <h4 className="font-bold text-white text-sm flex items-center gap-2">
                     <span>{activeRecording.cameraName}</span>
-                    {activeRecording.durationSeconds >= 270 ? (
-                      <span className="text-[10px] bg-emerald-950/80 text-emerald-400 font-mono px-2 py-0.5 rounded border border-emerald-800/80">
-                        Bloco Completo (5 min)
-                      </span>
-                    ) : (
-                      <span className="text-[10px] bg-amber-950/80 text-amber-300 font-mono px-2 py-0.5 rounded border border-amber-800/80">
-                        Fatia Parcial ({Math.floor(activeRecording.durationSeconds / 60)}m{activeRecording.durationSeconds % 60}s)
-                      </span>
-                    )}
                   </h4>
                   <p className="text-slate-400 font-mono text-[11px] pt-0.5">
-                    Início: <strong className="text-white">{activeRecording.startTime}</strong> | Fim: <strong className="text-white">{activeRecording.endTime}</strong> | Tamanho: {activeRecording.fileSizeMB} MB
+                    Início: <strong className="text-slate-200">{activeRecording.startTime}</strong> | Fim: <strong className="text-slate-200">{activeRecording.endTime}</strong> | Tamanho: <strong className="text-slate-200">{activeRecording.fileSizeMB} MB</strong>
                   </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1">
-                  {activeRecording.tags.map((t, idx) => (
-                    <span key={idx} className="bg-emerald-500/10 text-emerald-400 text-[10px] font-mono px-2 py-0.5 rounded border border-emerald-500/20">
-                      #{t}
-                    </span>
-                  ))}
                 </div>
               </div>
             </div>
