@@ -181,6 +181,10 @@ function verifyUserPassword(providedPass: string, storedHash?: string): boolean 
 }
 
 // Map to manage active FFmpeg processes for RTSP/RTMP conversion
+const RECORDINGS_DIR = path.join(process.cwd(), 'recordings');
+if (!fs.existsSync(RECORDINGS_DIR)) {
+  try { fs.mkdirSync(RECORDINGS_DIR, { recursive: true }); } catch (e) {}
+}
 const activeFfmpegProcesses = new Map<string, ChildProcess>();
 const lastFfmpegLogs = new Map<string, string[]>();
 const activeRtspUrls = new Map<string, string>();
@@ -468,6 +472,28 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     '-y',
     hlsPath
   );
+
+  // Dedicated RTSP Strategy: Dual output on the single master connection (0% CPU Stream Copy & 0 camera disconnects)
+  const isRtspSource = streamSource.startsWith('rtsp://') || cam.protocol === 'RTSP';
+  if (!isSubStream && isRtspSource && cam.cloudRecordingsActive !== false) {
+    const cleanCamId = (cam.id || key).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const segmentPattern = path.join(RECORDINGS_DIR, `rec_auto_${cleanCamId}_%s.mp4`);
+    ffmpegArgs.push(
+      '-map', '0:v:0?',
+      '-map', '0:a?',
+      '-c:v', 'copy',
+      '-c:a', 'aac',
+      '-b:a', '64k',
+      '-ac', '1',
+      '-f', 'segment',
+      '-segment_time', '300',
+      '-segment_format', 'mp4',
+      '-reset_timestamps', '1',
+      '-strftime', '1',
+      '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+      segmentPattern
+    );
+  }
 
   let proc: ReturnType<typeof spawn> | null = null;
   try {
@@ -2843,6 +2869,12 @@ async function startServer() {
               realDurationSec = Math.max(5, Math.min(300, Math.round(fileSizeMB * 8)));
             }
 
+            // If file was written to in the last 10 seconds and duration is not yet near 5 minutes, it is actively receiving live stream chunks
+            const isActivelyWriting = (Date.now() - (stats.mtimeMs || stats.birthtimeMs)) < 10000 && realDurationSec < 270;
+            if (isActivelyWriting) {
+              continue;
+            }
+
             // Discard broken micro slices under 30s
             if (realDurationSec < 30) {
               try { fs.unlinkSync(targetPath); } catch (e) {}
@@ -2974,9 +3006,15 @@ async function startServer() {
     // Ensure live stream worker is running for live preview
     startCameraRtspStream(cam, false, false);
 
-    // Direct stream capture directly from camera source (100% full continuous 5-minute chunks with 0% CPU via native stream copy)
+    // Direct stream capture directly from camera source
     const inputSource = getValidStreamSource(cam, false);
     if (!inputSource) return;
+
+    // Dedicated RTSP Strategy: RTSP cameras record continuous 5-minute blocks inside startCameraRtspStream (0% CPU, single connection)
+    const isRtsp = cam.protocol === 'RTSP' || inputSource.startsWith('rtsp://');
+    if (isRtsp) {
+      return;
+    }
 
     const now = new Date();
     const timestamp = Date.now();
@@ -3182,13 +3220,13 @@ async function startServer() {
   setTimeout(checkAndStartAllAutoRecordings, 2000);
   setInterval(checkAndStartAllAutoRecordings, 15000);
 
-  // Background disk reconciliation (runs gently on startup and every 2 minutes)
+  // Background disk reconciliation (runs gently on startup and every 20 seconds)
   setTimeout(() => {
     scanAndReconcileRecordingsFromDisk().catch(() => {});
   }, 4000);
   setInterval(() => {
     scanAndReconcileRecordingsFromDisk().catch(() => {});
-  }, 120000);
+  }, 20000);
 
   // Helper log function (saved exclusively to local file itl_logs.json)
   const addLog = (userName: string, action: string, category: ActivityLog['category'], details?: string) => {
