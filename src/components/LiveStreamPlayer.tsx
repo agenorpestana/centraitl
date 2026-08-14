@@ -40,12 +40,14 @@ const cleanDoubleUrl = (url: string | undefined | null): string => {
   return cleaned;
 };
 
-const getInitialVideoUrl = (cam: Camera, useSubStream = false) => {
+const getInitialVideoUrl = (cam: Camera, useSubStream = true) => {
   if (cam.videoStreamUrl && cam.videoStreamUrl.trim() !== '') {
     let url = cleanDoubleUrl(cam.videoStreamUrl);
     if (url.includes('/live/') && !url.endsWith('.m3u8')) url += '.m3u8';
     if (useSubStream && url.includes('/live/') && !url.includes('_sub.m3u8')) {
       url = url.replace(/\.m3u8$/, '_sub.m3u8');
+    } else if (!useSubStream && url.includes('_sub.m3u8')) {
+      url = url.replace('_sub.m3u8', '.m3u8');
     }
     return url;
   }
@@ -65,7 +67,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   onSelectCamera,
   showOverlayControls = true,
   hideBottomCard = false,
-  useSubStream = false,
+  useSubStream = true,
 }) => {
   const streamKey = camera.streamKey || (camera.id ? (camera.id.startsWith('cam-') ? `cam_${camera.id.replace('cam-', '')}` : camera.id) : 'stream');
   const cleanKey = streamKey.replace(/^cam-/, '').replace(/^cam_/, '');
@@ -632,7 +634,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
                 }`}
                 title={useSubStream && !isFullscreen ? 'Modo de menor resolução para economia de CPU/Processamento' : 'Modo Alta Definição Full HD'}
               >
-                {useSubStream && !isFullscreen ? 'SD 360p' : 'Full HD'}
+                {useSubStream && !isFullscreen ? 'SD 360p (30fps)' : 'Full HD 1080p'}
               </span>
             </div>
 

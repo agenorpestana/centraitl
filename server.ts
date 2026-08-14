@@ -381,14 +381,14 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   // Stop previous process if restarting or changing URL
   stopCameraRtspStream(key);
 
-  console.log(`[FFmpeg ITL] Conectando fluxo ${cam.protocol || 'RTSP/RTMP'} (${isSubStream ? 'Sub-stream SD 360p' : 'Full HD'}) -> HLS para '${cam.name}' (${key}) via ${streamSource}...`);
+  console.log(`[FFmpeg ITL] Conectando fluxo ${cam.protocol || 'RTSP/RTMP'} (${isSubStream ? 'Sub-stream SD 360p @ 30fps' : 'Full HD 1080p'}) -> HLS para '${cam.name}' (${key}) via ${streamSource}...`);
   const hlsDir = '/tmp/hls';
   if (!fs.existsSync(hlsDir)) {
     try { fs.mkdirSync(hlsDir, { recursive: true }); } catch (e) {}
   }
   const hlsPath = path.join(hlsDir, `${key}.m3u8`);
 
-  const logList: string[] = [`[${new Date().toLocaleTimeString()}] Conectando ao fluxo (${isSubStream ? 'SUB 360p' : 'MAIN'}): ${streamSource}`];
+  const logList: string[] = [`[${new Date().toLocaleTimeString()}] Conectando ao fluxo (${isSubStream ? 'SUB 360p @ 30fps' : 'MAIN Full HD'}): ${streamSource}`];
   lastFfmpegLogs.set(key, logList);
   activeRtspUrls.set(key, streamSource);
   cameraProcessStartTimes.set(key, Date.now());
@@ -399,7 +399,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
-      '-timeout', '5000000',
+      '-stimeout', '5000000',
       '-use_wallclock_as_timestamps', '1'
     );
   } else if (streamSource.startsWith('rtmp://')) {
@@ -437,28 +437,30 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     if (hasNativeHardwareSubStream) {
       ffmpegArgs.push('-c:v', 'copy');
     } else {
-      // Force real SD 360p (640x360 @ 15fps 350k) for cards in grid (works for both RTSP and RTMP)
+      // Real SD 360p (640x360 @ 30fps 450k) for cards in grid & DVR (fluid playback on all RTSP/RTMP cameras)
       ffmpegArgs.push(
         '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
-        '-g', '30',
-        '-r', '15',
-        '-b:v', '350k',
-        '-maxrate', '400k',
-        '-bufsize', '800k',
-        '-max_muxing_queue_size', '1024'
+        '-g', '60',
+        '-r', '30',
+        '-b:v', '450k',
+        '-maxrate', '550k',
+        '-bufsize', '1000k',
+        '-max_muxing_queue_size', '2048'
       );
     }
   } else {
-    // Full HD (1080p) native stream copy for Full Screen
+    // Full HD (1080p) native stream copy for Full Screen & Recordings
     ffmpegArgs.push('-c:v', 'copy');
   }
 
   ffmpegArgs.push(
     '-map', '0:a?',
     '-c:a', 'aac',
+    '-b:a', '64k',
+    '-ac', '1',
     '-f', 'hls',
     '-hls_time', '2',
     '-hls_list_size', '6',
@@ -2962,15 +2964,11 @@ async function startServer() {
       else if (fs.existsSync(localHlsFile2)) activeHlsPath = localHlsFile2;
     }
 
-    let inputSource = getValidStreamSource(cam);
-    if (!inputSource && isLocalHlsActive) {
+    let inputSource = getValidStreamSource(cam, false);
+    if (!inputSource && isLocalHlsActive && activeHlsPath) {
       inputSource = activeHlsPath;
     }
     if (retryWithLocalHls && isLocalHlsActive && activeHlsPath) {
-      inputSource = activeHlsPath;
-    }
-    // If camera is RTSP and local HLS worker is running and receiving fresh video chunks, prioritize local HLS to prevent 1-connection-limit camera drops
-    if (cam.protocol === 'RTSP' && isLocalHlsActive && activeHlsPath) {
       inputSource = activeHlsPath;
     }
     if (!inputSource) return;
@@ -2998,8 +2996,8 @@ async function startServer() {
         '-rtsp_transport', 'tcp',
         '-stimeout', '15000000', // 15 seconds socket timeout
         '-max_delay', '500000',
-        '-buffer_size', '2048000',
-        '-reorder_queue_size', '500'
+        '-buffer_size', '4096000',
+        '-reorder_queue_size', '1000'
       );
     } else if (inputSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
@@ -3007,9 +3005,8 @@ async function startServer() {
         '-analyzeduration', '3000000',
         '-probesize', '3000000'
       );
-    } else if (inputSource.endsWith('.m3u8') || inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
+    } else if (inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
       ffmpegArgs.push(
-        '-re',
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
@@ -4691,37 +4688,39 @@ async function startServer() {
     if (streamUrl.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-stimeout', '20000000',
-        '-timeout', '20000000',
-        '-max_delay', '5000000',
-        '-rtbufsize', '100M'
+        '-stimeout', '15000000',
+        '-max_delay', '500000',
+        '-buffer_size', '4096000',
+        '-reorder_queue_size', '1000'
       );
     } else if (streamUrl.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '20000000',
-        '-analyzeduration', '5000000',
-        '-probesize', '5000000'
+        '-rw_timeout', '15000000',
+        '-analyzeduration', '3000000',
+        '-probesize', '3000000'
       );
     } else if (streamUrl.startsWith('http://') || streamUrl.startsWith('https://')) {
       ffmpegArgs.push(
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '10'
+        '-reconnect_delay_max', '5'
       );
     }
 
     const durLimit = durationSeconds ? Math.min(3600, Math.max(10, parseInt(durationSeconds))) : 300;
 
     ffmpegArgs.push(
-      '-analyzeduration', '5000000',
-      '-probesize', '5000000',
+      '-analyzeduration', '3000000',
+      '-probesize', '3000000',
       '-i', streamUrl,
       '-map', '0:v:0?',
       '-map', '0:a?',
       '-c:v', 'copy',
+      '-bsf:v', 'dump_extra',
       '-c:a', 'aac',
-      '-b:a', '128k',
+      '-b:a', '64k',
+      '-ac', '1',
       '-max_muxing_queue_size', '4096',
       '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
       '-t', durLimit.toString(),
