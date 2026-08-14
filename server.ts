@@ -473,28 +473,6 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     hlsPath
   );
 
-  // Dedicated RTSP Strategy: Dual output on the single master connection (0% CPU Stream Copy & 0 camera disconnects)
-  const isRtspSource = streamSource.startsWith('rtsp://') || cam.protocol === 'RTSP';
-  if (!isSubStream && isRtspSource && cam.cloudRecordingsActive !== false) {
-    const cleanCamId = (cam.id || key).replace(/[^a-zA-Z0-9_-]/g, '_');
-    const segmentPattern = path.join(RECORDINGS_DIR, `rec_auto_${cleanCamId}_%s.mp4`);
-    ffmpegArgs.push(
-      '-map', '0:v:0?',
-      '-map', '0:a?',
-      '-c:v', 'copy',
-      '-c:a', 'aac',
-      '-b:a', '64k',
-      '-ac', '1',
-      '-f', 'segment',
-      '-segment_time', '300',
-      '-segment_format', 'mp4',
-      '-reset_timestamps', '1',
-      '-strftime', '1',
-      '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
-      segmentPattern
-    );
-  }
-
   let proc: ReturnType<typeof spawn> | null = null;
   try {
     proc = spawn('ffmpeg', ffmpegArgs);
@@ -3010,12 +2988,6 @@ async function startServer() {
     const inputSource = getValidStreamSource(cam, false);
     if (!inputSource) return;
 
-    // Dedicated RTSP Strategy: RTSP cameras record continuous 5-minute blocks inside startCameraRtspStream (0% CPU, single connection)
-    const isRtsp = cam.protocol === 'RTSP' || inputSource.startsWith('rtsp://');
-    if (isRtsp) {
-      return;
-    }
-
     const now = new Date();
     const timestamp = Date.now();
     const cleanCamId = cam.id.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -3040,7 +3012,9 @@ async function startServer() {
         '-use_wallclock_as_timestamps', '1',
         '-max_delay', '500000',
         '-buffer_size', '4096000',
-        '-reorder_queue_size', '1000'
+        '-reorder_queue_size', '1000',
+        '-analyzeduration', '3000000',
+        '-probesize', '3000000'
       );
     } else if (inputSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
@@ -3058,8 +3032,6 @@ async function startServer() {
     }
 
     ffmpegArgs.push(
-      '-analyzeduration', '2000000',
-      '-probesize', '2000000',
       '-i', inputSource,
       '-map', '0:v:0?',
       '-map', '0:a?',
