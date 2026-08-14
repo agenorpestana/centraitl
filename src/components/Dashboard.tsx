@@ -81,7 +81,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [loadingDb, setLoadingDb] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<string>(new Date().toLocaleTimeString('pt-BR'));
   const [testingCamId, setTestingCamId] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<{ id: string; success: boolean; message: string } | null>(null);
+  const [camTestResults, setCamTestResults] = useState<Record<string, { success: boolean; message: string }>>({});
   const [isHealthChecking, setIsHealthChecking] = useState(false);
   const [lastHealthCheckTime, setLastHealthCheckTime] = useState<string>('');
 
@@ -209,11 +209,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const runBatchHealthCheck = async () => {
     setIsHealthChecking(true);
     try {
-      const res = await fetch('/api/cameras/health-check');
+      const res = await fetch(`/api/cameras/health-check?t=${Date.now()}`);
       if (res.ok) {
         const updatedCams: Camera[] = await res.json();
-        if (Array.isArray(updatedCams) && updatedCams.length > 0 && onUpdateCameras) {
-          onUpdateCameras(updatedCams);
+        if (Array.isArray(updatedCams) && updatedCams.length > 0) {
+          const resultsMap: Record<string, { success: boolean; message: string }> = {};
+          updatedCams.forEach((c) => {
+            resultsMap[c.id] = {
+              success: c.status === 'ONLINE',
+              message: c.status === 'ONLINE' ? 'Sinal Conectado' : 'Sem Sinal / Off-line',
+            };
+          });
+          setCamTestResults(resultsMap);
+          if (onUpdateCameras) {
+            onUpdateCameras(updatedCams);
+          }
         }
       }
     } catch (e) {
@@ -261,7 +271,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const handleRunSingleTest = async (cam: Camera) => {
     setTestingCamId(cam.id);
-    setTestResult(null);
     try {
       const res = await fetch('/api/cameras/test-connection', {
         method: 'POST',
@@ -271,16 +280,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
           rtspUrl: cam.protocol === 'RTSP' ? cam.rtspUrl : '',
           rtmpUrl: cam.rtmpUrl || cam.fullRtmpUrl,
           streamKey: cam.streamKey || cam.id,
+          id: cam.id,
         }),
       });
       const data = await res.json();
       const isOnline = data.success === true;
       
-      setTestResult({
-        id: cam.id,
+      const newResult = {
         success: isOnline,
-        message: data.message || (isOnline ? 'Conexão Estabelecida' : 'Sem Sinal'),
-      });
+        message: data.message || (isOnline ? 'Conexão Estabelecida' : 'Sem Sinal / Off-line'),
+      };
+      setCamTestResults((prev) => ({ ...prev, [cam.id]: newResult }));
 
       // Update parent camera state
       if (onUpdateCameras) {
@@ -290,11 +300,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
         onUpdateCameras(updated);
       }
     } catch (e: any) {
-      setTestResult({
-        id: cam.id,
+      const newResult = {
         success: false,
         message: 'Erro ao testar conexão',
-      });
+      };
+      setCamTestResults((prev) => ({ ...prev, [cam.id]: newResult }));
       if (onUpdateCameras) {
         const updated = cameras.map((c) =>
           c.id === cam.id ? { ...c, status: 'OFFLINE' as CameraStatus } : c
@@ -744,7 +754,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             ) : (
               cameras.map((cam) => {
                 const isTesting = testingCamId === cam.id;
-                const lastTest = testResult?.id === cam.id ? testResult : null;
+                const lastTest = camTestResults[cam.id];
 
                 return (
                   <div
