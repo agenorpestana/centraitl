@@ -2,7 +2,7 @@ export type CameraStatus = 'ONLINE' | 'OFFLINE' | 'RECORDING' | 'ALERT';
 
 export type AlertSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
-export type UserRole = 'ADMIN' | 'OPERATOR' | 'GUARD' | 'RESIDENT' | 'VIEWER';
+export type UserRole = 'ADMIN' | 'COMPANY_ADMIN' | 'OPERATOR' | 'GUARD' | 'RESIDENT' | 'VIEWER';
 
 export interface CustomPermissions {
   canViewLive: boolean;
@@ -15,9 +15,52 @@ export interface CustomPermissions {
   canManageUsers: boolean;
   canExportReports: boolean;
   canManageFinancial?: boolean;
+  canManageWhiteLabel?: boolean;
 }
 
 export type FinancialStatus = 'OK' | 'WARNING' | 'BLOCKED';
+
+export interface WhiteLabelThemeColors {
+  background: string;
+  card: string;
+  text: string;
+  textSecondary: string;
+  inputLabel: string;
+  buttonOutlineText: string;
+  primary: string;
+  border: string;
+  success: string;
+  error: string;
+}
+
+export interface WhiteLabelConfig {
+  id: string;
+  name: string;
+  logoUrl: string;
+  colors: {
+    light: WhiteLabelThemeColors;
+    dark: WhiteLabelThemeColors;
+  };
+}
+
+export interface Company {
+  id: string;
+  name: string;
+  cnpj?: string;
+  email: string;
+  phone?: string;
+  maxCameras: number;
+  assignedCameraIds: string[];
+  logoUrl: string;
+  colors: {
+    light: WhiteLabelThemeColors;
+    dark: WhiteLabelThemeColors;
+  };
+  status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
+  createdAt: string;
+  adminUserId?: string;
+  customDomain?: string;
+}
 
 export interface User {
   id: string;
@@ -35,6 +78,11 @@ export interface User {
   allowedCameraIds?: string[];
   lastActive: string;
   createdAt: string;
+
+  // Multi-tenancy & White Label fields
+  companyId?: string;
+  companyName?: string;
+  isCompanyAdmin?: boolean;
 
   // Financial fields
   planId?: string;

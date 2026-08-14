@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { ShieldCheck, Lock, Mail, Key, CheckCircle, AlertCircle, X, UserCheck } from 'lucide-react';
 import { User } from '../types';
+import { setSecureSessionUser } from '../lib/security';
+import { applyWhiteLabelTheme } from '../lib/whitelabel';
 
 interface AdminLoginModalProps {
   isOpen: boolean;
@@ -26,7 +28,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
     setErrorMsg('');
     setSuccessMsg('');
 
-    // Try backend API login
+    // Try backend API login with PBKDF2 verification
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -35,6 +37,15 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
       });
       const data = await res.json();
       if (res.ok && data.user) {
+        // Save session securely (Zero plaintext passwords stored)
+        setSecureSessionUser(data.user, data.token);
+
+        if (data.company) {
+          applyWhiteLabelTheme(data.company);
+        } else if (data.whitelabel) {
+          applyWhiteLabelTheme(data.whitelabel);
+        }
+
         setSuccessMsg(`Bem-vindo, ${data.user.name}!`);
         setTimeout(() => {
           onLoginSuccess(data.user);

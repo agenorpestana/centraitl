@@ -1,6 +1,6 @@
 import React from 'react';
 import { Camera, Lock, LogOut } from 'lucide-react';
-import { User } from '../types';
+import { User, WhiteLabelConfig } from '../types';
 
 interface NavbarProps {
   activeUser: User;
@@ -10,6 +10,7 @@ interface NavbarProps {
   onOpenLoginModal: () => void;
   onLogout: () => void;
   isVaultUnlocked: boolean;
+  whitelabelConfig?: WhiteLabelConfig;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -20,20 +21,35 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenLoginModal,
   onLogout,
   isVaultUnlocked,
+  whitelabelConfig,
 }) => {
-  const isSuperAdmin = activeUser.role === 'ADMIN';
+  const isSuperAdmin = activeUser.role === 'ADMIN' && !activeUser.companyId;
+  const isCompanyAdmin = activeUser.role === 'COMPANY_ADMIN' || Boolean(activeUser.isCompanyAdmin);
+  const brandName = activeUser.companyName || whitelabelConfig?.name || 'CENTRAL ITL';
+  const logoUrl = whitelabelConfig?.logoUrl;
 
   return (
     <header className="bg-slate-900 border-b border-slate-800 text-white px-3 sm:px-4 py-2 sm:py-3 sticky top-0 z-30 shadow-md">
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
         {/* Brand & System Title */}
         <div className="flex items-center space-x-2 sm:space-x-3 min-w-0">
-          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-emerald-600 via-teal-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-emerald-500/20 shrink-0">
-            <Camera className="w-4 h-4 sm:w-6 sm:h-6 text-slate-950 font-bold" />
-          </div>
+          {logoUrl && !logoUrl.includes('via.placeholder') ? (
+            <img
+              src={logoUrl}
+              alt={brandName}
+              className="h-8 sm:h-9 max-w-[140px] object-contain rounded-lg"
+              onError={(e) => {
+                (e.currentTarget as HTMLElement).style.display = 'none';
+              }}
+            />
+          ) : (
+            <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-rose-600 via-pink-500 to-amber-500 flex items-center justify-center shadow-lg shadow-rose-500/20 shrink-0">
+              <Camera className="w-4 h-4 sm:w-6 sm:h-6 text-slate-950 font-bold" />
+            </div>
+          )}
           <div className="min-w-0">
             <div className="flex items-center flex-wrap gap-1 sm:gap-2">
-              <h1 className="font-bold text-sm sm:text-lg text-slate-100 tracking-tight whitespace-nowrap">CENTRAL ITL</h1>
+              <h1 className="font-bold text-sm sm:text-lg text-slate-100 tracking-tight whitespace-nowrap">{brandName}</h1>
               <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[9px] sm:text-[10px] font-semibold px-1.5 sm:px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                 <span className="hidden xs:inline">ONLINE 24H</span>
@@ -45,8 +61,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <span className="sm:hidden">ADMIN</span>
                 </span>
               )}
+              {isCompanyAdmin && (
+                <span className="bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded-full shrink-0">
+                  ADMIN EMPRESA
+                </span>
+              )}
             </div>
-            <p className="text-[10px] sm:text-xs text-slate-400 truncate hidden sm:block">Segurança ITL Fibra & Câmeras em Nuvem</p>
+            <p className="text-[10px] sm:text-xs text-slate-400 truncate hidden sm:block">
+              {activeUser.companyName ? `Unidade ${activeUser.companyName}` : 'Segurança ITL Fibra & Câmeras em Nuvem'}
+            </p>
           </div>
         </div>
 

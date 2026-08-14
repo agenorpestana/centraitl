@@ -551,6 +551,7 @@ import {
   INITIAL_STREAMS,
 } from './src/data/mockData';
 import { INITIAL_PLANS, INITIAL_MP_CONFIG } from './src/lib/financial';
+import { INITIAL_COMPANIES, DEFAULT_ITL_WHITELABEL } from './src/lib/whitelabel';
 import {
   Camera,
   CloudRecording,
@@ -563,6 +564,8 @@ import {
   MercadoPagoConfig,
   ArchitectureConfig,
   StreamInfo,
+  Company,
+  WhiteLabelConfig,
 } from './src/types';
 
 const LOCAL_STORE_FILE = path.join(process.cwd(), 'itl_database_store.json');
@@ -668,6 +671,8 @@ async function startServer() {
   let cameras: Camera[] = [...INITIAL_CAMERAS];
   let recordings: CloudRecording[] = [...INITIAL_RECORDINGS];
   let users: User[] = [...INITIAL_USERS];
+  let companies: Company[] = [...INITIAL_COMPANIES];
+  let whitelabelConfig: WhiteLabelConfig = { ...DEFAULT_ITL_WHITELABEL };
   let logs: ActivityLog[] = [...INITIAL_LOGS];
   let backupConfig: BackupConfig = { ...INITIAL_BACKUP_CONFIG };
   let notificationConfig: NotificationConfig = { ...INITIAL_NOTIFICATION_CONFIG };
@@ -675,6 +680,20 @@ async function startServer() {
   let invoices: Invoice[] = [];
   let mpConfig: MercadoPagoConfig = { ...INITIAL_MP_CONFIG };
   let architectureConfig: ArchitectureConfig = { ...INITIAL_ARCHITECTURE_CONFIG };
+
+  const deletedCompanyIds = new Set<string>();
+
+  /**
+   * Sanitizes User objects to NEVER leak passwords or password hashes to clients
+   */
+  function sanitizeUser<T extends Partial<User> | null | undefined>(user: T): T {
+    if (!user) return user;
+    const sanitized = { ...user };
+    delete (sanitized as any).password;
+    delete (sanitized as any).passwordHash;
+    delete (sanitized as any).password_hash;
+    return sanitized;
+  }
 
   function getUserFromReq(req: any): User | null {
     try {
@@ -720,12 +739,31 @@ async function startServer() {
 
   function filterCamerasForUser(user: User | null, cameraList: Camera[]): Camera[] {
     if (!user) return cameraList;
-    if (user.role === 'ADMIN') return cameraList;
+    if (user.role === 'ADMIN' && !user.companyId) return cameraList;
+
+    let baseList = cameraList;
+
+    // Multi-tenant Company Filter
+    if (user.companyId) {
+      const userCompany = companies.find((c) => c.id === user.companyId);
+      if (userCompany && userCompany.assignedCameraIds) {
+        if (!userCompany.assignedCameraIds.includes('ALL')) {
+          baseList = cameraList.filter((c) =>
+            userCompany.assignedCameraIds.includes(c.id) ||
+            userCompany.assignedCameraIds.some((aId) => c.id.includes(aId) || (c.streamKey && c.streamKey.includes(aId)))
+          );
+        }
+      }
+    }
+
+    if (user.role === 'COMPANY_ADMIN' || user.isCompanyAdmin) {
+      return baseList;
+    }
 
     const allowed = user.allowedCameraIds;
-    if (!allowed || allowed.includes('ALL')) return cameraList;
+    if (!allowed || allowed.includes('ALL')) return baseList;
 
-    return cameraList.filter((c) => {
+    return baseList.filter((c) => {
       const cleanId = c.id.replace(/^cam-/, '').replace(/^cam_/, '');
       const cleanStreamKey = (c.streamKey || '').replace(/^cam-/, '').replace(/^cam_/, '');
       return allowed.some((aId) => {
@@ -832,6 +870,8 @@ async function startServer() {
         cameras: cameras.filter((c) => c.id && !deletedCameraIds.has(c.id)),
         recordings: recordings.filter((r) => r.id && !deletedRecordingIds.has(r.id)),
         users: users.filter((u) => u.id && !deletedUserIds.has(u.id)),
+        companies: companies.filter((c) => c.id && !deletedCompanyIds.has(c.id)),
+        whitelabelConfig,
         backupConfig,
         notificationConfig,
         plans: plans.filter((p) => p.id && !deletedPlanIds.has(p.id)),
@@ -844,6 +884,7 @@ async function startServer() {
         deletedUserIds: Array.from(deletedUserIds),
         deletedPlanIds: Array.from(deletedPlanIds),
         deletedInvoiceIds: Array.from(deletedInvoiceIds),
+        deletedCompanyIds: Array.from(deletedCompanyIds),
       };
       fs.writeFileSync(LOCAL_STORE_FILE, JSON.stringify(data, null, 2), 'utf-8');
     } catch (err) {
@@ -880,6 +921,9 @@ async function startServer() {
         if (parsed.deletedInvoiceIds && Array.isArray(parsed.deletedInvoiceIds)) {
           parsed.deletedInvoiceIds.forEach((id: string) => deletedInvoiceIds.add(id));
         }
+        if (parsed.deletedCompanyIds && Array.isArray(parsed.deletedCompanyIds)) {
+          parsed.deletedCompanyIds.forEach((id: string) => deletedCompanyIds.add(id));
+        }
         if (parsed.cameras && Array.isArray(parsed.cameras)) {
           cameras = parsed.cameras
             .filter((c: any) => c.id && !deletedCameraIds.has(c.id))
@@ -899,6 +943,12 @@ async function startServer() {
         if (parsed.users && Array.isArray(parsed.users)) {
           users = parsed.users.filter((u: any) => u.id && !deletedUserIds.has(u.id));
         }
+        if (parsed.companies && Array.isArray(parsed.companies)) {
+          companies = parsed.companies.filter((c: any) => c.id && !deletedCompanyIds.has(c.id));
+        }
+        if (parsed.whitelabelConfig) {
+          whitelabelConfig = { ...DEFAULT_ITL_WHITELABEL, ...parsed.whitelabelConfig };
+        }
         if (parsed.logs && Array.isArray(parsed.logs)) {
           if (!fs.existsSync(LOGS_FILE)) {
             logs = parsed.logs;
@@ -916,7 +966,7 @@ async function startServer() {
         }
         if (parsed.mpConfig && parsed.mpConfig.accessToken) mpConfig = parsed.mpConfig;
         if (parsed.architectureConfig) architectureConfig = parsed.architectureConfig;
-        console.log(`[ITL Storage] ${cameras.length} câmeras e ${users.length} usuários carregados do arquivo local.`);
+        console.log(`[ITL Storage] ${cameras.length} câmeras, ${companies.length} empresas e ${users.length} usuários carregados do arquivo local.`);
         return true;
       }
     } catch (err) {
@@ -2984,9 +3034,22 @@ async function startServer() {
     // Ensure live stream worker is running for live preview
     startCameraRtspStream(cam, false, false);
 
-    // Direct stream capture directly from camera source
+    // Direct stream capture directly from camera source or local active stream
     const inputSource = getValidStreamSource(cam, false);
     if (!inputSource) return;
+
+    // Check if local HLS stream is active to record without extra RTSP bandwidth/conflicts
+    const hlsLocal1 = `/tmp/hls/cam_${cleanRawKey}.m3u8`;
+    const hlsLocal2 = `/tmp/hls/${cam.id}.m3u8`;
+    const hlsLocal3 = `/tmp/hls/${cleanRawKey}.m3u8`;
+    let effectiveInputSource = inputSource;
+    if (fs.existsSync(hlsLocal1)) {
+      effectiveInputSource = hlsLocal1;
+    } else if (fs.existsSync(hlsLocal2)) {
+      effectiveInputSource = hlsLocal2;
+    } else if (fs.existsSync(hlsLocal3)) {
+      effectiveInputSource = hlsLocal3;
+    }
 
     const now = new Date();
     const timestamp = Date.now();
@@ -3005,24 +3068,24 @@ async function startServer() {
       '-fflags', '+genpts+discardcorrupt',
     ];
 
-    if (inputSource.startsWith('rtsp://')) {
+    if (effectiveInputSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-stimeout', '15000000',
-        '-use_wallclock_as_timestamps', '1',
+        '-rtsp_flags', 'prefer_tcp',
+        '-stimeout', '10000000',
         '-max_delay', '500000',
         '-buffer_size', '4096000',
         '-reorder_queue_size', '1000',
-        '-analyzeduration', '3000000',
-        '-probesize', '3000000'
+        '-analyzeduration', '2000000',
+        '-probesize', '2000000'
       );
-    } else if (inputSource.startsWith('rtmp://')) {
+    } else if (effectiveInputSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
         '-rw_timeout', '15000000',
         '-analyzeduration', '3000000',
         '-probesize', '3000000'
       );
-    } else if (inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
+    } else if (effectiveInputSource.startsWith('http://') || effectiveInputSource.startsWith('https://')) {
       ffmpegArgs.push(
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
@@ -3032,13 +3095,14 @@ async function startServer() {
     }
 
     ffmpegArgs.push(
-      '-i', inputSource,
+      '-i', effectiveInputSource,
       '-map', '0:v:0?',
       '-map', '0:a?',
       '-c:v', 'copy',
       '-c:a', 'aac',
       '-b:a', '64k',
       '-ac', '1',
+      '-strict', 'experimental',
       '-max_muxing_queue_size', '4096',
       '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
       '-t', autoRecordingDurationSec.toString(),
@@ -3268,12 +3332,34 @@ async function startServer() {
     activeTokensMap[token] = foundUser.id;
     addLog(foundUser.name, `Login efetuado com sucesso (${foundUser.role})`, 'AUTH');
 
+    const cleanUser = sanitizeUser(foundUser);
+    const userCompany = foundUser.companyId ? companies.find((c) => c.id === foundUser.companyId) : null;
+
     return res.json({
       success: true,
       token,
       expiresIn: 86400,
-      user: foundUser,
-      isSuperAdmin: foundUser.role === 'ADMIN',
+      user: cleanUser,
+      company: userCompany || null,
+      whitelabel: whitelabelConfig,
+      isSuperAdmin: foundUser.role === 'ADMIN' && !foundUser.companyId,
+    });
+  });
+
+  // Current User Session Verification Endpoint
+  app.get(['/api/auth/me', '/api/v1/auth/me'], (req, res) => {
+    const user = getUserFromReq(req);
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Sessão não autenticada' });
+    }
+    const cleanUser = sanitizeUser(user);
+    const userCompany = user.companyId ? companies.find((c) => c.id === user.companyId) : null;
+    return res.json({
+      success: true,
+      user: cleanUser,
+      company: userCompany || null,
+      whitelabel: whitelabelConfig,
+      isSuperAdmin: user.role === 'ADMIN' && !user.companyId,
     });
   });
 
@@ -4693,6 +4779,14 @@ async function startServer() {
       return res.status(400).json({ error: 'Sinal de transmissão ao vivo indisponível para esta câmera' });
     }
 
+    let recInput = streamUrl;
+    const rawKey = cam.streamKey || cam.id;
+    const cleanRawKey = rawKey.replace(/^cam-/, '').replace(/^cam_/, '');
+    const hlsLocal = `/tmp/hls/cam_${cleanRawKey}.m3u8`;
+    if (fs.existsSync(hlsLocal)) {
+      recInput = hlsLocal;
+    }
+
     const now = new Date();
     const timestamp = Date.now();
     const cleanCamId = cam.id.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -4708,21 +4802,24 @@ async function startServer() {
       '-fflags', '+genpts+discardcorrupt',
     ];
 
-    if (streamUrl.startsWith('rtsp://')) {
+    if (recInput.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-stimeout', '15000000',
+        '-rtsp_flags', 'prefer_tcp',
+        '-stimeout', '10000000',
         '-max_delay', '500000',
         '-buffer_size', '4096000',
-        '-reorder_queue_size', '1000'
+        '-reorder_queue_size', '1000',
+        '-analyzeduration', '2000000',
+        '-probesize', '2000000'
       );
-    } else if (streamUrl.startsWith('rtmp://')) {
+    } else if (recInput.startsWith('rtmp://')) {
       ffmpegArgs.push(
         '-rw_timeout', '15000000',
         '-analyzeduration', '3000000',
         '-probesize', '3000000'
       );
-    } else if (streamUrl.startsWith('http://') || streamUrl.startsWith('https://')) {
+    } else if (recInput.startsWith('http://') || recInput.startsWith('https://')) {
       ffmpegArgs.push(
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
@@ -4734,16 +4831,14 @@ async function startServer() {
     const durLimit = durationSeconds ? Math.min(3600, Math.max(10, parseInt(durationSeconds))) : 300;
 
     ffmpegArgs.push(
-      '-analyzeduration', '3000000',
-      '-probesize', '3000000',
-      '-i', streamUrl,
+      '-i', recInput,
       '-map', '0:v:0?',
       '-map', '0:a?',
       '-c:v', 'copy',
-      '-bsf:v', 'dump_extra',
       '-c:a', 'aac',
       '-b:a', '64k',
       '-ac', '1',
+      '-strict', 'experimental',
       '-max_muxing_queue_size', '4096',
       '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
       '-t', durLimit.toString(),
@@ -4979,14 +5074,33 @@ async function startServer() {
     }
   });
 
-  // Users & Permissions
+  // Users & Permissions (Always Sanitized for Maximum Security)
   app.get('/api/users', (req, res) => {
-    res.json(users);
+    const reqUser = getUserFromReq(req);
+    let userList = users;
+    // If request is from a company admin, only list users in their company
+    if (reqUser && reqUser.companyId && reqUser.role !== 'ADMIN') {
+      userList = users.filter((u) => u.companyId === reqUser.companyId);
+    }
+    res.json(userList.map((u) => sanitizeUser(u)));
   });
 
   app.post('/api/users', async (req, res) => {
     try {
-      const { name, email, password, role, phone, stateUf, city, allowedCameraIds, customPermissions } = req.body;
+      const {
+        name,
+        email,
+        password,
+        role,
+        phone,
+        stateUf,
+        city,
+        allowedCameraIds,
+        customPermissions,
+        companyId,
+        companyName,
+        isCompanyAdmin,
+      } = req.body;
       if (!name || !email) return res.status(400).json({ error: 'Nome e email são obrigatórios' });
 
       const userPass = (password || '').toString().trim() || '123456';
@@ -5003,6 +5117,9 @@ async function startServer() {
         stateUf: stateUf || 'BA',
         city: city || 'Itamaraju',
         status: 'ACTIVE',
+        companyId,
+        companyName,
+        isCompanyAdmin: Boolean(isCompanyAdmin),
         allowedCameraIds: allowedCameraIds && allowedCameraIds.length > 0 ? allowedCameraIds : ['ALL'],
         customPermissions: customPermissions || {
           canViewLive: true,
@@ -5026,7 +5143,7 @@ async function startServer() {
       saveToLocalFile();
       syncUserToMysql(newUser).catch((e) => console.error('[Pg Sync User Error]:', e));
       addLog('ITL Admin', `Novo usuário cadastrado: ${newUser.name} (${newUser.role})`, 'AUTH');
-      return res.status(201).json(newUser);
+      return res.status(201).json(sanitizeUser(newUser));
     } catch (err: any) {
       console.error('[POST /api/users Error]:', err);
       return res.status(500).json({ error: `Erro ao criar usuário: ${err.message || err}` });
@@ -5052,7 +5169,7 @@ async function startServer() {
       saveToLocalFile();
       syncUserToMysql(users[index]).catch((e) => console.error('[Pg Sync User Error]:', e));
       addLog('ITL Admin', `Permissões/dados do usuário ${users[index].name} atualizados`, 'AUTH');
-      return res.json(users[index]);
+      return res.json(sanitizeUser(users[index]));
     } catch (err: any) {
       console.error('[PUT /api/users/:id Error]:', err);
       return res.status(500).json({ error: `Erro ao atualizar usuário: ${err.message || err}` });
@@ -5072,6 +5189,106 @@ async function startServer() {
     } catch (err: any) {
       console.error('[DELETE /api/users/:id Error]:', err);
       return res.status(500).json({ success: false, error: err.message || err });
+    }
+  });
+
+  // ---------------- WHITE LABEL & COMPANIES MULTI-TENANCY ENDPOINTS ----------------
+  app.get('/api/companies', (req, res) => {
+    res.json(companies);
+  });
+
+  app.post('/api/companies', (req, res) => {
+    try {
+      const newCompany: Company = {
+        id: req.body.id || `empresa-${Date.now().toString().slice(-6)}`,
+        name: req.body.name,
+        cnpj: req.body.cnpj || '',
+        email: req.body.email,
+        phone: req.body.phone || '',
+        maxCameras: parseInt(req.body.maxCameras, 10) || 10,
+        assignedCameraIds: Array.isArray(req.body.assignedCameraIds) ? req.body.assignedCameraIds : [],
+        logoUrl: req.body.logoUrl || DEFAULT_ITL_WHITELABEL.logoUrl,
+        colors: req.body.colors || DEFAULT_ITL_WHITELABEL.colors,
+        status: req.body.status || 'ACTIVE',
+        createdAt: req.body.createdAt || new Date().toISOString().split('T')[0],
+        customDomain: req.body.customDomain,
+      };
+
+      companies.push(newCompany);
+      deletedCompanyIds.delete(newCompany.id);
+      saveToLocalFile();
+      saveSqliteFile();
+      addLog('ITL SuperAdmin', `Nova empresa cadastrada no White Label: ${newCompany.name} (Cota: ${newCompany.maxCameras} câmeras)`, 'SYSTEM');
+      res.status(201).json(newCompany);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Erro ao criar empresa' });
+    }
+  });
+
+  app.put('/api/companies/:id', (req, res) => {
+    try {
+      const { id } = req.params;
+      const idx = companies.findIndex((c) => c.id === id);
+      if (idx === -1) return res.status(404).json({ error: 'Empresa não encontrada' });
+
+      companies[idx] = {
+        ...companies[idx],
+        ...req.body,
+        id,
+      };
+
+      saveToLocalFile();
+      saveSqliteFile();
+      addLog('ITL SuperAdmin', `Empresa atualizada: ${companies[idx].name}`, 'SYSTEM');
+      res.json(companies[idx]);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Erro ao atualizar empresa' });
+    }
+  });
+
+  app.delete('/api/companies/:id', (req, res) => {
+    try {
+      const { id } = req.params;
+      deletedCompanyIds.add(id);
+      companies = companies.filter((c) => c.id !== id);
+      saveToLocalFile();
+      saveSqliteFile();
+      addLog('ITL SuperAdmin', `Empresa removida: ${id}`, 'SYSTEM');
+      res.json({ success: true, message: 'Empresa removida com sucesso' });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Erro ao remover empresa' });
+    }
+  });
+
+  // Global White Label Configuration
+  app.get('/api/whitelabel/config', (req, res) => {
+    const reqUser = getUserFromReq(req);
+    if (reqUser && reqUser.companyId) {
+      const userCompany = companies.find((c) => c.id === reqUser.companyId);
+      if (userCompany) {
+        return res.json({
+          id: userCompany.id,
+          name: userCompany.name,
+          logoUrl: userCompany.logoUrl,
+          colors: userCompany.colors,
+        });
+      }
+    }
+    res.json(whitelabelConfig);
+  });
+
+  app.put('/api/whitelabel/config', (req, res) => {
+    try {
+      whitelabelConfig = {
+        ...whitelabelConfig,
+        ...req.body,
+      };
+      saveToLocalFile();
+      saveSqliteFile();
+      addLog('ITL SuperAdmin', 'Identidade visual padrão do White Label atualizada', 'SYSTEM');
+      res.json(whitelabelConfig);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Erro ao atualizar identidade visual' });
     }
   });
 

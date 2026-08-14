@@ -22,6 +22,8 @@ import { ArchitectureConfigPanel } from './components/ArchitectureConfigPanel';
 import { EventMapPanel } from './components/EventMapPanel';
 import { DatabaseDiagnosticsPanel } from './components/DatabaseDiagnosticsPanel';
 import { ApiDocumentationPanel } from './components/ApiDocumentationPanel';
+import { WhiteLabelAdminPanel } from './components/WhiteLabelAdminPanel';
+import { CompanyClientManager } from './components/CompanyClientManager';
 
 import {
   Camera,
@@ -36,6 +38,8 @@ import {
   MercadoPagoConfig,
   ArchitectureConfig,
   StreamInfo,
+  Company,
+  WhiteLabelConfig,
 } from './types';
 
 import {
@@ -55,6 +59,21 @@ import {
   INITIAL_MP_CONFIG,
   INITIAL_PLANS,
 } from './lib/financial';
+
+import {
+  DEFAULT_ITL_WHITELABEL,
+  INITIAL_COMPANIES,
+  applyThemeVariables,
+  resolveWhiteLabelConfig,
+} from './lib/whitelabel';
+
+import {
+  purgeInsecureLocalStorage,
+  getSecureSessionUser,
+  setSecureSessionUser,
+  clearAuthSession,
+  getAuthHeaders,
+} from './lib/security';
 
 export default function App() {
   // Authentication State with LocalStorage Persistence
@@ -231,10 +250,41 @@ export default function App() {
   });
   const [isMpSettingsOpen, setIsMpSettingsOpen] = useState(false);
 
+  // Multi-tenancy & White Label States
+  const [companies, setCompanies] = useState<Company[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_companies');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_COMPANIES;
+  });
+
+  const [whitelabelConfig, setWhitelabelConfig] = useState<WhiteLabelConfig>(() => {
+    try {
+      const stored = localStorage.getItem('itl_whitelabel_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return DEFAULT_ITL_WHITELABEL;
+  });
+
+  const [previewCompany, setPreviewCompany] = useState<Company | null>(null);
+
   // Modal States
   const [inspectingCamera, setInspectingCamera] = useState<Camera | null>(null);
   const [isE2EEModalOpen, setIsE2EEModalOpen] = useState(false);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+
+  // Security purge on mount (Removes any legacy plaintext passwords)
+  useEffect(() => {
+    purgeInsecureLocalStorage();
+    const secureUser = getSecureSessionUser();
+    if (secureUser) {
+      setActiveUser(secureUser);
+    }
+  }, []);
 
   // Sync states to local storage to ensure 0ms latency and 0 data-loss on F5
   useEffect(() => {
@@ -260,6 +310,31 @@ export default function App() {
       }
     } catch {}
   }, [users]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(companies)) {
+        localStorage.setItem('itl_companies', JSON.stringify(companies));
+      }
+    } catch {}
+  }, [companies]);
+
+  useEffect(() => {
+    try {
+      if (whitelabelConfig) {
+        localStorage.setItem('itl_whitelabel_config', JSON.stringify(whitelabelConfig));
+      }
+    } catch {}
+  }, [whitelabelConfig]);
+
+  // Apply theme variables dynamically whenever active user, company or preview changes
+  useEffect(() => {
+    const userCompany = activeUser?.companyId ? companies.find((c) => c.id === activeUser.companyId) : null;
+    const effectiveThemeConfig = resolveWhiteLabelConfig(previewCompany || userCompany, whitelabelConfig);
+    if (effectiveThemeConfig?.colors?.dark) {
+      applyThemeVariables(effectiveThemeConfig.colors.dark);
+    }
+  }, [activeUser, companies, whitelabelConfig, previewCompany]);
 
   useEffect(() => {
     try {
@@ -340,6 +415,8 @@ export default function App() {
           mpRes,
           archCfgRes,
           streamsRes,
+          companiesRes,
+          wlRes,
         ] = await Promise.all([
           fetch('/api/cameras', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/recordings', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
@@ -352,6 +429,8 @@ export default function App() {
           fetch('/api/mercadopago/config').then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/v1/architecture/config').then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/v1/streams', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/companies').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/whitelabel/config', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
         ]);
 
         if (!isMounted) return;
@@ -369,6 +448,10 @@ export default function App() {
         if (Array.isArray(pRes) && pRes.length > 0) setPlans(pRes);
         if (Array.isArray(iRes) && iRes.length > 0) setInvoices(iRes);
         if (mpRes && mpRes.accessToken) setMpConfig(mpRes);
+        if (archCfgRes && archCfgRes.primaryTopology) setArchitectureConfig(archCfgRes);
+        if (Array.isArray(streamsRes)) setStreams(streamsRes);
+        if (Array.isArray(companiesRes) && companiesRes.length > 0) setCompanies(companiesRes);
+        if (wlRes && wlRes.name) setWhitelabelConfig(wlRes);
         if (archCfgRes && archCfgRes.primaryTopology) setArchitectureConfig(archCfgRes);
         if (Array.isArray(streamsRes)) setStreams(streamsRes);
       } catch (err) {
@@ -609,6 +692,68 @@ export default function App() {
     setArchitectureConfig(cfg);
   };
 
+  // White Label & Companies Handlers
+  const handleSaveCompany = async (comp: Company) => {
+    try {
+      const exists = companies.some((c) => c.id === comp.id);
+      const method = exists ? 'PUT' : 'POST';
+      const endpoint = exists ? `/api/companies/${comp.id}` : '/api/companies';
+      const res = await fetch(endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(comp),
+      });
+      const saved = await res.json();
+      if (saved && saved.id) {
+        setCompanies((prev) => {
+          const idx = prev.findIndex((c) => c.id === saved.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = saved;
+            return next;
+          }
+          return [...prev, saved];
+        });
+        return;
+      }
+    } catch (e) {}
+    setCompanies((prev) => {
+      const idx = prev.findIndex((c) => c.id === comp.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = comp;
+        return next;
+      }
+      return [...prev, comp];
+    });
+  };
+
+  const handleDeleteCompany = async (companyId: string) => {
+    try {
+      await fetch(`/api/companies/${companyId}`, { method: 'DELETE' });
+    } catch (e) {}
+    setCompanies((prev) => prev.filter((c) => c.id !== companyId));
+    if (previewCompany?.id === companyId) {
+      setPreviewCompany(null);
+    }
+  };
+
+  const handleSaveGlobalWhiteLabel = async (config: WhiteLabelConfig) => {
+    try {
+      const res = await fetch('/api/whitelabel/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      const data = await res.json();
+      if (data && data.name) {
+        setWhitelabelConfig(data);
+        return;
+      }
+    } catch (e) {}
+    setWhitelabelConfig(config);
+  };
+
   // Render Public Landing Page for Guests
   if (!isLoggedIn) {
     return (
@@ -633,9 +778,13 @@ export default function App() {
     );
   }
 
+  // Active White Label configuration calculation
+  const activeCompany = previewCompany || (activeUser?.companyId ? companies.find((c) => c.id === activeUser.companyId) : null);
+  const activeWhiteLabel = resolveWhiteLabelConfig(activeCompany, whitelabelConfig);
+
   // Render Authenticated Dashboard
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans antialiased selection:bg-emerald-500 selection:text-slate-950">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans antialiased selection:bg-rose-500 selection:text-white">
       {/* System Blocked Overlay when overdue > 5 days */}
       {financialStatusInfo.shouldBlock && (
         <SystemBlockedOverlay
@@ -664,12 +813,10 @@ export default function App() {
         onOpenLoginModal={() => setIsLoginModalOpen(true)}
         onLogout={() => {
           setIsLoggedIn(false);
-          try {
-            localStorage.removeItem('itl_logged_in');
-            localStorage.removeItem('itl_active_user');
-          } catch (e) {}
+          clearAuthSession();
         }}
         isVaultUnlocked={e2eeSettings.isVaultUnlocked}
+        whitelabelConfig={activeWhiteLabel}
       />
 
       {/* Main Body Layout */}
@@ -834,6 +981,44 @@ export default function App() {
               onUpdateConfig={(newCfg) => setNotificationConfig((prev) => ({ ...prev, ...newCfg }))}
               onTestPush={() => {}}
             />
+          )}
+
+          {activeTab === 'white-label-admin' && (
+            <WhiteLabelAdminPanel
+              companies={companies}
+              cameras={cameras}
+              users={users}
+              onSaveCompany={handleSaveCompany}
+              onDeleteCompany={handleDeleteCompany}
+              activeCompanyId={previewCompany?.id}
+              onSelectCompanyPreview={setPreviewCompany}
+              globalConfig={whitelabelConfig}
+              onSaveGlobalConfig={handleSaveGlobalWhiteLabel}
+            />
+          )}
+
+          {activeTab === 'company-clients' && (
+            (() => {
+              const userCompany = companies.find((c) => c.id === activeUser.companyId) || companies[0];
+              if (!userCompany) {
+                return (
+                  <div className="p-8 text-center bg-slate-900 border border-slate-800 rounded-2xl max-w-lg mx-auto my-12 space-y-3">
+                    <h3 className="font-bold text-sm text-slate-100">Nenhuma empresa associada</h3>
+                    <p className="text-xs text-slate-400">Entre em contato com a central para vincular sua conta a uma empresa parceira.</p>
+                  </div>
+                );
+              }
+              return (
+                <CompanyClientManager
+                  company={userCompany}
+                  cameras={cameras}
+                  users={users}
+                  onSaveUser={handleAddUser}
+                  onDeleteUser={handleDeleteUser}
+                  currentUser={activeUser}
+                />
+              );
+            })()
           )}
 
           {activeTab === 'e2ee-vault' && (

@@ -17,6 +17,8 @@ import {
   Code,
   ChevronLeft,
   ChevronRight,
+  Building2,
+  Briefcase,
 } from 'lucide-react';
 
 import { User } from '../types';
@@ -38,6 +40,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isCollapsed = false,
   onToggleCollapse,
 }) => {
+  const isSuperAdmin = activeUser ? activeUser.role === 'ADMIN' && !activeUser.companyId : true;
+  const isCompanyAdmin = activeUser ? activeUser.role === 'COMPANY_ADMIN' || Boolean(activeUser.isCompanyAdmin) : false;
   const isAdmin = activeUser
     ? activeUser.role === 'ADMIN' ||
       Boolean(activeUser.customPermissions?.canManageUsers)
@@ -48,6 +52,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'live-grid', label: 'Câmeras ao Vivo', icon: Grid, badge: totalCameras },
     { id: 'event-map', label: 'Mapa de Ocorrências (GIS)', icon: MapPin },
     { id: 'camera-map', label: 'Mapa Vizinhança', icon: Map },
+    { id: 'white-label-admin', label: 'Empresas & White Label', icon: Building2, superAdminOnly: true },
+    { id: 'company-clients', label: 'Meus Clientes & Câmeras', icon: Briefcase, companyAdminOnly: true },
     { id: 'architecture-config', label: 'Arquitetura Fibra & Topology', icon: Network },
     { id: 'cloud-recordings', label: 'Gravações na Nuvem', icon: Film },
     { id: 'camera-admin', label: 'Adicionar / RTSP', icon: PlusCircle },
@@ -61,7 +67,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'e2ee-vault', label: 'Criptografia E2EE', icon: Lock },
   ];
 
-  const navItems = rawNavItems.filter((item) => !item.adminOnly || isAdmin);
+  const navItems = rawNavItems.filter((item) => {
+    if (item.superAdminOnly && !isSuperAdmin) return false;
+    if (item.companyAdminOnly && !isCompanyAdmin && !isSuperAdmin) return false;
+    if (item.adminOnly && !isAdmin && !isSuperAdmin) return false;
+    return true;
+  });
 
   return (
     <aside
