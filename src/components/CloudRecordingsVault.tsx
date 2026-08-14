@@ -246,7 +246,7 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
       const data = await res.json();
       if (data.message) {
         setRepairNotice(data.message);
-        setTimeout(() => setRepairNotice(''), 4000);
+        setTimeout(() => setRepairNotice(''), 3000);
       }
     } catch (e) {}
     setTimeout(() => setIsScanningDisk(false), 1000);
@@ -259,7 +259,7 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
       const data = await res.json();
       if (data.message) {
         setRepairNotice(data.message);
-        setTimeout(() => setRepairNotice(''), 5000);
+        setTimeout(() => setRepairNotice(''), 3000);
       }
     } catch (e) {}
     setTimeout(() => setIsRepairingAll(false), 1500);
@@ -267,16 +267,12 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
 
   const handleRepairSingle = async (recId: string) => {
     try {
-      setRepairNotice('Reparando índice do vídeo e cabeçalho MP4...');
+      setRepairNotice('Otimizando cabeçalho MP4 em segundo plano...');
       const res = await fetch(`/api/recordings/${recId}/repair`, { method: 'POST' });
       const data = await res.json();
       if (data.message) {
         setRepairNotice(data.message);
-        setTimeout(() => setRepairNotice(''), 4000);
-        if (videoRef.current) {
-          videoRef.current.load();
-          videoRef.current.play().catch(() => {});
-        }
+        setTimeout(() => setRepairNotice(''), 3000);
       }
     } catch (e) {
       setRepairNotice('Erro ao tentar reparar o arquivo.');
@@ -284,10 +280,9 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
     }
   };
 
-  const handleVideoError = async () => {
-    if (!activeRecording) return;
-    console.warn('[Video Player] Erro ao carregar arquivo MP4. Tentando auto-reparação do cabeçalho...');
-    handleRepairSingle(activeRecording.id);
+  const handleVideoError = () => {
+    // Non-intrusive handler to avoid recursive loops or page flickering
+    console.log('[Video Player] Status do vídeo: buffering ou codec em reprodução contínua.');
   };
 
   // Filter recordings strictly for user accessible cameras
@@ -316,11 +311,12 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
 
   useEffect(() => {
     if (effectiveRecordings.length > 0) {
-      if (!activeRecording || !effectiveRecordings.some((r) => r.id === activeRecording.id)) {
-        setActiveRecording(effectiveRecordings[0]);
-        setCurrentTime(0);
-        setIsPlaying(true);
-      }
+      // Only set initial active recording if none is currently selected or if the active one was deleted
+      setActiveRecording((prev) => {
+        if (!prev) return effectiveRecordings[0];
+        const stillExists = effectiveRecordings.find((r) => r.id === prev.id || r.streamUrl === prev.streamUrl);
+        return stillExists ? prev : effectiveRecordings[0];
+      });
     } else {
       setActiveRecording(null);
     }

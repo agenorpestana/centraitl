@@ -387,9 +387,16 @@ export default function App() {
       try {
         const res = await fetch('/api/recordings');
         const data = await res.json();
-        if (Array.isArray(data)) setRecordings(data);
+        if (Array.isArray(data)) {
+          setRecordings((prev) => {
+            if (prev.length !== data.length) return data;
+            const prevKeys = prev.map((r) => `${r.id}_${r.durationSeconds}_${r.fileSizeMB}`).join('|');
+            const nextKeys = data.map((r) => `${r.id}_${r.durationSeconds}_${r.fileSizeMB}`).join('|');
+            return prevKeys === nextKeys ? prev : data;
+          });
+        }
       } catch (e) {}
-    }, 10000);
+    }, 15000);
     return () => clearInterval(interval);
   }, [isLoggedIn]);
 

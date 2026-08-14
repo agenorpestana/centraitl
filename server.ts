@@ -473,7 +473,17 @@ async function startServer() {
     } catch (e) {}
   }
 
-  app.use('/recordings', express.static(recordingsDir));
+  app.use('/recordings', (req, res, next) => {
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    next();
+  }, express.static(recordingsDir, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.mp4')) {
+        res.setHeader('Content-Type', 'video/mp4');
+      }
+    }
+  }));
 
   const snapshotsDir = path.join(process.cwd(), 'snapshots');
   if (!fs.existsSync(snapshotsDir)) {
@@ -2985,10 +2995,6 @@ async function startServer() {
   }
 
   function checkAndStartAllAutoRecordings() {
-    try {
-      scanAndReconcileRecordingsFromDisk();
-    } catch (e) {}
-
     cameras.forEach((cam) => {
       // Ensure cloud recording is enabled by default
       if (cam.cloudRecordingsActive === undefined) {
@@ -3004,14 +3010,17 @@ async function startServer() {
     });
   }
 
-  // Start continuous 24/7 background recording for all cameras immediately and every 10s
+  // Start continuous 24/7 background recording for all cameras
   setTimeout(checkAndStartAllAutoRecordings, 2000);
-  setInterval(checkAndStartAllAutoRecordings, 10000);
+  setInterval(checkAndStartAllAutoRecordings, 15000);
+
+  // Background disk reconciliation (runs gently on startup and every 2 minutes)
+  setTimeout(() => {
+    scanAndReconcileRecordingsFromDisk().catch(() => {});
+  }, 4000);
   setInterval(() => {
-    try {
-      scanAndReconcileRecordingsFromDisk();
-    } catch (e) {}
-  }, 30000);
+    scanAndReconcileRecordingsFromDisk().catch(() => {});
+  }, 120000);
 
   // Helper log function (saved exclusively to local file itl_logs.json)
   const addLog = (userName: string, action: string, category: ActivityLog['category'], details?: string) => {
@@ -4555,9 +4564,6 @@ async function startServer() {
 
   // Recordings Endpoints (Real Stream Capture Engine for RTMP, RTSP & HLS)
   app.get('/api/recordings', (req, res) => {
-    try {
-      scanAndReconcileRecordingsFromDisk();
-    } catch (e) {}
     const reqUser = getUserFromReq(req);
     const filtered = filterRecordingsForUser(reqUser, recordings);
     res.json(filtered);
