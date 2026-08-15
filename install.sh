@@ -435,20 +435,23 @@ if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
     apt install -y nodejs
 fi
 
-# Instalação global e persistência do PM2
+# Instalação global do PM2
 if ! command -v pm2 &> /dev/null; then
     echo -e "${YELLOW}PM2 não encontrado. Instalando PM2 globalmente via npm...${NC}"
     npm install -g pm2
 fi
 
-echo -e "${YELLOW}Garantindo persistência e inicialização automática do PM2 no boot da VPS...${NC}"
-CURRENT_USER=$(whoami)
-STARTUP_LINE=$(env PATH=$PATH:/usr/bin pm2 startup systemd -u "$CURRENT_USER" --hp "/root" 2>/dev/null | grep -E "(sudo env PATH|env PATH)" | tail -n 1 | sed 's/sudo //g')
-if [ ! -z "$STARTUP_LINE" ]; then
-    eval "$STARTUP_LINE" &>/dev/null || true
+if ! systemctl list-units --type=service --all | grep -q "pm2"; then
+    echo -e "${YELLOW}Configurando o PM2 para iniciar automaticamente após reinicialização da VPS...${NC}"
+    STARTUP_CMD=$(pm2 startup systemd -u root --hp /root | grep "env PATH" | head -n 1 | sed 's/sudo //g')
+    if [ ! -z "$STARTUP_CMD" ]; then
+        eval "$STARTUP_CMD"
+    else
+        pm2 startup systemd -u root --hp /root --run &>/dev/null || pm2 startup &>/dev/null
+    fi
+    systemctl enable pm2-root &>/dev/null || systemctl enable pm2 &>/dev/null
+    systemctl start pm2-root &>/dev/null || systemctl start pm2 &>/dev/null
 fi
-systemctl enable "pm2-${CURRENT_USER}" &>/dev/null || systemctl enable pm2 &>/dev/null || true
-systemctl start "pm2-${CURRENT_USER}" &>/dev/null || systemctl start pm2 &>/dev/null || true
 
 # Configuração PostgreSQL
 if [ ! -z "$DB_PASSWORD" ]; then
@@ -460,13 +463,9 @@ if [ ! -z "$DB_PASSWORD" ]; then
     # Criar banco de dados se não existir
     sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'" | grep -q 1 || sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
     
-    # Conceder privilégios completos
+    # Conceder privilégios
     sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
     sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
-    sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${DB_USER};"
-    sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${DB_USER};"
-    sudo -u postgres psql -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${DB_USER};"
-    sudo -u postgres psql -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${DB_USER};"
     
     echo -e "${GREEN}Fase do PostgreSQL configurada com sucesso!${NC}"
 fi
@@ -532,19 +531,15 @@ else
     PM2_SCRIPT="server.ts"
 fi
 
-# PM2 Deployment com Limites de Memória e Auto-Restart Seguro
+# PM2 Deployment
 cd $PM2_START_DIR
-pm2 delete "$PM2_NAME" 2>/dev/null || true
-pm2 delete "central-itl" 2>/dev/null || true
-
+pm2 delete $PM2_NAME 2>/dev/null
 if [[ "$PM2_SCRIPT" == *.ts ]]; then
-    PORT=$APP_PORT pm2 start "npx tsx $PM2_SCRIPT" --name "$PM2_NAME" --max-memory-restart 800M --restart-delay 4000 --update-env --env PORT="$APP_PORT"
+    PORT=$APP_PORT pm2 start "npx tsx $PM2_SCRIPT" --name "$PM2_NAME" --update-env
 else
-    PORT=$APP_PORT pm2 start "$PM2_SCRIPT" --name "$PM2_NAME" --max-memory-restart 800M --restart-delay 4000 --update-env --env PORT="$APP_PORT"
+    PORT=$APP_PORT pm2 start "$PM2_SCRIPT" --name "$PM2_NAME" --update-env
 fi
-
-pm2 save --force
-echo -e "${GREEN}Processo PM2 '${PM2_NAME}' iniciado na porta ${APP_PORT}!${NC}"
+pm2 save
 
 # Nginx Configuration
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
