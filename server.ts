@@ -683,6 +683,40 @@ async function startServer() {
     next();
   }, express.static(snapshotsDir), express.static(publicSnapshotsDir));
 
+  // Direct HLS and Live Video Stream serving (/live/*.m3u8 and /live/*.ts)
+  const hlsServeDir = '/tmp/hls';
+  if (!fs.existsSync(hlsServeDir)) {
+    try { fs.mkdirSync(hlsServeDir, { recursive: true }); } catch (e) {}
+  }
+  app.use('/live', (req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+    const key = path.basename(req.path).replace(/\.(m3u8|ts)$/, '');
+    if (key) {
+      markStreamViewerActive(key);
+      const cam = cameras.find((c) => {
+        const cKey = c.streamKey || c.id;
+        return cKey === key || cKey.replace(/^cam-/, '').replace(/^cam_/, '') === key.replace(/^cam-/, '').replace(/^cam_/, '').replace(/_sub$/, '');
+      });
+      if (cam && !activeFfmpegProcesses.has(key)) {
+        const isSub = req.path.includes('_sub');
+        startCameraRtspStream(cam, false, isSub);
+      }
+    }
+    next();
+  }, express.static(hlsServeDir, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.m3u8')) {
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      } else if (filePath.endsWith('.ts')) {
+        res.setHeader('Content-Type', 'video/mp2t');
+      }
+    }
+  }));
+
   // Database Connection Pool Setup
   let pool: InstanceType<typeof Pool> | null = null;
   let isPgActive = false;
@@ -2687,8 +2721,6 @@ async function startServer() {
   cameras.forEach((c) => startCameraRtspStream(c));
 
   // Continuous 24/7 Automatic Recording Engine for All Active Cameras
-  const activeAutoRecordingProcesses = new Map<string, ChildProcess>();
-  const activeAutoRecordingStartTimes = new Map<string, number>();
   const autoRecordingDurationSec = 300; // 5-minute rolling slices for real cloud storage
 
   async function permanentlyDeleteRecording(id: string) {
