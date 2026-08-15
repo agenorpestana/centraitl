@@ -78,19 +78,10 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
   onUpdateCamera,
 }) => {
   const [showForm, setShowForm] = useState(false);
-  const [protocol, setProtocol] = useState<'RTSP' | 'RTMP' | 'ONVIF'>('RTSP');
+  const [networkType, setNetworkType] = useState<'LOCAL' | 'REMOTE'>('LOCAL');
+  const [protocol, setProtocol] = useState<'RTSP' | 'RTMP'>('RTSP');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [editingCamera, setEditingCamera] = useState<Camera | null>(null);
-
-  // ONVIF states
-  const [onvifIp, setOnvifIp] = useState('');
-  const [onvifPort, setOnvifPort] = useState<number>(554);
-  const [onvifUsername, setOnvifUsername] = useState('admin');
-  const [onvifPassword, setOnvifPassword] = useState('');
-  const [onvifProfile, setOnvifProfile] = useState('onvif1');
-  const [subStreamUrl, setSubStreamUrl] = useState('');
-  const [isDiscoveringOnvif, setIsDiscoveringOnvif] = useState(false);
-  const [discoveredDevices, setDiscoveredDevices] = useState<any[]>([]);
 
   // Diagnostic state
   const [testResult, setTestResult] = useState<{
@@ -119,6 +110,7 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
   const [streamKey, setStreamKey] = useState(() => `cam_${Math.random().toString(36).substring(2, 8)}`);
   const [rtmpServer, setRtmpServer] = useState(() => `rtmp://${getCurrentHost()}:1935/live`);
   const [rtspUrl, setRtspUrl] = useState('');
+  const [subStreamUrl, setSubStreamUrl] = useState('');
 
   // Update RTMP server automatically when hostname is available
   useEffect(() => {
@@ -127,6 +119,16 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
       setRtmpServer(`rtmp://${host}:1935/live`);
     }
   }, []);
+
+  // Sync protocol with networkType
+  const handleNetworkTypeChange = (type: 'LOCAL' | 'REMOTE') => {
+    setNetworkType(type);
+    if (type === 'LOCAL') {
+      setProtocol('RTSP');
+    } else {
+      setProtocol('RTMP');
+    }
+  };
 
   // IBGE States & Cities
   const [ufs, setUfs] = useState<{ sigla: string; nome: string }[]>(FALLBACK_UFS);
@@ -204,9 +206,10 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
   const handleTestConnection = async (targetCam?: Partial<Camera>) => {
     setTestResult({ loading: true });
     try {
-      const isTargetRtsp = targetCam ? targetCam.protocol === 'RTSP' : protocol === 'RTSP';
+      const isTargetRtsp = targetCam ? (targetCam.protocol === 'RTSP' || targetCam.networkType === 'LOCAL') : (protocol === 'RTSP' || networkType === 'LOCAL');
       const payload = {
-        protocol: targetCam ? targetCam.protocol : protocol,
+        protocol: isTargetRtsp ? 'RTSP' : 'RTMP',
+        networkType: targetCam ? (targetCam.networkType || (isTargetRtsp ? 'LOCAL' : 'REMOTE')) : networkType,
         rtspUrl: isTargetRtsp ? (targetCam ? targetCam.rtspUrl : rtspUrl) : '',
         rtmpUrl: targetCam ? (targetCam.rtmpUrl || targetCam.fullRtmpUrl) : fullRtmpUrl,
         streamKey: targetCam ? (targetCam.streamKey || targetCam.id) : streamKey,
@@ -223,28 +226,6 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
     }
   };
 
-  const handleDiscoverOnvif = async () => {
-    setIsDiscoveringOnvif(true);
-    try {
-      const res = await fetch('/api/onvif/discover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timeoutMs: 3000 }),
-      });
-      const data = await res.json();
-      if (data.success && Array.isArray(data.devices)) {
-        setDiscoveredDevices(data.devices);
-        if (data.devices.length === 0) {
-          alert('Nenhuma câmera ONVIF foi encontrada via busca multicast local. Insira o IP da câmera diretamente!');
-        }
-      }
-    } catch (e: any) {
-      alert(`Erro na busca ONVIF: ${e.message || e}`);
-    } finally {
-      setIsDiscoveringOnvif(false);
-    }
-  };
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeUser.customPermissions.canManageCameras) {
@@ -257,13 +238,8 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
       return;
     }
 
-    if (protocol === 'RTSP' && !rtspUrl.trim()) {
-      alert('Por favor, informe a URL RTSP da câmera (ex: rtsp://admin:senha@192.168.1.100:554/live/ch0).');
-      return;
-    }
-
-    if (protocol === 'ONVIF' && !onvifIp.trim()) {
-      alert('Por favor, informe o IP do dispositivo ONVIF (ex: 192.168.1.108).');
+    if ((networkType === 'LOCAL' || protocol === 'RTSP') && !rtspUrl.trim()) {
+      alert('Por favor, informe a URL RTSP local da câmera (ex: rtsp://admin:senha@192.168.1.100:554/live/ch0).');
       return;
     }
 
@@ -275,28 +251,19 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
       : `rtmp://${host}:1935/live`;
     const rtmpStreamSource = `${serverBase}/cam_${cleanKey}`;
 
-    const user = onvifUsername.trim() || 'admin';
-    const pass = onvifPassword.trim();
-    const auth = (user || pass) ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : '';
-    const constructedOnvifRtsp = rtspUrl.trim().startsWith('rtsp://')
-      ? rtspUrl.trim()
-      : `rtsp://${auth}${onvifIp.trim()}:${onvifPort || 554}/${onvifProfile || 'onvif1'}`;
+    const isLocal = networkType === 'LOCAL' || protocol === 'RTSP';
 
     const newCamData: Partial<Camera> = {
       name: cameraName.trim(),
       location: `${selectedCity} - ${selectedUf}`,
-      protocol,
-      rtspUrl: protocol === 'ONVIF' ? constructedOnvifRtsp : protocol === 'RTSP' ? rtspUrl : '',
-      onvifIp: onvifIp.trim(),
-      onvifPort: onvifPort || 554,
-      onvifUsername: user,
-      onvifPassword: pass,
-      onvifProfile: onvifProfile || 'onvif1',
-      subStreamUrl: subStreamUrl.trim() || `rtsp://${auth}${onvifIp.trim()}:${onvifPort || 554}/onvif2`,
-      rtmpUrl: protocol === 'RTMP' ? rtmpStreamSource : '',
+      protocol: isLocal ? 'RTSP' : 'RTMP',
+      networkType: isLocal ? 'LOCAL' : 'REMOTE',
+      rtspUrl: isLocal ? rtspUrl.trim() : '',
+      subStreamUrl: subStreamUrl.trim(),
+      rtmpUrl: !isLocal ? rtmpStreamSource : '',
       streamKey: `cam_${cleanKey}`,
-      rtmpServerUrl: serverBase,
-      fullRtmpUrl: protocol === 'RTMP' ? rtmpStreamSource : '',
+      rtmpServerUrl: !isLocal ? serverBase : '',
+      fullRtmpUrl: !isLocal ? rtmpStreamSource : '',
       stateUf: selectedUf,
       city: selectedCity,
       lat: parseFloat(lat) || -17.0397,
@@ -314,6 +281,8 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
 
     // Reset form
     setCameraName('');
+    setRtspUrl('');
+    setSubStreamUrl('');
     handleGenerateStreamKey();
   };
 
@@ -374,194 +343,117 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
             />
           </div>
 
-          {/* Protocol Selection Toggle */}
+          {/* Network / Protocol Selection Toggle */}
           <div>
             <label className="block text-xs font-bold text-slate-200 mb-2">
-              Protocolo de Entrada da Câmera:
+              Tipo de Conexão & Origem do Fluxo de Vídeo:
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={() => setProtocol('ONVIF')}
-                className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center space-x-2 transition ${
-                  protocol === 'ONVIF'
-                    ? 'bg-purple-950/80 border-purple-500 text-purple-300 shadow-md'
+                onClick={() => handleNetworkTypeChange('LOCAL')}
+                className={`p-3.5 rounded-xl border text-left transition relative ${
+                  networkType === 'LOCAL'
+                    ? 'bg-slate-800/90 border-emerald-500 text-emerald-400 shadow-md ring-1 ring-emerald-500/30'
                     : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
                 }`}
               >
-                <Video className="w-4 h-4 text-purple-400" />
-                <span>ONVIF (Direct IP)</span>
+                <div className="flex items-center gap-2 font-bold text-xs">
+                  <Radio className="w-4 h-4 text-emerald-400" />
+                  <span>Rede Local / Intranet (RTSP)</span>
+                  <span className="ml-auto text-[9px] bg-emerald-500/20 text-emerald-300 font-mono px-2 py-0.5 rounded-full font-bold">
+                    RECOMENDADO
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
+                  Para Câmeras IP, DVRs e NVRs na mesma rede local/intranet do servidor (sem precisar de NAT ou expor portas na internet). O servidor processa localmente.
+                </p>
               </button>
 
               <button
                 type="button"
-                onClick={() => setProtocol('RTSP')}
-                className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center space-x-2 transition ${
-                  protocol === 'RTSP'
-                    ? 'bg-slate-800 border-emerald-500 text-emerald-400 shadow-md'
+                onClick={() => handleNetworkTypeChange('REMOTE')}
+                className={`p-3.5 rounded-xl border text-left transition relative ${
+                  networkType === 'REMOTE'
+                    ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 shadow-md ring-1 ring-emerald-500/30'
                     : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
                 }`}
               >
-                <Radio className="w-4 h-4" />
-                <span>RTSP (Ativo / Pull)</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setProtocol('RTMP')}
-                className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center space-x-2 transition ${
-                  protocol === 'RTMP'
-                    ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 shadow-md'
-                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
-                }`}
-              >
-                <RadioTower className="w-4 h-4" />
-                <span>RTMP (Push)</span>
+                <div className="flex items-center gap-2 font-bold text-xs">
+                  <RadioTower className="w-4 h-4 text-emerald-400" />
+                  <span>Remoto / Nuvem (RTMP Push)</span>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
+                  Para câmeras externas ou encoders (OBS/vMix) que enviam o fluxo RTMP diretamente para a porta 1935 do servidor.
+                </p>
               </button>
             </div>
           </div>
 
           {/* Protocol-Specific Fields */}
-          {protocol === 'ONVIF' ? (
-            <div className="space-y-4 bg-purple-950/20 border border-purple-800/60 p-4 rounded-xl">
-              <div className="flex items-center justify-between border-b border-purple-900/50 pb-2">
-                <span className="text-xs font-bold text-purple-300 flex items-center gap-1.5">
-                  <Video className="w-4 h-4 text-purple-400" />
-                  Conexão Direta ONVIF (IP Camera / NVR)
-                </span>
-                <button
-                  type="button"
-                  onClick={handleDiscoverOnvif}
-                  disabled={isDiscoveringOnvif}
-                  className="px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1.5 shadow"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isDiscoveringOnvif ? 'animate-spin' : ''}`} />
-                  <span>{isDiscoveringOnvif ? 'Buscando ONVIF...' : 'Buscar ONVIF na Rede'}</span>
-                </button>
-              </div>
-
-              {/* Discovered ONVIF list */}
-              {discoveredDevices.length > 0 && (
-                <div className="bg-slate-900 border border-purple-500/40 rounded-xl p-3 space-y-2">
-                  <p className="text-[11px] font-bold text-purple-300">Câmeras ONVIF Encontradas na Rede:</p>
-                  <div className="space-y-1.5 max-h-36 overflow-y-auto">
-                    {discoveredDevices.map((dev, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => {
-                          setOnvifIp(dev.ip);
-                          if (dev.port) setOnvifPort(dev.port);
-                          if (dev.mainStreamUrl) setRtspUrl(dev.mainStreamUrl);
-                          if (dev.subStreamUrl) setSubStreamUrl(dev.subStreamUrl);
-                          if (dev.name && !cameraName) setCameraName(dev.name);
-                        }}
-                        className="w-full text-left p-2 bg-slate-950 hover:bg-purple-900/40 border border-slate-800 hover:border-purple-500/60 rounded-lg text-xs transition flex justify-between items-center"
-                      >
-                        <div>
-                          <p className="font-bold text-purple-200">{dev.name || dev.ip}</p>
-                          <p className="text-[10px] text-slate-400 font-mono">{dev.ip}:{dev.port || 554} - {dev.manufacturer || 'ONVIF'}</p>
-                        </div>
-                        <span className="text-[10px] bg-purple-600/30 text-purple-300 px-2 py-0.5 rounded font-bold">Selecionar</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-300 mb-1">
-                    Endereço IP ONVIF: <span className="text-rose-400">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="192.168.1.108"
-                    value={onvifIp}
-                    onChange={(e) => setOnvifIp(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 text-purple-300 font-mono text-xs px-3 py-2 rounded-xl outline-none focus:border-purple-500"
-                    required={protocol === 'ONVIF'}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-300 mb-1">
-                    Porta HTTP / RTSP:
-                  </label>
-                  <input
-                    type="number"
-                    placeholder="554 / 80"
-                    value={onvifPort}
-                    onChange={(e) => setOnvifPort(Number(e.target.value))}
-                    className="w-full bg-slate-900 border border-slate-700 text-purple-300 font-mono text-xs px-3 py-2 rounded-xl outline-none focus:border-purple-500"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-300 mb-1">
-                    Usuário ONVIF:
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="admin"
-                    value={onvifUsername}
-                    onChange={(e) => setOnvifUsername(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 text-slate-100 text-xs px-3 py-2 rounded-xl outline-none focus:border-purple-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-300 mb-1">
-                    Senha ONVIF:
-                  </label>
-                  <input
-                    type="password"
-                    placeholder="••••••••"
-                    value={onvifPassword}
-                    onChange={(e) => setOnvifPassword(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 text-slate-100 text-xs px-3 py-2 rounded-xl outline-none focus:border-purple-500"
-                  />
-                </div>
-              </div>
-
+          {networkType === 'LOCAL' ? (
+            <div className="space-y-4 bg-slate-950/80 border border-emerald-500/20 p-4 rounded-xl">
               <div>
-                <label className="block text-xs font-bold text-slate-300 mb-1">
-                  URL RTSP Principal (Full HD 1080p - Tela Cheia / Gravações):
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-200">
+                    URL RTSP Local da Câmera (Stream Principal Full HD 1080p): <span className="text-rose-400">*</span>
+                  </label>
+                  <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
+                    Processamento Local 30fps
+                  </span>
+                </div>
                 <input
                   type="text"
-                  placeholder="rtsp://admin:123456@192.168.1.108:554/onvif1"
+                  placeholder="rtsp://admin:senha@192.168.1.100:554/live/ch0"
                   value={rtspUrl}
                   onChange={(e) => setRtspUrl(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 text-purple-300 font-mono text-xs px-3 py-2 rounded-xl outline-none focus:border-purple-500"
+                  className="w-full bg-slate-900 border border-slate-700 text-emerald-400 font-mono text-xs px-3 py-2.5 rounded-xl outline-none focus:border-emerald-500 shadow-inner"
+                  required
                 />
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Exemplos: <span className="text-slate-300 font-mono">rtsp://admin:senha@192.168.1.108:554/cam/realmonitor?channel=1&subtype=0</span> (Intelbras/Dahua) ou <span className="text-slate-300 font-mono">rtsp://admin:senha@192.168.1.100:554/Streaming/Channels/101</span> (Hikvision).
+                </p>
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  URL Sub-Stream (360p SD - Câmeras ao Vivo / Mosaico):
+                  URL RTSP Sub-Stream Opcional (360p / 480p para mosaico leve):
                 </label>
                 <input
                   type="text"
-                  placeholder="rtsp://admin:123456@192.168.1.108:554/onvif2"
+                  placeholder="rtsp://admin:senha@192.168.1.100:554/live/ch1 ou subtype=1"
                   value={subStreamUrl}
                   onChange={(e) => setSubStreamUrl(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 text-amber-300 font-mono text-xs px-3 py-2 rounded-xl outline-none focus:border-amber-500"
+                  className="w-full bg-slate-900 border border-slate-700 text-cyan-300 font-mono text-xs px-3 py-2 rounded-xl outline-none focus:border-cyan-500"
                 />
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Se deixado em branco, o servidor gerará automaticamente o sub-stream leve a 30fps para os cards do mosaico a partir do fluxo principal.
+                </p>
+              </div>
+
+              {/* RTSP Transcoding Info Box */}
+              <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 text-xs space-y-2">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold text-[11px]">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Otimização para Rede Local Ativada</span>
+                </div>
+                <p className="text-slate-300 text-[11px]">
+                  O servidor lê a câmera diretamente pela rede interna / intranet e distribui nos cards em tempo real a 30fps fluído, mantendo a qualidade Full HD para gravações e tela cheia.
+                </p>
               </div>
 
               <div>
                 <button
                   type="button"
                   onClick={() => handleTestConnection()}
-                  className="w-full py-2 bg-purple-900/40 hover:bg-purple-900/60 text-purple-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 border border-purple-500/40 transition"
+                  className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-emerald-400 font-bold text-xs rounded-xl flex items-center justify-center gap-2 border border-emerald-500/30 transition"
                 >
-                  <Activity className="w-4 h-4 text-purple-400" />
-                  <span>Testar e Sondar Transmissão ONVIF</span>
+                  <Activity className="w-4 h-4" />
+                  <span>Diagnosticar & Testar Conexão RTSP Local (Porta 554)</span>
                 </button>
               </div>
             </div>
-          ) : protocol === 'RTMP' ? (
+          ) : (
             <div className="space-y-4 bg-slate-950/80 border border-slate-800 p-4 rounded-xl">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
@@ -589,7 +481,7 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
               {/* Parameter Instructions Box */}
               <div className="bg-slate-900/90 border border-emerald-500/30 rounded-xl p-3.5 text-xs space-y-2">
                 <p className="text-slate-300 font-semibold text-[11px] text-emerald-400">
-                  Configure a transmissão em sua câmera física com os seguintes parâmetros:
+                  Configure a transmissão em sua câmera ou software com os seguintes parâmetros:
                 </p>
 
                 <div className="space-y-1.5 text-[11px] font-mono">
@@ -650,47 +542,6 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
                 >
                   <Activity className="w-4 h-4" />
                   <span>Diagnosticar / Testar Recepção RTMP</span>
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4 bg-slate-950/80 border border-slate-800 p-4 rounded-xl">
-              <div>
-                <label className="block text-xs font-bold text-slate-300 mb-1">
-                  URL RTSP Principal da Câmera (Stream H.264 / H.265):
-                </label>
-                <input
-                  type="text"
-                  placeholder="rtsp://admin:senha@192.168.1.100:554/live/ch0"
-                  value={rtspUrl}
-                  onChange={(e) => setRtspUrl(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 text-emerald-400 font-mono text-xs px-3 py-2 rounded-xl outline-none focus:border-emerald-500"
-                  required
-                />
-                <p className="text-[10px] text-slate-400 mt-1">
-                  Ex: rtsp://admin:senha@192.168.1.100:554/cam/realmonitor ou DDNS/IP público com porta 554 roteada.
-                </p>
-              </div>
-
-              {/* RTSP Transcoding Info Box */}
-              <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 text-xs space-y-2">
-                <p className="text-slate-300 font-semibold text-[11px] text-emerald-400">
-                  O servidor retransmitirá este RTSP via HLS para navegação web segura:
-                </p>
-                <div className="flex items-center justify-between bg-slate-950 p-2 rounded-lg border border-slate-800 font-mono text-[11px]">
-                  <span className="text-slate-400">LINK GERADO NAVEGADOR:</span>
-                  <span className="text-emerald-300 underline">{generatedHttpLink}</span>
-                </div>
-              </div>
-
-              <div>
-                <button
-                  type="button"
-                  onClick={() => handleTestConnection()}
-                  className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-emerald-400 font-bold text-xs rounded-xl flex items-center justify-center gap-2 border border-emerald-500/30 transition"
-                >
-                  <Activity className="w-4 h-4" />
-                  <span>Diagnosticar & Testar Conexão RTSP (Porta 554)</span>
                 </button>
               </div>
             </div>

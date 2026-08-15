@@ -271,47 +271,30 @@ function getValidStreamSource(cam: any, isSubStream = false): string {
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
   const defaultKey = `cam_${cleanKey}`;
 
-  if (isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim()) {
-    return cam.subStreamUrl.trim();
-  }
+  // Prioritize RTSP when camera is LOCAL (intranet/LAN) or has protocol RTSP or has an rtspUrl
+  const isLocalOrRtsp = cam.protocol === 'RTSP' || cam.networkType === 'LOCAL' || (cam.rtspUrl && cam.rtspUrl.trim().length > 0 && cam.protocol !== 'RTMP');
 
-  // ONVIF protocol support
-  if (cam.protocol === 'ONVIF' || (cam.onvifIp && cam.onvifIp.trim())) {
-    if (isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim().startsWith('rtsp://')) {
-      return cam.subStreamUrl.trim();
+  if (isLocalOrRtsp && cam.rtspUrl && cam.rtspUrl.trim()) {
+    let mainUrl = cam.rtspUrl.trim();
+    if (!mainUrl.startsWith('rtsp://') && !mainUrl.startsWith('http://') && !mainUrl.startsWith('https://')) {
+      mainUrl = `rtsp://${mainUrl}`;
     }
-    if (!isSubStream && cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://')) {
-      return cam.rtspUrl.trim();
-    }
-    const user = cam.onvifUsername || 'admin';
-    const pass = cam.onvifPassword || '';
-    const auth = (user || pass) ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : '';
-    const ip = (cam.onvifIp || '192.168.1.100').trim();
-    const port = cam.onvifPort || 554;
-    const profile = isSubStream ? (cam.onvifSubProfile || 'onvif2') : (cam.onvifProfile || 'onvif1');
-    return `rtsp://${auth}${ip}:${port}/${profile}`;
-  }
 
-  // Prioritize RTSP if camera protocol is RTSP or has rtspUrl
-  if (cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.trim())) {
     if (isSubStream) {
       if (cam.subStreamUrl && cam.subStreamUrl.trim()) {
         const sub = cam.subStreamUrl.trim();
         return sub.startsWith('rtsp://') ? sub : `rtsp://${sub}`;
       }
-      if (cam.rtspUrl && cam.rtspUrl.trim()) {
-        let mainUrl = cam.rtspUrl.trim();
-        if (!mainUrl.startsWith('rtsp://')) mainUrl = `rtsp://${mainUrl}`;
-        if (mainUrl.includes('subtype=0')) return mainUrl.replace('subtype=0', 'subtype=1');
-        if (mainUrl.includes('onvif1')) return mainUrl.replace('onvif1', 'onvif2');
-        return mainUrl;
-      }
-    } else {
-      if (cam.rtspUrl && cam.rtspUrl.trim()) {
-        const rtsp = cam.rtspUrl.trim();
-        return rtsp.startsWith('rtsp://') ? rtsp : `rtsp://${rtsp}`;
-      }
+      if (mainUrl.includes('subtype=0')) return mainUrl.replace('subtype=0', 'subtype=1');
+      if (mainUrl.includes('onvif1')) return mainUrl.replace('onvif1', 'onvif2');
+      if (mainUrl.includes('channel=1&stream=0')) return mainUrl.replace('channel=1&stream=0', 'channel=1&stream=1');
     }
+    return mainUrl;
+  }
+
+  if (isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim()) {
+    const sub = cam.subStreamUrl.trim();
+    return sub.startsWith('rtsp://') ? sub : `rtsp://${sub}`;
   }
 
   // Helper to ensure RTMP URL contains the stream key
@@ -331,11 +314,11 @@ function getValidStreamSource(cam: any, isSubStream = false): string {
   };
 
   // Prioritize RTMP if camera protocol is RTMP or has RTMP URL fields
-  if (cam.protocol === 'RTMP' || cam.rtmpUrl || cam.fullRtmpUrl || cam.rtmpServerUrl) {
+  if (cam.protocol === 'RTMP' || cam.networkType === 'REMOTE' || cam.rtmpUrl || cam.fullRtmpUrl || cam.rtmpServerUrl) {
     const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
     for (const candidate of rtmpCandidates) {
       const formatted = formatRtmpCandidate(candidate);
-      if (formatted.startsWith('rtmp://') || formatted.startsWith('http://') || formatted.startsWith('https://')) {
+      if (formatted.startsWith('rtmp://')) {
         return formatted;
       }
     }
@@ -4560,6 +4543,7 @@ async function startServer() {
         name,
         location,
         protocol,
+        networkType,
         rtspUrl,
         rtmpUrl,
         streamKey,
@@ -4580,18 +4564,21 @@ async function startServer() {
       }
 
       const defaultKey = streamKey || `cam_${Date.now().toString().slice(-6)}`;
-      const isRtsp = protocol === 'RTSP';
+      const isLocal = networkType === 'LOCAL' || protocol === 'RTSP' || (!networkType && !protocol);
+      const effProtocol: 'RTSP' | 'RTMP' = isLocal ? 'RTSP' : 'RTMP';
+      const effNetworkType: 'LOCAL' | 'REMOTE' = isLocal ? 'LOCAL' : 'REMOTE';
 
       const newCamera: Camera = {
         id: `cam-${Date.now().toString().slice(-4)}`,
         name,
         location: location || `${city ? city + ' - ' : ''}${stateUf || 'Localização ITL'}`,
-        protocol: protocol || 'RTSP',
-        rtspUrl: isRtsp ? (rtspUrl ? rtspUrl.trim() : '') : '',
-        rtmpUrl: cleanDoubleUrl(rtmpUrl || fullRtmpUrl || `rtmp://${reqHost}:1935/live/${defaultKey}`),
+        protocol: effProtocol,
+        networkType: effNetworkType,
+        rtspUrl: isLocal ? (rtspUrl ? rtspUrl.trim() : '') : '',
+        rtmpUrl: !isLocal ? cleanDoubleUrl(rtmpUrl || fullRtmpUrl || `rtmp://${reqHost}:1935/live/${defaultKey}`) : '',
         streamKey: defaultKey,
-        rtmpServerUrl: cleanDoubleUrl(rtmpServerUrl || `rtmp://${reqHost}:1935/live`),
-        fullRtmpUrl: cleanDoubleUrl(fullRtmpUrl || `${reqProto}://${reqHost}/live/${defaultKey}.m3u8`),
+        rtmpServerUrl: !isLocal ? cleanDoubleUrl(rtmpServerUrl || `rtmp://${reqHost}:1935/live`) : '',
+        fullRtmpUrl: !isLocal ? cleanDoubleUrl(fullRtmpUrl || `${reqProto}://${reqHost}/live/${defaultKey}.m3u8`) : '',
         stateUf: stateUf || '',
         city: city || '',
         status: 'ONLINE',
@@ -4632,8 +4619,27 @@ async function startServer() {
       saveToLocalFile();
 
       syncCameraToMysql(newCamera).catch((e) => console.error('[Pg Sync Cam Error]:', e));
-      try { startCameraRtspStream(newCamera); } catch (e) {}
-      addLog('ITL Admin', `Nova câmera adicionada (${newCamera.protocol}): ${newCamera.name}`, 'SYSTEM', `URL: ${newCamera.fullRtmpUrl || newCamera.rtspUrl}`);
+      
+      // Start both sub-stream (for grid card 30fps) and main-stream (for Full HD fullscreen/recording)
+      try { 
+        startCameraRtspStream(newCamera, true, true);
+        startCameraRtspStream(newCamera, true, false);
+      } catch (e) {}
+
+      // Trigger immediate initial snapshot extraction in background for RTSP local camera
+      if (newCamera.rtspUrl && newCamera.rtspUrl.trim()) {
+        const snapPath = path.join(snapshotsDir, `snap_${newCamera.id}.jpg`);
+        const pubSnapPath = path.join(publicSnapshotsDir, `snap_${newCamera.id}.jpg`);
+        execAsync(`ffmpeg -y -rtsp_transport tcp -stimeout 5000000 -i "${newCamera.rtspUrl.trim()}" -vframes 1 -q:v 2 "${snapPath}"`, 8000)
+          .then(() => {
+            if (fs.existsSync(snapPath)) {
+              try { fs.copyFileSync(snapPath, pubSnapPath); } catch (e) {}
+            }
+          })
+          .catch(() => {});
+      }
+
+      addLog('ITL Admin', `Nova câmera adicionada (${newCamera.protocol} - ${newCamera.networkType === 'LOCAL' ? 'Rede Local/Intranet' : 'Remoto Nuvem'}): ${newCamera.name}`, 'SYSTEM', `URL: ${newCamera.rtspUrl || newCamera.fullRtmpUrl}`);
       return res.status(201).json(newCamera);
     } catch (err: any) {
       console.error('[POST /api/cameras Error]:', err);
@@ -4647,11 +4653,37 @@ async function startServer() {
       const index = cameras.findIndex((c) => c.id === id);
       if (index === -1) return res.status(404).json({ error: 'Câmera não encontrada' });
 
-      cameras[index] = { ...cameras[index], ...req.body };
+      const updatedData = { ...req.body };
+      if (updatedData.networkType === 'LOCAL' || updatedData.protocol === 'RTSP') {
+        updatedData.protocol = 'RTSP';
+        updatedData.networkType = 'LOCAL';
+      } else if (updatedData.networkType === 'REMOTE' || updatedData.protocol === 'RTMP') {
+        updatedData.protocol = 'RTMP';
+        updatedData.networkType = 'REMOTE';
+      }
+
+      cameras[index] = { ...cameras[index], ...updatedData };
       try { syncCameraToSqlite(cameras[index]); } catch (e) {}
       saveToLocalFile();
       syncCameraToMysql(cameras[index]).catch((e) => console.error('[Pg Sync Cam Error]:', e));
-      try { startCameraRtspStream(cameras[index]); } catch (e) {}
+      
+      try { 
+        startCameraRtspStream(cameras[index], true, true);
+        startCameraRtspStream(cameras[index], true, false);
+      } catch (e) {}
+
+      if (cameras[index].rtspUrl && cameras[index].rtspUrl.trim()) {
+        const snapPath = path.join(snapshotsDir, `snap_${cameras[index].id}.jpg`);
+        const pubSnapPath = path.join(publicSnapshotsDir, `snap_${cameras[index].id}.jpg`);
+        execAsync(`ffmpeg -y -rtsp_transport tcp -stimeout 5000000 -i "${cameras[index].rtspUrl.trim()}" -vframes 1 -q:v 2 "${snapPath}"`, 8000)
+          .then(() => {
+            if (fs.existsSync(snapPath)) {
+              try { fs.copyFileSync(snapPath, pubSnapPath); } catch (e) {}
+            }
+          })
+          .catch(() => {});
+      }
+
       addLog('ITL Admin', `Câmera atualizada: ${cameras[index].name}`, 'SYSTEM');
       return res.json(cameras[index]);
     } catch (err: any) {
