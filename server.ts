@@ -419,15 +419,17 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   const ffmpegArgs: string[] = [];
   ffmpegArgs.push(
     '-fflags', '+nobuffer+discardcorrupt',
-    '-flags', 'low_delay',
-    '-threads', '1'
+    '-flags', 'low_delay'
   );
 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
+      '-rtsp_flags', 'prefer_tcp',
       '-stimeout', '5000000',
-      '-use_wallclock_as_timestamps', '1'
+      '-max_delay', '500000',
+      '-buffer_size', '2048000',
+      '-reorder_queue_size', '500'
     );
   } else if (streamSource.startsWith('rtmp://')) {
     ffmpegArgs.push(
@@ -455,23 +457,23 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     if (hasNativeHardwareSubStream) {
       ffmpegArgs.push('-c:v', 'copy');
     } else {
-      // Ultra low CPU SD 360p transcode (single thread, ultrafast, capped bitrate)
+      // Fluid 30fps SD 360p transcode for lightweight yet smooth camera cards
       ffmpegArgs.push(
         '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-threads', '1',
-        '-g', '30',
-        '-r', '15',
-        '-b:v', '250k',
-        '-maxrate', '300k',
-        '-bufsize', '500k',
+        '-r', '30',
+        '-g', '60',
+        '-b:v', '450k',
+        '-maxrate', '550k',
+        '-bufsize', '900k',
         '-max_muxing_queue_size', '1024'
       );
     }
   } else {
-    // Full HD native stream copy (Zero CPU transcode overhead)
+    // Full HD native stream copy (Zero CPU overhead, 1080p crystal clear for fullscreen)
     ffmpegArgs.push('-c:v', 'copy');
   }
 
@@ -2717,8 +2719,11 @@ async function startServer() {
     }
   }, 30000);
 
-  // Start FFmpeg streams for RTSP cameras
-  cameras.forEach((c) => startCameraRtspStream(c));
+  // Start FFmpeg streams for all cameras (Cards 30fps SD sub-stream and Full HD main stream)
+  cameras.forEach((c) => {
+    startCameraRtspStream(c, false, true);  // Sub-stream SD (30fps fluid for grid cards)
+    startCameraRtspStream(c, false, false); // Main stream Full HD 1080p (for fullscreen)
+  });
 
   // Continuous 24/7 Automatic Recording Engine for All Active Cameras
   const autoRecordingDurationSec = 300; // 5-minute rolling slices for real cloud storage
@@ -3128,22 +3133,10 @@ async function startServer() {
       const rawKey = cam.streamKey || cam.id;
       const cleanRawKey = rawKey.replace(/^cam-/, '').replace(/^cam_/, '');
 
-      // Direct stream capture directly from camera source or local active stream
+      // Direct Full HD stream capture directly from camera source (RTSP / RTMP)
       const inputSource = getValidStreamSource(cam, false);
       if (!inputSource) return;
-
-      // Check if local HLS stream is active to record without extra RTSP bandwidth/conflicts
-      const hlsLocal1 = `/tmp/hls/cam_${cleanRawKey}.m3u8`;
-      const hlsLocal2 = `/tmp/hls/${cam.id}.m3u8`;
-      const hlsLocal3 = `/tmp/hls/${cleanRawKey}.m3u8`;
-      let effectiveInputSource = inputSource;
-      if (fs.existsSync(hlsLocal1)) {
-        effectiveInputSource = hlsLocal1;
-      } else if (fs.existsSync(hlsLocal2)) {
-        effectiveInputSource = hlsLocal2;
-      } else if (fs.existsSync(hlsLocal3)) {
-        effectiveInputSource = hlsLocal3;
-      }
+      const effectiveInputSource = inputSource;
 
       const now = new Date();
       const timestamp = Date.now();
