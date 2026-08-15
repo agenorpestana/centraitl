@@ -418,24 +418,22 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
 
   const ffmpegArgs: string[] = [];
   ffmpegArgs.push(
-    '-fflags', '+nobuffer+discardcorrupt',
+    '-fflags', '+nobuffer+discardcorrupt+genpts',
     '-flags', 'low_delay'
   );
 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
-      '-rtsp_flags', 'prefer_tcp',
-      '-stimeout', '5000000',
-      '-max_delay', '500000',
-      '-buffer_size', '2048000',
-      '-reorder_queue_size', '500'
+      '-stimeout', '15000000',
+      '-analyzeduration', '5000000',
+      '-probesize', '5000000'
     );
   } else if (streamSource.startsWith('rtmp://')) {
     ffmpegArgs.push(
-      '-rw_timeout', '5000000',
-      '-analyzeduration', '2000000',
-      '-probesize', '2000000'
+      '-rw_timeout', '10000000',
+      '-analyzeduration', '3000000',
+      '-probesize', '3000000'
     );
   } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
     ffmpegArgs.push(
@@ -447,8 +445,6 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   }
 
   ffmpegArgs.push(
-    '-analyzeduration', '1000000',
-    '-probesize', '1000000',
     '-i', streamSource,
     '-map', '0:v:0?'
   );
@@ -469,7 +465,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         '-b:v', '450k',
         '-maxrate', '550k',
         '-bufsize', '900k',
-        '-max_muxing_queue_size', '1024'
+        '-max_muxing_queue_size', '2048'
       );
     }
   } else {
@@ -478,10 +474,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   }
 
   ffmpegArgs.push(
-    '-map', '0:a?',
-    '-c:a', 'aac',
-    '-b:a', '64k',
-    '-ac', '1',
+    '-an',
     '-f', 'hls',
     '-hls_time', '2',
     '-hls_list_size', '5',
@@ -3159,19 +3152,15 @@ async function startServer() {
       if (effectiveInputSource.startsWith('rtsp://')) {
         ffmpegArgs.push(
           '-rtsp_transport', 'tcp',
-          '-rtsp_flags', 'prefer_tcp',
-          '-stimeout', '5000000',
-          '-max_delay', '500000',
-          '-buffer_size', '2048000',
-          '-reorder_queue_size', '500',
-          '-analyzeduration', '1000000',
-          '-probesize', '1000000'
+          '-stimeout', '15000000',
+          '-analyzeduration', '5000000',
+          '-probesize', '5000000'
         );
       } else if (effectiveInputSource.startsWith('rtmp://')) {
         ffmpegArgs.push(
-          '-rw_timeout', '5000000',
-          '-analyzeduration', '2000000',
-          '-probesize', '2000000'
+          '-rw_timeout', '10000000',
+          '-analyzeduration', '3000000',
+          '-probesize', '3000000'
         );
       } else if (effectiveInputSource.startsWith('http://') || effectiveInputSource.startsWith('https://')) {
         ffmpegArgs.push(
@@ -4902,17 +4891,13 @@ async function startServer() {
     if (recInput.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-rtsp_flags', 'prefer_tcp',
-        '-stimeout', '10000000',
-        '-max_delay', '500000',
-        '-buffer_size', '4096000',
-        '-reorder_queue_size', '1000',
-        '-analyzeduration', '2000000',
-        '-probesize', '2000000'
+        '-stimeout', '15000000',
+        '-analyzeduration', '5000000',
+        '-probesize', '5000000'
       );
     } else if (recInput.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '15000000',
+        '-rw_timeout', '10000000',
         '-analyzeduration', '3000000',
         '-probesize', '3000000'
       );
