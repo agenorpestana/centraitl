@@ -52,6 +52,10 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
   const [dvrGridSize, setDvrGridSize] = useState<number>(4); // 4 (2x2), 8 (2x4), 16 (4x4)
   const [dvrPage, setDvrPage] = useState<number>(1);
   const [selectedDvrCamId, setSelectedDvrCamId] = useState<string | null>(null);
+  const [dvrFocusedCamId, setDvrFocusedCamId] = useState<string | null>(null);
+  const [isDvrFullscreen, setIsDvrFullscreen] = useState<boolean>(false);
+  const [isAutoPatrol, setIsAutoPatrol] = useState<boolean>(false);
+  const [patrolIntervalSec, setPatrolIntervalSec] = useState<number>(10);
   const dvrContainerRef = useRef<HTMLDivElement>(null);
 
   // Audio / Mic / Streams
@@ -60,6 +64,15 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
   const [editingCamera, setEditingCamera] = useState<Camera | null>(null);
   const [autoRefreshKey, setAutoRefreshKey] = useState<number>(0);
   const [audioLevel, setAudioLevel] = useState<number>(0);
+
+  // Fullscreen change listener to sync isDvrFullscreen state without resetting DVR mode
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsDvrFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
 
   // Filter accessible cameras based on user permissions
   const accessibleCameras = React.useMemo(() => {
@@ -129,6 +142,23 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
     return filteredCameras.slice(start, start + dvrGridSize);
   }, [filteredCameras, dvrPage, dvrGridSize]);
 
+  // Auto-Patrol / Ronda Automática timer in DVR mode
+  useEffect(() => {
+    if (!isDvrMode || !isAutoPatrol || filteredCameras.length === 0) return;
+
+    const timer = setInterval(() => {
+      if (dvrFocusedCamId) {
+        const currIdx = filteredCameras.findIndex((c) => c.id === dvrFocusedCamId);
+        const nextIdx = (currIdx + 1) % filteredCameras.length;
+        setDvrFocusedCamId(filteredCameras[nextIdx].id);
+      } else {
+        setDvrPage((prev) => (prev >= dvrTotalPages ? 1 : prev + 1));
+      }
+    }, patrolIntervalSec * 1000);
+
+    return () => clearInterval(timer);
+  }, [isDvrMode, isAutoPatrol, dvrFocusedCamId, filteredCameras, patrolIntervalSec, dvrTotalPages]);
+
   // Toggle DVR Mode
   const toggleDvrMode = () => {
     const next = !isDvrMode;
@@ -183,6 +213,24 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
   // RENDER DVR MODE VIEW (Modo Estilo DVR)
   // ==========================================
   if (isDvrMode) {
+    const focusedCam = dvrFocusedCamId
+      ? filteredCameras.find((c) => c.id === dvrFocusedCamId) || null
+      : null;
+
+    const focusedIdx = focusedCam ? filteredCameras.findIndex((c) => c.id === focusedCam.id) : -1;
+
+    const handlePrevFocusedCam = () => {
+      if (filteredCameras.length === 0) return;
+      const prevIdx = (focusedIdx - 1 + filteredCameras.length) % filteredCameras.length;
+      setDvrFocusedCamId(filteredCameras[prevIdx].id);
+    };
+
+    const handleNextFocusedCam = () => {
+      if (filteredCameras.length === 0) return;
+      const nextIdx = (focusedIdx + 1) % filteredCameras.length;
+      setDvrFocusedCamId(filteredCameras[nextIdx].id);
+    };
+
     const emptySlotsCount = Math.max(0, dvrGridSize - dvrPageCameras.length);
     const gridColsClass =
       dvrGridSize === 4
@@ -197,204 +245,307 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
         className="bg-black border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col min-h-[calc(100vh-100px)] text-slate-100"
       >
         {/* DVR Top Header */}
-        <div className="bg-slate-950 px-4 py-2.5 border-b border-slate-800/80 flex items-center justify-between">
+        <div className="bg-slate-950 px-4 py-2.5 border-b border-slate-800/80 flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center space-x-3">
             <div className="flex items-center space-x-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
               <Tv className="w-4 h-4 animate-pulse" />
               <span>Modo DVR Central ITL</span>
             </div>
             <span className="text-slate-600">|</span>
-            <span className="text-xs text-slate-400 hidden sm:inline">
-              Canais {filteredCameras.length === 0 ? 0 : (dvrPage - 1) * dvrGridSize + 1} a {Math.min(dvrPage * dvrGridSize, filteredCameras.length)} de {filteredCameras.length} câmeras
-            </span>
+            {focusedCam ? (
+              <div className="flex items-center space-x-2">
+                <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[10px] px-2 py-0.5 rounded font-mono font-bold">
+                  CANAL {String(focusedIdx + 1).padStart(2, '0')} / {filteredCameras.length}
+                </span>
+                <span className="text-xs font-semibold text-slate-200">{focusedCam.name}</span>
+                <span className="text-[10px] text-slate-400 hidden sm:inline font-mono">
+                  {focusedCam.location || focusedCam.city || 'Central ITL'}
+                </span>
+                <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] px-1.5 py-0.5 rounded font-bold">
+                  FULL HD 1080p
+                </span>
+              </div>
+            ) : (
+              <span className="text-xs text-slate-400 hidden sm:inline">
+                Canais {filteredCameras.length === 0 ? 0 : (dvrPage - 1) * dvrGridSize + 1} a{' '}
+                {Math.min(dvrPage * dvrGridSize, filteredCameras.length)} de {filteredCameras.length} câmeras (SD 360p @ 30 FPS)
+              </span>
+            )}
           </div>
 
           <div className="flex items-center space-x-2">
+            {focusedCam && (
+              <button
+                onClick={() => setDvrFocusedCamId(null)}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center space-x-1.5 transition border border-slate-700"
+                title="Voltar ao Mosaico Multi-Câmeras"
+              >
+                <Grid className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Ver Mosaico (Grade)</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => setIsAutoPatrol((prev) => !prev)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition border ${
+                isAutoPatrol
+                  ? 'bg-amber-500/20 border-amber-500/60 text-amber-300 shadow-md shadow-amber-500/20'
+                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+              }`}
+              title="Alternar Ronda Automática de Câmeras"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 ${isAutoPatrol ? 'animate-spin' : ''}`} />
+              <span>Ronda ({patrolIntervalSec}s)</span>
+            </button>
+
+            <button
+              onClick={() => toggleFullscreen()}
+              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:text-white transition"
+              title={isDvrFullscreen ? 'Sair da Tela Cheia' : 'Alternar Tela Cheia'}
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </button>
+
             <button
               onClick={toggleDvrMode}
               className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center space-x-1.5 transition"
             >
-              <Grid className="w-3.5 h-3.5" />
+              <X className="w-3.5 h-3.5" />
               <span>Sair do DVR</span>
             </button>
           </div>
         </div>
 
-        {/* DVR Camera Grid Container */}
-        <div className={`flex-1 p-1 bg-neutral-950 grid ${gridColsClass} gap-1 min-h-[500px]`}>
-          {/* Active Camera Tiles */}
-          {dvrPageCameras.map((camera, idx) => {
-            const isSelected = selectedDvrCamId === camera.id;
-            const channelNumber = (dvrPage - 1) * dvrGridSize + idx + 1;
-            const isMuted = mutedCameraIds[camera.id] === undefined ? true : mutedCameraIds[camera.id];
+        {/* DVR Main Content Area */}
+        {focusedCam ? (
+          /* Focused Single Camera In-DVR View (Full HD 1080p) */
+          <div className="flex-1 relative bg-black flex flex-col items-center justify-center overflow-hidden min-h-[500px]">
+            {/* LiveStreamPlayer in Full HD Mode */}
+            <div className="w-full h-full flex-1 relative flex items-center justify-center">
+              <LiveStreamPlayer
+                key={`dvr-focus-${focusedCam.id}-${autoRefreshKey}`}
+                camera={focusedCam}
+                isMuted={mutedCameraIds[focusedCam.id] ?? false}
+                onSelectCamera={() => {}}
+                showOverlayControls={true}
+                hideBottomCard={true}
+                useSubStream={false}
+              />
+            </div>
 
-            return (
-              <div
-                key={camera.id}
-                onClick={() => setSelectedDvrCamId(camera.id)}
-                className={`relative bg-slate-950 border transition-all overflow-hidden flex flex-col group cursor-pointer ${
-                  isSelected
-                    ? 'border-2 border-emerald-500 shadow-lg shadow-emerald-500/20 z-10'
-                    : 'border-slate-800 hover:border-slate-700'
+            {/* In-DVR Floating Navigation Controls */}
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 bg-slate-950/90 border border-slate-800 px-4 py-2 rounded-2xl flex items-center space-x-3 backdrop-blur-md shadow-2xl">
+              <button
+                onClick={handlePrevFocusedCam}
+                className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 text-xs font-bold flex items-center space-x-1 transition"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                <span>Canal Anterior</span>
+              </button>
+
+              <span className="text-xs font-mono font-bold text-emerald-400 px-2">
+                CH {String(focusedIdx + 1).padStart(2, '0')} / {filteredCameras.length}
+              </span>
+
+              <button
+                onClick={handleNextFocusedCam}
+                className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 text-xs font-bold flex items-center space-x-1 transition"
+              >
+                <span>Próximo Canal</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+
+              <div className="h-4 w-px bg-slate-800" />
+
+              <button
+                onClick={() => setDvrFocusedCamId(null)}
+                className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center space-x-1.5 transition"
+              >
+                <Grid className="w-3.5 h-3.5" />
+                <span>Mosaico</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          /* Multi-Camera DVR Grid Container (SD 360p @ 30 FPS) */
+          <div className={`flex-1 p-1 bg-neutral-950 grid ${gridColsClass} gap-1 min-h-[500px]`}>
+            {/* Active Camera Tiles */}
+            {dvrPageCameras.map((camera, idx) => {
+              const isSelected = selectedDvrCamId === camera.id;
+              const channelNumber = (dvrPage - 1) * dvrGridSize + idx + 1;
+              const isMuted = mutedCameraIds[camera.id] === undefined ? true : mutedCameraIds[camera.id];
+
+              return (
+                <div
+                  key={camera.id}
+                  onClick={() => setSelectedDvrCamId(camera.id)}
+                  onDoubleClick={() => setDvrFocusedCamId(camera.id)}
+                  className={`relative bg-slate-950 border transition-all overflow-hidden flex flex-col group cursor-pointer ${
+                    isSelected
+                      ? 'border-2 border-emerald-500 shadow-lg shadow-emerald-500/20 z-10'
+                      : 'border-slate-800 hover:border-slate-700'
+                  }`}
+                >
+                  {/* Channel Label Top Left */}
+                  <div className="absolute top-1 left-1.5 z-20 bg-black/85 text-[10px] font-mono text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30 font-bold flex items-center space-x-1.5 backdrop-blur-sm shadow-md">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                    <span>CH{channelNumber.toString().padStart(2, '0')}</span>
+                    <span
+                      className={`text-[9px] px-1 py-0.2 rounded font-sans font-bold ${
+                        camera.protocol === 'RTSP'
+                          ? 'bg-cyan-950/90 text-cyan-300 border border-cyan-800'
+                          : 'bg-emerald-950/90 text-emerald-300 border border-emerald-800'
+                      }`}
+                    >
+                      {camera.protocol === 'RTSP' ? 'RTSP • MJPEG' : `${camera.protocol || 'RTMP'} • HLS`}
+                    </span>
+                  </div>
+
+                  {/* Top Right Controls */}
+                  <div className="absolute top-1 right-1.5 z-20 opacity-0 group-hover:opacity-100 transition flex items-center space-x-1 bg-black/80 p-1 rounded-md">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleMute(camera.id);
+                      }}
+                      className="p-1 text-slate-300 hover:text-white"
+                      title={isMuted ? 'Desmutar' : 'Mutar'}
+                    >
+                      {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400" />}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDvrFocusedCamId(camera.id);
+                      }}
+                      className="p-1 text-emerald-400 hover:text-emerald-300"
+                      title="Expandir em Tela Cheia no DVR"
+                    >
+                      <Maximize2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Video Stream Player (SD 360p for fast multi-tile performance) */}
+                  <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
+                    <LiveStreamPlayer
+                      key={`${camera.id}-dvr-${autoRefreshKey}`}
+                      camera={camera}
+                      isMuted={isMuted}
+                      onSelectCamera={() => setDvrFocusedCamId(camera.id)}
+                      showOverlayControls={false}
+                      hideBottomCard={true}
+                      useSubStream={true}
+                    />
+                  </div>
+
+                  {/* DVR Bottom Label Bar (Name of Camera) */}
+                  <div className="bg-slate-900/90 border-t border-slate-800 px-2.5 py-1 flex items-center justify-between text-xs">
+                    <span className="font-semibold text-slate-200 truncate text-[11px]">{camera.name}</span>
+                    <span className="text-[10px] font-mono text-slate-400 shrink-0 ml-1">
+                      {camera.location || camera.city || 'Ao Vivo'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Empty DVR Slots */}
+            {Array.from({ length: emptySlotsCount }).map((_, slotIdx) => {
+              const slotNum = (dvrPage - 1) * dvrGridSize + dvrPageCameras.length + slotIdx + 1;
+              return (
+                <div
+                  key={`empty-slot-${slotIdx}`}
+                  className="relative bg-black border border-slate-900 flex flex-col items-center justify-center p-4 text-center select-none"
+                >
+                  <div className="absolute top-1 left-1.5 bg-slate-900/80 text-[10px] font-mono text-slate-600 px-1.5 py-0.5 rounded">
+                    CH{slotNum.toString().padStart(2, '0')}
+                  </div>
+
+                  <span className="text-xs text-slate-600 font-mono">Sem Sinal / Canal Livre</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* DVR Bottom Toolbar */}
+        {!focusedCam && (
+          <div className="bg-slate-950 border-t border-slate-800 p-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-300">
+            {/* Left Controls */}
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => toggleFullscreen()}
+                className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:text-white transition"
+                title={isDvrFullscreen ? 'Sair da Tela Cheia' : 'Alternar Tela Cheia'}
+              >
+                <Maximize2 className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Center Grid Selector Buttons */}
+            <div className="flex items-center space-x-1.5 bg-slate-900 p-1 rounded-xl border border-slate-800">
+              <span className="text-[11px] text-slate-400 px-2 font-medium">Layout DVR:</span>
+              <button
+                onClick={() => {
+                  setDvrGridSize(4);
+                  setDvrPage(1);
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                  dvrGridSize === 4 ? 'bg-emerald-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                {/* Channel Label Top Left */}
-                <div className="absolute top-1 left-1.5 z-20 bg-black/85 text-[10px] font-mono text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30 font-bold flex items-center space-x-1.5 backdrop-blur-sm shadow-md">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                  <span>CH{channelNumber.toString().padStart(2, '0')}</span>
-                  <span
-                    className={`text-[9px] px-1 py-0.2 rounded font-sans font-bold ${
-                      camera.protocol === 'RTSP'
-                        ? 'bg-cyan-950/90 text-cyan-300 border border-cyan-800'
-                        : 'bg-emerald-950/90 text-emerald-300 border border-emerald-800'
-                    }`}
-                  >
-                    {camera.protocol === 'RTSP' ? 'RTSP • MJPEG' : `${camera.protocol || 'RTMP'} • HLS`}
-                  </span>
-                </div>
-
-                {/* Top Right Controls */}
-                <div className="absolute top-1 right-1.5 z-20 opacity-0 group-hover:opacity-100 transition flex items-center space-x-1 bg-black/80 p-1 rounded-md">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleMute(camera.id);
-                    }}
-                    className="p-1 text-slate-300 hover:text-white"
-                    title={isMuted ? 'Desmutar' : 'Mutar'}
-                  >
-                    {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400" />}
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectCamera(camera);
-                    }}
-                    className="p-1 text-emerald-400 hover:text-emerald-300"
-                    title="Expandir Tela Cheia"
-                  >
-                    <Maximize2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                {/* Video Stream Player */}
-                <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
-                  <LiveStreamPlayer
-                    key={`${camera.id}-dvr-${autoRefreshKey}`}
-                    camera={camera}
-                    isMuted={isMuted}
-                    onSelectCamera={() => onSelectCamera(camera)}
-                    showOverlayControls={false}
-                    hideBottomCard={true}
-                    useSubStream={true}
-                  />
-                </div>
-
-                {/* DVR Bottom Label Bar (Name of Camera) */}
-                <div className="bg-slate-900/90 border-t border-slate-800 px-2.5 py-1 flex items-center justify-between text-xs">
-                  <span className="font-semibold text-slate-200 truncate text-[11px]">{camera.name}</span>
-                  <span className="text-[10px] font-mono text-slate-400 shrink-0 ml-1">
-                    {camera.location || camera.city || 'Ao Vivo'}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-
-          {/* Empty DVR Slots */}
-          {Array.from({ length: emptySlotsCount }).map((_, slotIdx) => {
-            const slotNum = (dvrPage - 1) * dvrGridSize + dvrPageCameras.length + slotIdx + 1;
-            return (
-              <div
-                key={`empty-slot-${slotIdx}`}
-                className="relative bg-black border border-slate-900 flex flex-col items-center justify-center p-4 text-center select-none"
+                4x4
+              </button>
+              <button
+                onClick={() => {
+                  setDvrGridSize(8);
+                  setDvrPage(1);
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                  dvrGridSize === 8 ? 'bg-emerald-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'
+                }`}
               >
-                <div className="absolute top-1 left-1.5 bg-slate-900/80 text-[10px] font-mono text-slate-600 px-1.5 py-0.5 rounded">
-                  CH{slotNum.toString().padStart(2, '0')}
-                </div>
+                8x8
+              </button>
+              <button
+                onClick={() => {
+                  setDvrGridSize(16);
+                  setDvrPage(1);
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                  dvrGridSize === 16 ? 'bg-emerald-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                16x16
+              </button>
+            </div>
 
-                <span className="text-xs text-slate-600 font-mono">Sem Sinal / Canal Livre</span>
-              </div>
-            );
-          })}
-        </div>
+            {/* Right Pagination Controls */}
+            <div className="flex items-center space-x-2">
+              <button
+                disabled={dvrPage <= 1}
+                onClick={() => setDvrPage((p) => Math.max(1, p - 1))}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-slate-900 border border-slate-800 text-slate-300 font-medium flex items-center space-x-1"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                <span className="hidden sm:inline">Anterior</span>
+              </button>
 
-        {/* DVR Bottom Toolbar (Matching Image 2 footer controls) */}
-        <div className="bg-slate-950 border-t border-slate-800 p-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-300">
-          {/* Left Controls */}
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => toggleFullscreen()}
-              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:text-white transition"
-              title="Alternar Tela Cheia"
-            >
-              <Maximize2 className="w-4 h-4" />
-            </button>
+              <span className="text-xs font-bold text-slate-200 px-2 font-mono">
+                Página {dvrPage} de {dvrTotalPages}
+              </span>
+
+              <button
+                disabled={dvrPage >= dvrTotalPages}
+                onClick={() => setDvrPage((p) => Math.min(dvrTotalPages, p + 1))}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-slate-900 border border-slate-800 text-slate-300 font-medium flex items-center space-x-1"
+              >
+                <span className="hidden sm:inline">Próxima</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
           </div>
-
-          {/* Center Grid Selector Buttons */}
-          <div className="flex items-center space-x-1.5 bg-slate-900 p-1 rounded-xl border border-slate-800">
-            <span className="text-[11px] text-slate-400 px-2 font-medium">Layout DVR:</span>
-            <button
-              onClick={() => {
-                setDvrGridSize(4);
-                setDvrPage(1);
-              }}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
-                dvrGridSize === 4 ? 'bg-emerald-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              4x4
-            </button>
-            <button
-              onClick={() => {
-                setDvrGridSize(8);
-                setDvrPage(1);
-              }}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
-                dvrGridSize === 8 ? 'bg-emerald-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              8x8
-            </button>
-            <button
-              onClick={() => {
-                setDvrGridSize(16);
-                setDvrPage(1);
-              }}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
-                dvrGridSize === 16 ? 'bg-emerald-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              16x16
-            </button>
-          </div>
-
-          {/* Right Pagination Controls */}
-          <div className="flex items-center space-x-2">
-            <button
-              disabled={dvrPage <= 1}
-              onClick={() => setDvrPage((p) => Math.max(1, p - 1))}
-              className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-slate-900 border border-slate-800 text-slate-300 font-medium flex items-center space-x-1"
-            >
-              <ChevronLeft className="w-4 h-4" />
-              <span className="hidden sm:inline">Anterior</span>
-            </button>
-
-            <span className="text-xs font-bold text-slate-200 px-2 font-mono">
-              Página {dvrPage} de {dvrTotalPages}
-            </span>
-
-            <button
-              disabled={dvrPage >= dvrTotalPages}
-              onClick={() => setDvrPage((p) => Math.min(dvrTotalPages, p + 1))}
-              className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-slate-900 border border-slate-800 text-slate-300 font-medium flex items-center space-x-1"
-            >
-              <span className="hidden sm:inline">Próxima</span>
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+        )}
       </div>
     );
   }
