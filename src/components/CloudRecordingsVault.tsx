@@ -46,6 +46,12 @@ const formatDateTime = (d: Date) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 
+const getTodayYMD = () => {
+  const d = new Date();
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
 export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
   recordings,
   cameras = [],
@@ -57,7 +63,8 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
 }) => {
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedDate, setSelectedDate] = useState<string>('');
+  const [selectedDate, setSelectedDate] = useState<string>(() => getTodayYMD());
+  const [datePreset, setDatePreset] = useState<'today' | 'yesterday' | 'all' | 'custom'>('today');
   const [selectedStartTime, setSelectedStartTime] = useState<string>('');
   const [selectedEndTime, setSelectedEndTime] = useState<string>('');
   const [selectedCameraId, setSelectedCameraId] = useState<string>('ALL');
@@ -422,44 +429,64 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
     );
   };
 
-  const handleDeleteSelected = () => {
+  const handleDeleteSelected = async () => {
     if (selectedIds.length === 0) return;
     if (!confirm(`Deseja realmente excluir permanentemente as ${selectedIds.length} gravações selecionadas?`)) {
       return;
     }
-    if (activeRecording && selectedIds.includes(activeRecording.id)) {
+    const idsToDelete = [...selectedIds];
+    setSelectedIds([]);
+    if (activeRecording && idsToDelete.includes(activeRecording.id)) {
       setActiveRecording(null);
       setIsPlaying(false);
     }
     if (onDeleteRecordingsBatch) {
-      onDeleteRecordingsBatch(selectedIds);
+      onDeleteRecordingsBatch(idsToDelete);
     } else {
-      selectedIds.forEach((id) => onDeleteRecording(id));
+      idsToDelete.forEach((id) => onDeleteRecording(id));
     }
-    setSelectedIds([]);
+    try {
+      await fetch('/api/recordings/batch-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: idsToDelete }),
+      });
+    } catch (e) {}
   };
 
-  const handleDeleteAllFiltered = () => {
+  const handleDeleteAllFiltered = async () => {
     if (filteredRecordings.length === 0) return;
     const allIds = filteredRecordings.map((r) => r.id);
-    if (!confirm(`Deseja realmente excluir permanentemente todas as ${allIds.length} gravações visíveis?`)) {
+    const filterContext = selectedDate
+      ? `do dia ${selectedDate.split('-').reverse().join('/')}`
+      : 'atualmente filtradas';
+    if (!confirm(`Deseja realmente excluir permanentemente todas as ${allIds.length} gravações ${filterContext}?`)) {
       return;
     }
-    if (activeRecording && allIds.includes(activeRecording.id)) {
+    const idsToDelete = [...allIds];
+    setSelectedIds([]);
+    if (activeRecording && idsToDelete.includes(activeRecording.id)) {
       setActiveRecording(null);
       setIsPlaying(false);
     }
     if (onDeleteRecordingsBatch) {
-      onDeleteRecordingsBatch(allIds);
+      onDeleteRecordingsBatch(idsToDelete);
     } else {
-      allIds.forEach((id) => onDeleteRecording(id));
+      idsToDelete.forEach((id) => onDeleteRecording(id));
     }
-    setSelectedIds([]);
+    try {
+      await fetch('/api/recordings/delete-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: idsToDelete, date: selectedDate, cameraId: selectedCameraId }),
+      });
+    } catch (e) {}
   };
 
   const resetFilters = () => {
     setSearchQuery('');
-    setSelectedDate('');
+    setSelectedDate(getTodayYMD());
+    setDatePreset('today');
     setSelectedStartTime('');
     setSelectedEndTime('');
     setSelectedCameraId('ALL');
@@ -906,7 +933,72 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
             </div>
 
             {/* Filter Inputs */}
-            <div className="space-y-2">
+            <div className="space-y-2.5">
+              {/* Quick Date Presets (Default: Hoje) */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                  <span className="flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-emerald-400" /> Período:
+                  </span>
+                  <span className="text-emerald-400 font-bold">
+                    {selectedDate === getTodayYMD()
+                      ? 'Hoje'
+                      : selectedDate
+                      ? selectedDate.split('-').reverse().join('/')
+                      : 'Histórico Completo'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedDate(getTodayYMD());
+                      setDatePreset('today');
+                    }}
+                    className={`py-1 px-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 ${
+                      selectedDate === getTodayYMD()
+                        ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800'
+                    }`}
+                  >
+                    Hoje
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const y = new Date();
+                      y.setDate(y.getDate() - 1);
+                      const pad = (n: number) => n.toString().padStart(2, '0');
+                      const yStr = `${y.getFullYear()}-${pad(y.getMonth() + 1)}-${pad(y.getDate())}`;
+                      setSelectedDate(yStr);
+                      setDatePreset('yesterday');
+                    }}
+                    className={`py-1 px-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 ${
+                      datePreset === 'yesterday'
+                        ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800'
+                    }`}
+                  >
+                    Ontem
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedDate('');
+                      setDatePreset('all');
+                    }}
+                    className={`py-1 px-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 ${
+                      !selectedDate
+                        ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800'
+                    }`}
+                  >
+                    Todos os Dias
+                  </button>
+                </div>
+              </div>
+
               <div>
                 <label className="text-[10px] text-slate-400 font-mono mb-1 flex items-center gap-1">
                   <CameraIcon className="w-3 h-3 text-slate-500" /> Câmera:
@@ -927,12 +1019,15 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
 
               <div>
                 <label className="text-[10px] text-slate-400 font-mono mb-1 flex items-center gap-1">
-                  <Calendar className="w-3 h-3 text-slate-500" /> Data da Gravação:
+                  <Calendar className="w-3 h-3 text-slate-500" /> Filtrar Data Específica:
                 </label>
                 <input
                   type="date"
                   value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedDate(e.target.value);
+                    setDatePreset(e.target.value === getTodayYMD() ? 'today' : 'custom');
+                  }}
                   className="w-full bg-slate-950 border border-slate-800 text-slate-200 px-2.5 py-1.5 rounded-lg text-xs outline-none focus:border-emerald-500"
                 />
               </div>
@@ -973,13 +1068,13 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
                 <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2" />
               </div>
 
-              {(selectedDate || selectedStartTime || selectedEndTime || selectedCameraId !== 'ALL' || searchQuery) && (
+              {(selectedDate !== getTodayYMD() || selectedStartTime || selectedEndTime || selectedCameraId !== 'ALL' || searchQuery) && (
                 <button
                   type="button"
                   onClick={resetFilters}
                   className="w-full py-1 text-[10px] font-mono text-emerald-400 hover:text-emerald-300 flex items-center justify-center gap-1"
                 >
-                  <RotateCcw className="w-3 h-3" /> Limpar Filtros
+                  <RotateCcw className="w-3 h-3" /> Voltar para Hoje
                 </button>
               )}
             </div>

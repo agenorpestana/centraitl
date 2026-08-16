@@ -2841,22 +2841,43 @@ async function startServer() {
 
   async function permanentlyDeleteRecording(id: string) {
     if (!id) return;
-    deletedRecordingIds.add(id);
+    const cleanCamId = id.trim();
+    const cleanNoExt = cleanCamId.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/, '');
+    const dashId = cleanNoExt.replace(/_/g, '-');
+    const underscoreId = cleanNoExt.replace(/-/g, '_');
+    const alphaNumericOnly = cleanNoExt.replace(/[^a-zA-Z0-9]/g, '');
+
+    deletedRecordingIds.add(cleanCamId);
+    deletedRecordingIds.add(cleanNoExt);
+    deletedRecordingIds.add(dashId);
+    deletedRecordingIds.add(underscoreId);
+    deletedRecordingIds.add(alphaNumericOnly);
+    deletedRecordingIds.add(`${cleanNoExt}.mp4`);
+    deletedRecordingIds.add(`${dashId}.mp4`);
+    deletedRecordingIds.add(`${underscoreId}.mp4`);
 
     const targets = recordings.filter(
       (r) =>
-        r.id === id ||
-        (r.streamUrl && r.streamUrl.includes(id)) ||
-        (id.startsWith('rec_') && r.streamUrl && r.streamUrl.includes(id.replace('.mp4', '')))
+        r.id === cleanCamId ||
+        r.id === dashId ||
+        r.id === underscoreId ||
+        (r.streamUrl && (r.streamUrl.includes(cleanNoExt) || r.streamUrl.includes(dashId) || r.streamUrl.includes(underscoreId)))
     );
 
     const filesToDelete = new Set<string>();
-    filesToDelete.add(id);
-    if (id.endsWith('.mp4')) {
-      filesToDelete.add(id);
-      filesToDelete.add(id.replace('.mp4', '.part.mp4'));
-      filesToDelete.add(id.replace('.mp4', '.tmp_fixed.mp4'));
-    }
+    filesToDelete.add(cleanCamId);
+    filesToDelete.add(`${cleanNoExt}.mp4`);
+    filesToDelete.add(`${cleanNoExt}.part.mp4`);
+    filesToDelete.add(`${cleanNoExt}.tmp_fixed.mp4`);
+    filesToDelete.add(`${dashId}.mp4`);
+    filesToDelete.add(`${dashId}.part.mp4`);
+    filesToDelete.add(`${dashId}.tmp_fixed.mp4`);
+    filesToDelete.add(`${underscoreId}.mp4`);
+    filesToDelete.add(`${underscoreId}.part.mp4`);
+    filesToDelete.add(`${underscoreId}.tmp_fixed.mp4`);
+    filesToDelete.add(`thumb_auto_${underscoreId.replace(/^rec_auto_/, '').replace(/^rec-auto-/, '')}.jpg`);
+    filesToDelete.add(`thumb_disk_${underscoreId}.jpg`);
+    filesToDelete.add(`thumb_real_${underscoreId.replace(/^rec_real_/, '').replace(/^rec-real-/, '')}.jpg`);
 
     for (const target of targets) {
       deletedRecordingIds.add(target.id);
@@ -2881,18 +2902,6 @@ async function startServer() {
       }
     }
 
-    if (id.endsWith('.mp4') || id.startsWith('rec_')) {
-      const baseName = id.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4)$/, '');
-      filesToDelete.add(`${baseName}.mp4`);
-      filesToDelete.add(`${baseName}.part.mp4`);
-      filesToDelete.add(`${baseName}.tmp_fixed.mp4`);
-      filesToDelete.add(`thumb_disk_${baseName}.jpg`);
-      filesToDelete.add(`thumb_auto_${baseName.replace('rec_auto_', '')}.jpg`);
-      filesToDelete.add(`thumb_real_${baseName.replace('rec_real_', '')}.jpg`);
-      deletedRecordingIds.add(`${baseName}.mp4`);
-      deletedRecordingIds.add(baseName);
-    }
-
     // Unlink files from all recording dirs
     const dirsToClean = [
       recordingsDir,
@@ -2907,9 +2916,12 @@ async function startServer() {
       try {
         const dirFiles = fs.readdirSync(dir);
         for (const df of dirFiles) {
+          const dfNoExt = df.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/, '');
+          const dfAlpha = dfNoExt.replace(/[^a-zA-Z0-9]/g, '');
           if (
             filesToDelete.has(df) ||
-            Array.from(filesToDelete).some((f) => f && (df === f || (f.length > 5 && df.includes(f.replace(/\.(mp4|jpg)$/, '')))))
+            filesToDelete.has(dfNoExt) ||
+            (alphaNumericOnly.length >= 8 && (dfAlpha.includes(alphaNumericOnly) || alphaNumericOnly.includes(dfAlpha)))
           ) {
             const fullPath = path.join(dir, df);
             try {
@@ -2923,7 +2935,7 @@ async function startServer() {
     // Delete from SQLite
     if (sqliteDb) {
       try {
-        sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ? OR stream_url LIKE ?', [id, id, `%${id}%`]);
+        sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR id = ? OR id = ? OR stream_url LIKE ?', [cleanCamId, dashId, underscoreId, `%${cleanNoExt}%`]);
         for (const target of targets) {
           sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [target.id, target.streamUrl]);
         }
@@ -2934,7 +2946,7 @@ async function startServer() {
     // Delete from PostgreSQL
     if (isPgActive && pool) {
       try {
-        await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ? OR stream_url LIKE ?', [id, id, `%${id}%`]);
+        await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR id = ? OR id = ? OR stream_url LIKE ?', [cleanCamId, dashId, underscoreId, `%${cleanNoExt}%`]);
         for (const target of targets) {
           await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [target.id, target.streamUrl]);
         }
@@ -2942,12 +2954,15 @@ async function startServer() {
     }
 
     // Filter memory recordings
-    recordings = recordings.filter(
-      (r) =>
-        r.id !== id &&
-        !deletedRecordingIds.has(r.id) &&
-        !filesToDelete.has(path.basename(r.streamUrl || ''))
-    );
+    recordings = recordings.filter((r) => {
+      if (r.id === cleanCamId || r.id === dashId || r.id === underscoreId) return false;
+      if (deletedRecordingIds.has(r.id)) return false;
+      const recBase = path.basename(r.streamUrl || '');
+      if (filesToDelete.has(recBase)) return false;
+      const recAlpha = (r.id + '_' + recBase).replace(/[^a-zA-Z0-9]/g, '');
+      if (alphaNumericOnly.length >= 8 && recAlpha.includes(alphaNumericOnly)) return false;
+      return true;
+    });
     saveToLocalFile();
   }
 
@@ -3024,12 +3039,20 @@ async function startServer() {
 
             // If marked as deleted, immediately purge from disk
             const baseFileNoExt = file.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/, '');
+            const fileAlpha = baseFileNoExt.replace(/[^a-zA-Z0-9]/g, '');
             const isMarkedDeleted =
               deletedRecordingIds.has(file) ||
               deletedRecordingIds.has(baseFileNoExt) ||
               deletedRecordingIds.has(`${baseFileNoExt}.mp4`) ||
               deletedRecordingIds.has(`/recordings/${file}`) ||
-              Array.from(deletedRecordingIds).some((dId) => dId && (dId === file || (dId.length > 5 && file.includes(dId.replace(/\.(mp4|jpg)$/, '')))));
+              deletedRecordingIds.has(baseFileNoExt.replace(/_/g, '-')) ||
+              deletedRecordingIds.has(baseFileNoExt.replace(/-/g, '_')) ||
+              deletedRecordingIds.has(fileAlpha) ||
+              Array.from(deletedRecordingIds).some((dId) => {
+                if (!dId) return false;
+                const dAlpha = dId.replace(/[^a-zA-Z0-9]/g, '');
+                return dAlpha.length >= 8 && (fileAlpha.includes(dAlpha) || dAlpha.includes(fileAlpha));
+              });
 
             if (isMarkedDeleted) {
               try { if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath); } catch (e) {}
@@ -3325,7 +3348,7 @@ async function startServer() {
         '-c:v', 'copy',
         '-an',
         '-max_muxing_queue_size', '4096',
-        '-movflags', '+faststart+frag_keyframe+empty_moov+default_base_moof',
+        '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
         '-t', autoRecordingDurationSec.toString(),
         partPath
       );
@@ -5427,7 +5450,7 @@ async function startServer() {
       '-c:v', 'copy',
       '-an',
       '-max_muxing_queue_size', '4096',
-      '-movflags', '+faststart+frag_keyframe+empty_moov+default_base_moof',
+      '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
       '-t', durLimit.toString(),
       partPath
     );
@@ -5648,15 +5671,51 @@ async function startServer() {
   app.post('/api/recordings/batch-delete', async (req, res) => {
     try {
       const { ids } = req.body;
+      let count = 0;
       if (Array.isArray(ids) && ids.length > 0) {
         for (const id of ids) {
-          await permanentlyDeleteRecording(id);
+          if (id) {
+            await permanentlyDeleteRecording(id);
+            count++;
+          }
         }
-        addLog('ITL Admin', `${ids.length} gravações em nuvem excluídas permanentemente em lote`, 'RECORDING');
+        addLog('ITL Admin', `${count} gravações em nuvem excluídas permanentemente em lote`, 'RECORDING');
       }
-      return res.json({ success: true, message: `${ids ? ids.length : 0} gravações removidas permanentemente` });
+      return res.json({ success: true, count, message: `${count} gravações removidas permanentemente` });
     } catch (err: any) {
       console.error('[BATCH DELETE Recording Error]:', err);
+      return res.status(500).json({ success: false, error: err.message || err });
+    }
+  });
+
+  app.post('/api/recordings/delete-all', async (req, res) => {
+    try {
+      const { ids, date, cameraId } = req.body || {};
+      const reqUser = getUserFromReq(req);
+      const userAccessible = filterRecordingsForUser(reqUser, recordings);
+
+      let toDelete = userAccessible;
+      if (Array.isArray(ids) && ids.length > 0 && !ids.includes('ALL')) {
+        const idSet = new Set(ids);
+        toDelete = userAccessible.filter((r) => idSet.has(r.id));
+      } else if (date || (cameraId && cameraId !== 'ALL')) {
+        toDelete = userAccessible.filter((r) => {
+          if (date && !r.startTime.includes(date)) return false;
+          if (cameraId && cameraId !== 'ALL' && r.cameraId !== cameraId) return false;
+          return true;
+        });
+      }
+
+      let count = 0;
+      for (const rec of toDelete) {
+        await permanentlyDeleteRecording(rec.id);
+        count++;
+      }
+
+      addLog('ITL Admin', `${count} gravações em nuvem excluídas permanentemente`, 'RECORDING');
+      return res.json({ success: true, count, message: `${count} gravações excluídas permanentemente` });
+    } catch (err: any) {
+      console.error('[DELETE ALL Recordings Error]:', err);
       return res.status(500).json({ success: false, error: err.message || err });
     }
   });
