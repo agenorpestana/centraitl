@@ -136,7 +136,7 @@ export interface Camera {
   id: string;
   name: string;
   location: string;
-  protocol?: 'RTSP' | 'RTMP';
+  protocol?: 'RTSP' | 'RTMP' | 'ONVIF' | 'HTTP' | string;
   networkType?: 'LOCAL' | 'REMOTE';
   rtspUrl: string;
   rtmpUrl?: string;
@@ -144,6 +144,11 @@ export interface Camera {
   rtmpServerUrl?: string;
   fullRtmpUrl?: string;
   subStreamUrl?: string;
+  onvifIp?: string;
+  onvifPort?: number;
+  onvifUsername?: string;
+  onvifPassword?: string;
+  onvifProfile?: string;
   stateUf?: string;
   city?: string;
   status: CameraStatus;

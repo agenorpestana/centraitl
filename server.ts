@@ -433,10 +433,10 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   );
 
   if (isSubStream) {
-    if (hasNativeHardwareSubStream) {
+    if (hasNativeHardwareSubStream && !streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push('-c:v', 'copy');
     } else {
-      // Fluid 30fps SD 360p transcode for lightweight yet smooth camera cards
+      // Always normalize RTSP card feeds to browser-safe H.264 HLS; many IP cameras expose H.265 or Annex-B timing that breaks cards.
       ffmpegArgs.push(
         '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
         '-c:v', 'libx264',
@@ -461,7 +461,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     '-f', 'hls',
     '-hls_time', '2',
     '-hls_list_size', '5',
-    '-hls_flags', 'delete_segments+omit_endlist+discont_start',
+    '-hls_flags', 'delete_segments+omit_endlist+independent_segments+program_date_time',
     '-hls_segment_filename', path.join(hlsDir, `${key}_%05d.ts`),
     '-y',
     hlsPath
@@ -667,7 +667,7 @@ async function startServer() {
     try { fs.mkdirSync(hlsServeDir, { recursive: true }); } catch (e) {}
   }
 
-  app.use('/live', (req, res, next) => {
+  app.use('/live', async (req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', '*');
@@ -713,11 +713,21 @@ async function startServer() {
       }
     }
 
-    // If file is not yet available, return a 404 with proper media content-type (never let it fall through to SPA HTML)
+    // RTSP cameras can take a few seconds to generate the first HLS playlist. Wait briefly before returning 404.
     if (fileName.endsWith('.m3u8')) {
+      for (let i = 0; i < 20; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        for (const candidate of candidateFiles) {
+          if (fs.existsSync(candidate)) {
+            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+            return res.sendFile(candidate);
+          }
+        }
+      }
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
       return res.status(404).send('#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n');
     }
+
     if (fileName.endsWith('.ts')) {
       res.setHeader('Content-Type', 'video/mp2t');
       return res.status(404).send('Segment not ready');
@@ -3189,7 +3199,9 @@ async function startServer() {
         '-i', effectiveInputSource,
         '-map', '0:v:0?',
         '-map', '0:a?',
-        '-c:v', 'copy',
+        ...(effectiveInputSource.startsWith('rtsp://')
+          ? ['-vf', 'format=yuv420p', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '23']
+          : ['-c:v', 'copy']),
         '-c:a', 'aac',
         '-b:a', '64k',
         '-ac', '1',
@@ -5115,7 +5127,9 @@ async function startServer() {
       '-i', recInput,
       '-map', '0:v:0?',
       '-map', '0:a?',
-      '-c:v', 'copy',
+      ...(recInput.startsWith('rtsp://')
+        ? ['-vf', 'format=yuv420p', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '23']
+        : ['-c:v', 'copy']),
       '-c:a', 'aac',
       '-b:a', '64k',
       '-ac', '1',
