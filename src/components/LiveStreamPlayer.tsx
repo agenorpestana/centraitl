@@ -301,6 +301,18 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     setVideoUrl(cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream)));
   }, [camera.id, camera.videoStreamUrl, camera.streamKey, useSubStream]);
 
+  // Proactive keep-alive watchdog for MJPEG stream to prevent browser 30s socket freeze and black screen
+  useEffect(() => {
+    if (!useMjpegStream || streamMode !== 'VIDEO' || !isVisible) return;
+
+    // Proactively refresh stream timestamp every 24 seconds to renew HTTP socket before proxy/browser timeout
+    const watchdogInterval = setInterval(() => {
+      setRetryCount((prev) => prev + 1);
+    }, 24000);
+
+    return () => clearInterval(watchdogInterval);
+  }, [useMjpegStream, streamMode, isVisible]);
+
   // Connect stream
   const connectStream = () => {
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
@@ -311,16 +323,17 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     }
 
     setConnectionState('LOADING');
-    // Allow up to 16s for HLS segment generation when many cameras load concurrently
+    // Allow up to 12s for initial connection
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
-          console.log(`[Stream Player] Tempo limite de carregamento para ${camera.name}. Tentando reconectar HLS...`);
-          return 'OFFLINE';
+          console.log(`[Stream Player] Tempo limite de carregamento para ${camera.name}. Reconectando...`);
+          setRetryCount((prev) => prev + 1);
+          return 'LOADING';
         }
         return curr;
       });
-    }, 16000);
+    }, 12000);
   };
 
   const handleVideoError = () => {
@@ -333,10 +346,10 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       return;
     }
     if (useMjpegStream) {
-      // Auto-retry MJPEG stream if disconnected
+      // Auto-retry MJPEG stream immediately if disconnected
       setTimeout(() => {
         setRetryCount((prev) => prev + 1);
-      }, 1500);
+      }, 1000);
       return;
     }
     setConnectionState('OFFLINE');

@@ -424,6 +424,13 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
 
   const handleDeleteSelected = () => {
     if (selectedIds.length === 0) return;
+    if (!confirm(`Deseja realmente excluir permanentemente as ${selectedIds.length} gravações selecionadas?`)) {
+      return;
+    }
+    if (activeRecording && selectedIds.includes(activeRecording.id)) {
+      setActiveRecording(null);
+      setIsPlaying(false);
+    }
     if (onDeleteRecordingsBatch) {
       onDeleteRecordingsBatch(selectedIds);
     } else {
@@ -435,6 +442,13 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
   const handleDeleteAllFiltered = () => {
     if (filteredRecordings.length === 0) return;
     const allIds = filteredRecordings.map((r) => r.id);
+    if (!confirm(`Deseja realmente excluir permanentemente todas as ${allIds.length} gravações visíveis?`)) {
+      return;
+    }
+    if (activeRecording && allIds.includes(activeRecording.id)) {
+      setActiveRecording(null);
+      setIsPlaying(false);
+    }
     if (onDeleteRecordingsBatch) {
       onDeleteRecordingsBatch(allIds);
     } else {
@@ -829,7 +843,10 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
                       type="button"
                       onClick={() => {
                         if (confirm(`Deseja realmente excluir a gravação de ${activeRecording.cameraName}?`)) {
-                          onDeleteRecording(activeRecording.id);
+                          const idToDelete = activeRecording.id;
+                          setActiveRecording(null);
+                          setIsPlaying(false);
+                          onDeleteRecording(idToDelete);
                         }
                       }}
                       className="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 text-[11px] font-medium rounded-lg flex items-center space-x-1 transition"
@@ -1108,7 +1125,13 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
                         title="Excluir gravação"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onDeleteRecording(rec.id);
+                          if (confirm(`Deseja realmente excluir esta gravação de ${rec.cameraName}?`)) {
+                            if (activeRecording?.id === rec.id) {
+                              setActiveRecording(null);
+                              setIsPlaying(false);
+                            }
+                            onDeleteRecording(rec.id);
+                          }
                         }}
                         className="p-1.5 hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 rounded-lg transition"
                       >

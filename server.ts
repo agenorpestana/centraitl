@@ -3259,13 +3259,13 @@ async function startServer() {
       if (effectiveInputSource.startsWith('rtsp://')) {
         ffmpegArgs.push(
           '-rtsp_transport', 'tcp',
-          '-stimeout', '30000000',
+          '-stimeout', '20000000',
           '-analyzeduration', '1000000',
           '-probesize', '1000000'
         );
       } else if (effectiveInputSource.startsWith('rtmp://')) {
         ffmpegArgs.push(
-          '-rw_timeout', '30000000',
+          '-rw_timeout', '20000000',
           '-analyzeduration', '1000000',
           '-probesize', '1000000'
         );
@@ -3280,17 +3280,11 @@ async function startServer() {
 
       ffmpegArgs.push(
         '-i', effectiveInputSource,
-        '-map', '0:v:0?',
-        '-map', '0:a?',
-        ...(effectiveInputSource.startsWith('rtsp://')
-          ? ['-vf', 'format=yuv420p', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '23']
-          : ['-c:v', 'copy']),
-        '-c:a', 'aac',
-        '-b:a', '64k',
-        '-ac', '1',
-        '-strict', 'experimental',
-        '-max_muxing_queue_size', '2048',
-        '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+        '-map', '0:v:0',
+        '-c:v', 'copy',
+        '-an',
+        '-max_muxing_queue_size', '4096',
+        '-movflags', '+faststart+frag_keyframe+empty_moov+default_base_moof',
         '-t', autoRecordingDurationSec.toString(),
         partPath
       );
@@ -4989,8 +4983,9 @@ async function startServer() {
     res.writeHead(200, {
       'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
       'Cache-Control': 'no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0',
-      'Connection': 'keep-alive',
+      'Connection': 'close',
       'Pragma': 'no-cache',
+      'X-Accel-Buffering': 'no',
       'Access-Control-Allow-Origin': '*',
     });
 
@@ -5002,13 +4997,13 @@ async function startServer() {
     if (streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-stimeout', '30000000',
+        '-stimeout', '15000000',
         '-analyzeduration', '1000000',
         '-probesize', '1000000'
       );
     } else if (streamSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '30000000',
+        '-rw_timeout', '15000000',
         '-analyzeduration', '1000000',
         '-probesize', '1000000'
       );
@@ -5018,7 +5013,7 @@ async function startServer() {
       '-i', streamSource,
       '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,format=yuvj420p',
       '-r', '20',
-      '-q:v', '5',
+      '-q:v', '4',
       '-an',
       '-f', 'mpjpeg',
       '-boundary_tag', boundary,
@@ -5027,59 +5022,47 @@ async function startServer() {
 
     let isClientConnected = true;
     let currentProc: ReturnType<typeof spawn> | null = null;
-    let respawnTimeout: NodeJS.Timeout | null = null;
 
-    const stopAll = () => {
+    const cleanup = () => {
       isClientConnected = false;
-      if (respawnTimeout) clearTimeout(respawnTimeout);
       if (currentProc) {
         try { currentProc.kill('SIGKILL'); } catch (e) {}
         currentProc = null;
       }
-    };
-
-    req.on('close', stopAll);
-    res.on('close', stopAll);
-    res.on('error', stopAll);
-
-    const startStreaming = () => {
-      if (!isClientConnected || res.writableEnded) return;
-
       try {
-        const proc = spawn('ffmpeg', ffmpegArgs);
-        currentProc = proc;
-
-        proc.stdout?.on('data', (chunk) => {
-          if (isClientConnected && !res.writableEnded) {
-            try {
-              res.write(chunk);
-            } catch (e) {
-              stopAll();
-            }
-          }
-        });
-
-        proc.stderr?.on('data', () => {});
-
-        proc.on('close', () => {
-          if (isClientConnected && !res.writableEnded) {
-            respawnTimeout = setTimeout(startStreaming, 300);
-          }
-        });
-
-        proc.on('error', () => {
-          if (isClientConnected && !res.writableEnded) {
-            respawnTimeout = setTimeout(startStreaming, 1000);
-          }
-        });
-      } catch (e) {
-        if (isClientConnected && !res.writableEnded) {
-          respawnTimeout = setTimeout(startStreaming, 1000);
-        }
-      }
+        if (!res.writableEnded) res.end();
+      } catch (e) {}
     };
 
-    startStreaming();
+    req.on('close', cleanup);
+    res.on('close', cleanup);
+    res.on('error', cleanup);
+
+    try {
+      currentProc = spawn('ffmpeg', ffmpegArgs);
+
+      currentProc.stdout?.on('data', (chunk) => {
+        if (isClientConnected && !res.writableEnded) {
+          try {
+            res.write(chunk);
+          } catch (e) {
+            cleanup();
+          }
+        }
+      });
+
+      currentProc.stderr?.on('data', () => {});
+
+      currentProc.on('close', () => {
+        cleanup();
+      });
+
+      currentProc.on('error', () => {
+        cleanup();
+      });
+    } catch (e) {
+      cleanup();
+    }
   });
 
   // Real-time camera connection test and diagnostic endpoint (RTSP / RTMP / ONVIF / HLS)
@@ -5344,17 +5327,11 @@ async function startServer() {
 
     ffmpegArgs.push(
       '-i', recInput,
-      '-map', '0:v:0?',
-      '-map', '0:a?',
-      ...(recInput.startsWith('rtsp://')
-        ? ['-vf', 'format=yuv420p', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '23']
-        : ['-c:v', 'copy']),
-      '-c:a', 'aac',
-      '-b:a', '64k',
-      '-ac', '1',
-      '-strict', 'experimental',
+      '-map', '0:v:0',
+      '-c:v', 'copy',
+      '-an',
       '-max_muxing_queue_size', '4096',
-      '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+      '-movflags', '+faststart+frag_keyframe+empty_moov+default_base_moof',
       '-t', durLimit.toString(),
       partPath
     );
