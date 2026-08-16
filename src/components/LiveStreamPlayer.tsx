@@ -323,6 +323,13 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       setConnectionState('LOADING');
       return;
     }
+    if (useMjpegStream) {
+      // Auto-retry MJPEG stream if disconnected
+      setTimeout(() => {
+        setRetryCount((prev) => prev + 1);
+      }, 1500);
+      return;
+    }
     setConnectionState('OFFLINE');
   };
 

@@ -408,13 +408,13 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
-      '-stimeout', '8000000',
+      '-stimeout', '30000000',
       '-analyzeduration', '1000000',
       '-probesize', '1000000'
     );
   } else if (streamSource.startsWith('rtmp://')) {
     ffmpegArgs.push(
-      '-rw_timeout', '8000000',
+      '-rw_timeout', '30000000',
       '-analyzeduration', '1000000',
       '-probesize', '1000000'
     );
@@ -3259,13 +3259,13 @@ async function startServer() {
       if (effectiveInputSource.startsWith('rtsp://')) {
         ffmpegArgs.push(
           '-rtsp_transport', 'tcp',
-          '-stimeout', '8000000',
+          '-stimeout', '30000000',
           '-analyzeduration', '1000000',
           '-probesize', '1000000'
         );
       } else if (effectiveInputSource.startsWith('rtmp://')) {
         ffmpegArgs.push(
-          '-rw_timeout', '8000000',
+          '-rw_timeout', '30000000',
           '-analyzeduration', '1000000',
           '-probesize', '1000000'
         );
@@ -4989,7 +4989,7 @@ async function startServer() {
     res.writeHead(200, {
       'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
       'Cache-Control': 'no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0',
-      'Connection': 'close',
+      'Connection': 'keep-alive',
       'Pragma': 'no-cache',
       'Access-Control-Allow-Origin': '*',
     });
@@ -5002,15 +5002,15 @@ async function startServer() {
     if (streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-stimeout', '6000000',
-        '-analyzeduration', '800000',
-        '-probesize', '800000'
+        '-stimeout', '30000000',
+        '-analyzeduration', '1000000',
+        '-probesize', '1000000'
       );
     } else if (streamSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '6000000',
-        '-analyzeduration', '800000',
-        '-probesize', '800000'
+        '-rw_timeout', '30000000',
+        '-analyzeduration', '1000000',
+        '-probesize', '1000000'
       );
     }
 
@@ -5025,20 +5025,61 @@ async function startServer() {
       'pipe:1'
     );
 
-    let ffmpegProc: ReturnType<typeof spawn> | null = null;
-    try {
-      ffmpegProc = spawn('ffmpeg', ffmpegArgs);
-      ffmpegProc.stdout?.pipe(res);
-      ffmpegProc.stderr?.on('data', () => {});
-    } catch (e) {
-      return res.end();
-    }
+    let isClientConnected = true;
+    let currentProc: ReturnType<typeof spawn> | null = null;
+    let respawnTimeout: NodeJS.Timeout | null = null;
 
-    req.on('close', () => {
-      if (ffmpegProc) {
-        try { ffmpegProc.kill('SIGKILL'); } catch (e) {}
+    const stopAll = () => {
+      isClientConnected = false;
+      if (respawnTimeout) clearTimeout(respawnTimeout);
+      if (currentProc) {
+        try { currentProc.kill('SIGKILL'); } catch (e) {}
+        currentProc = null;
       }
-    });
+    };
+
+    req.on('close', stopAll);
+    res.on('close', stopAll);
+    res.on('error', stopAll);
+
+    const startStreaming = () => {
+      if (!isClientConnected || res.writableEnded) return;
+
+      try {
+        const proc = spawn('ffmpeg', ffmpegArgs);
+        currentProc = proc;
+
+        proc.stdout?.on('data', (chunk) => {
+          if (isClientConnected && !res.writableEnded) {
+            try {
+              res.write(chunk);
+            } catch (e) {
+              stopAll();
+            }
+          }
+        });
+
+        proc.stderr?.on('data', () => {});
+
+        proc.on('close', () => {
+          if (isClientConnected && !res.writableEnded) {
+            respawnTimeout = setTimeout(startStreaming, 300);
+          }
+        });
+
+        proc.on('error', () => {
+          if (isClientConnected && !res.writableEnded) {
+            respawnTimeout = setTimeout(startStreaming, 1000);
+          }
+        });
+      } catch (e) {
+        if (isClientConnected && !res.writableEnded) {
+          respawnTimeout = setTimeout(startStreaming, 1000);
+        }
+      }
+    };
+
+    startStreaming();
   });
 
   // Real-time camera connection test and diagnostic endpoint (RTSP / RTMP / ONVIF / HLS)
