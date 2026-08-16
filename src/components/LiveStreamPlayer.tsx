@@ -59,6 +59,14 @@ const getInitialVideoUrl = (cam: Camera, useSubStream = true) => {
 
 type ConnectionState = 'LOADING' | 'ONLINE' | 'OFFLINE';
 
+const isRtspCameraSource = (cam: Camera): boolean => {
+  if (cam.protocol === 'RTSP') return true;
+  if (cam.rtspUrl && (cam.rtspUrl.startsWith('rtsp://') || cam.rtspUrl.includes('rtsp'))) return true;
+  if (cam.videoStreamUrl && cam.videoStreamUrl.startsWith('rtsp://')) return true;
+  if (cam.fullRtmpUrl && cam.fullRtmpUrl.startsWith('rtsp://')) return true;
+  return false;
+};
+
 export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   camera,
   className = '',
@@ -76,8 +84,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO'
   );
 
-  // Default to false so all RTSP & RTMP streams use fast HLS playback
-  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(false);
+  // Default to MJPEG for RTSP cameras, and HLS for RTMP / Web streams
+  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(() => isRtspCameraSource(camera));
 
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');
@@ -125,6 +133,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   useEffect(() => {
     const initialUrl = cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream));
     setVideoUrl(initialUrl);
+    setUseMjpegStream(isRtspCameraSource(camera));
     setStreamMode(camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO');
     setTempUrlInput(cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || initialUrl));
     if (camera.status === 'OFFLINE') {
@@ -339,7 +348,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   };
 
   const handleRetryConnection = () => {
-    setUseMjpegStream(false);
+    setUseMjpegStream(isRtspCameraSource(camera));
     setConnectionState('LOADING');
     setRetryCount((prev) => prev + 1);
     connectStream();

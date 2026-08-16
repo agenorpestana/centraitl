@@ -239,9 +239,18 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                 }`}
               >
                 {/* Channel Label Top Left */}
-                <div className="absolute top-1 left-1.5 z-20 bg-black/80 text-[10px] font-mono text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30 font-bold flex items-center space-x-1">
+                <div className="absolute top-1 left-1.5 z-20 bg-black/85 text-[10px] font-mono text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30 font-bold flex items-center space-x-1.5 backdrop-blur-sm shadow-md">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
                   <span>CH{channelNumber.toString().padStart(2, '0')}</span>
+                  <span
+                    className={`text-[9px] px-1 py-0.2 rounded font-sans font-bold ${
+                      camera.protocol === 'RTSP'
+                        ? 'bg-cyan-950/90 text-cyan-300 border border-cyan-800'
+                        : 'bg-emerald-950/90 text-emerald-300 border border-emerald-800'
+                    }`}
+                  >
+                    {camera.protocol === 'RTSP' ? 'RTSP • MJPEG' : `${camera.protocol || 'RTMP'} • HLS`}
+                  </span>
                 </div>
 
                 {/* Top Right Controls */}
