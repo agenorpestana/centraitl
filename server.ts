@@ -452,8 +452,22 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
       );
     }
   } else {
-    // Full HD native stream copy (Zero CPU overhead, 1080p crystal clear for fullscreen)
-    ffmpegArgs.push('-c:v', 'copy');
+    // Full HD stream: For RTSP, always normalize to browser-safe H.264 (yuv420p); RTMP remains direct copy
+    if (streamSource.startsWith('rtsp://')) {
+      ffmpegArgs.push(
+        '-vf', 'format=yuv420p',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-threads', '2',
+        '-r', '30',
+        '-g', '60',
+        '-crf', '22',
+        '-max_muxing_queue_size', '2048'
+      );
+    } else {
+      ffmpegArgs.push('-c:v', 'copy');
+    }
   }
 
   ffmpegArgs.push(
@@ -677,20 +691,43 @@ async function startServer() {
     const key = fileName.replace(/\.(m3u8|ts)$/, '');
     const isSub = fileName.includes('_sub');
     const cleanKey = key.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+    const cleanKeyLower = cleanKey.toLowerCase();
 
-    if (key) {
+    if (cleanKey) {
       markStreamViewerActive(key);
       markStreamViewerActive(`cam_${cleanKey}`);
-      if (isSub) markStreamViewerActive(`cam_${cleanKey}_sub`);
+      markStreamViewerActive(`cam_${cleanKeyLower}`);
+      if (isSub) {
+        markStreamViewerActive(`cam_${cleanKey}_sub`);
+        markStreamViewerActive(`cam_${cleanKeyLower}_sub`);
+      }
 
       const cam = cameras.find((c) => {
         const cKey = c.streamKey || c.id;
-        const cClean = cKey ? cKey.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '') : '';
-        return cKey === key || cClean === cleanKey || c.id === key || c.id === `cam-${cleanKey}`;
+        const cClean = cKey ? cKey.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '').toLowerCase() : '';
+        const cIdClean = c.id ? c.id.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '').toLowerCase() : '';
+        const cNameClean = c.name ? c.name.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+        const reqClean = cleanKeyLower.replace(/[^a-z0-9]/g, '');
+        return (
+          (cKey && cKey.toLowerCase() === key.toLowerCase()) ||
+          cClean === reqClean ||
+          cIdClean === reqClean ||
+          cNameClean === reqClean ||
+          (c.id && c.id.toLowerCase() === key.toLowerCase()) ||
+          (c.id && c.id.toLowerCase() === `cam-${cleanKeyLower}`) ||
+          (c.id && c.id.toLowerCase() === `cam_${cleanKeyLower}`) ||
+          (c.id && c.id.toLowerCase() === cleanKeyLower)
+        );
       });
 
       const activeTargetKey = isSub ? `cam_${cleanKey}_sub` : `cam_${cleanKey}`;
-      if (cam && !activeFfmpegProcesses.has(activeTargetKey) && !activeFfmpegProcesses.has(key)) {
+      const activeTargetKeyLower = isSub ? `cam_${cleanKeyLower}_sub` : `cam_${cleanKeyLower}`;
+      if (
+        cam &&
+        !activeFfmpegProcesses.has(activeTargetKey) &&
+        !activeFfmpegProcesses.has(activeTargetKeyLower) &&
+        !activeFfmpegProcesses.has(key)
+      ) {
         startCameraRtspStream(cam, false, isSub);
       }
     }
@@ -699,29 +736,42 @@ async function startServer() {
     const candidateFiles = [
       path.join(hlsServeDir, fileName),
       path.join(hlsServeDir, `cam_${cleanKey}${isSub ? '_sub' : ''}.${fileName.endsWith('.ts') ? 'ts' : 'm3u8'}`),
+      path.join(hlsServeDir, `cam_${cleanKeyLower}${isSub ? '_sub' : ''}.${fileName.endsWith('.ts') ? 'ts' : 'm3u8'}`),
       path.join(hlsServeDir, `${cleanKey}${isSub ? '_sub' : ''}.${fileName.endsWith('.ts') ? 'ts' : 'm3u8'}`),
+      path.join(hlsServeDir, `${cleanKeyLower}${isSub ? '_sub' : ''}.${fileName.endsWith('.ts') ? 'ts' : 'm3u8'}`),
     ];
 
-    for (const candidate of candidateFiles) {
-      if (fs.existsSync(candidate)) {
-        if (fileName.endsWith('.m3u8')) {
-          res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        } else if (fileName.endsWith('.ts')) {
-          res.setHeader('Content-Type', 'video/mp2t');
-        }
-        return res.sendFile(candidate);
+    const findMatchingFile = () => {
+      for (const candidate of candidateFiles) {
+        if (fs.existsSync(candidate)) return candidate;
       }
+      try {
+        const files = fs.readdirSync(hlsServeDir);
+        const targetLower = fileName.toLowerCase();
+        const matched = files.find((f) => f.toLowerCase() === targetLower);
+        if (matched) return path.join(hlsServeDir, matched);
+      } catch (e) {}
+      return null;
+    };
+
+    const initialMatch = findMatchingFile();
+    if (initialMatch) {
+      if (fileName.endsWith('.m3u8')) {
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      } else if (fileName.endsWith('.ts')) {
+        res.setHeader('Content-Type', 'video/mp2t');
+      }
+      return res.sendFile(initialMatch);
     }
 
     // RTSP cameras can take a few seconds to generate the first HLS playlist. Wait briefly before returning 404.
     if (fileName.endsWith('.m3u8')) {
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < 24; i++) {
         await new Promise((resolve) => setTimeout(resolve, 250));
-        for (const candidate of candidateFiles) {
-          if (fs.existsSync(candidate)) {
-            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            return res.sendFile(candidate);
-          }
+        const retryMatch = findMatchingFile();
+        if (retryMatch) {
+          res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+          return res.sendFile(retryMatch);
         }
       }
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
@@ -3245,8 +3295,8 @@ async function startServer() {
         if (fs.existsSync(sourceFileToProcess)) {
           try {
             const stats = fs.statSync(sourceFileToProcess);
-            // Only process files with substantial size (> 100KB)
-            if (stats.size > 100000) {
+            // Process any file with valid content (> 25KB)
+            if (stats.size > 25000) {
               const repaired = await repairAndFinalizeMp4(sourceFileToProcess, outputPath);
               if (repaired && fs.existsSync(outputPath)) {
                 const finalStats = fs.statSync(outputPath);
@@ -3255,8 +3305,8 @@ async function startServer() {
                 const probedDur = await getMp4Duration(outputPath);
                 if (probedDur > 0) realDurationSec = probedDur;
 
-                // ONLY accept slices that are at least 30 seconds long
-                if (realDurationSec >= 30 && finalStats.size > 150000) {
+                // Accept any valid slice with duration >= 5s and size > 25KB
+                if (realDurationSec >= 5 && finalStats.size > 25000) {
                   validFile = true;
                 } else {
                   try { fs.unlinkSync(outputPath); } catch (e) {}
@@ -3756,7 +3806,8 @@ async function startServer() {
           const out = (probeRes.stdout || '').trim();
           if (out.length > 0 && !probeRes.error) {
             cam.status = 'ONLINE';
-            startCameraRtspStream(cam);
+            startCameraRtspStream(cam, false, true);
+            startCameraRtspStream(cam, false, false);
             const latencyMs = Date.now() - startTime;
             const codec = out.split('\n')[0] || 'H264';
             return {
@@ -3777,7 +3828,8 @@ async function startServer() {
           const socketOk = await testTcpPortReachable(host, port, 2500);
           if (socketOk) {
             cam.status = 'ONLINE';
-            startCameraRtspStream(cam);
+            startCameraRtspStream(cam, false, true);
+            startCameraRtspStream(cam, false, false);
             const latencyMs = Date.now() - startTime;
             return {
               isOnline: true,
