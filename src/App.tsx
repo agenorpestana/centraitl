@@ -144,9 +144,9 @@ export default function App() {
   const [recordings, setRecordings] = useState<CloudRecording[]>(() => {
     try {
       const stored = localStorage.getItem('itl_recordings');
-      if (stored) {
+      if (stored !== null) {
         const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
     } catch {}
     return INITIAL_RECORDINGS;
@@ -439,7 +439,10 @@ export default function App() {
           setCameras((prev) => (cRes.length > 0 ? cRes : prev.length > 0 ? prev : cRes));
         }
         if (Array.isArray(rRes)) {
-          setRecordings((prev) => (rRes.length > 0 ? rRes : prev.length > 0 ? prev : rRes));
+          setRecordings(rRes);
+          try {
+            localStorage.setItem('itl_recordings', JSON.stringify(rRes));
+          } catch {}
         }
         if (Array.isArray(uRes) && uRes.length > 0) setUsers(uRes);
         if (Array.isArray(lRes) && lRes.length > 0) setLogs(lRes);
@@ -562,13 +565,22 @@ export default function App() {
   };
 
   const handleDeleteRecording = async (id: string) => {
+    setRecordings((prev) => {
+      const next = prev.filter((r) => r.id !== id);
+      try { localStorage.setItem('itl_recordings', JSON.stringify(next)); } catch {}
+      return next;
+    });
     try {
       await fetch(`/api/recordings/${id}`, { method: 'DELETE' });
     } catch (e) {}
-    setRecordings((prev) => prev.filter((r) => r.id !== id));
   };
 
   const handleDeleteRecordingsBatch = async (ids: string[]) => {
+    setRecordings((prev) => {
+      const next = prev.filter((r) => !ids.includes(r.id));
+      try { localStorage.setItem('itl_recordings', JSON.stringify(next)); } catch {}
+      return next;
+    });
     try {
       await fetch('/api/recordings/batch-delete', {
         method: 'POST',
@@ -576,7 +588,6 @@ export default function App() {
         body: JSON.stringify({ ids }),
       });
     } catch (e) {}
-    setRecordings((prev) => prev.filter((r) => !ids.includes(r.id)));
   };
 
   const handleAddUser = async (userData: Partial<User>) => {

@@ -408,15 +408,15 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
-      '-stimeout', '15000000',
-      '-analyzeduration', '5000000',
-      '-probesize', '5000000'
+      '-stimeout', '8000000',
+      '-analyzeduration', '1000000',
+      '-probesize', '1000000'
     );
   } else if (streamSource.startsWith('rtmp://')) {
     ffmpegArgs.push(
-      '-rw_timeout', '10000000',
-      '-analyzeduration', '3000000',
-      '-probesize', '3000000'
+      '-rw_timeout', '8000000',
+      '-analyzeduration', '1000000',
+      '-probesize', '1000000'
     );
   } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
     ffmpegArgs.push(
@@ -436,33 +436,36 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     if (hasNativeHardwareSubStream && !streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push('-c:v', 'copy');
     } else {
-      // Always normalize RTSP card feeds to browser-safe H.264 HLS; many IP cameras expose H.265 or Annex-B timing that breaks cards.
+      // Fast browser-compatible H.264 normalization for RTSP feeds
       ffmpegArgs.push(
         '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
+        '-profile:v', 'baseline',
+        '-level', '3.1',
         '-threads', '1',
-        '-r', '30',
-        '-g', '60',
-        '-b:v', '450k',
-        '-maxrate', '550k',
-        '-bufsize', '900k',
+        '-r', '25',
+        '-g', '50',
+        '-b:v', '400k',
+        '-maxrate', '500k',
+        '-bufsize', '800k',
         '-max_muxing_queue_size', '2048'
       );
     }
   } else {
-    // Full HD stream: For RTSP, always normalize to browser-safe H.264 (yuv420p); RTMP remains direct copy
+    // Full HD stream: For RTSP, normalize to browser-safe H.264 (yuv420p); RTMP remains direct copy
     if (streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-vf', 'format=yuv420p',
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
+        '-profile:v', 'main',
         '-threads', '2',
         '-r', '30',
         '-g', '60',
-        '-crf', '22',
+        '-crf', '23',
         '-max_muxing_queue_size', '2048'
       );
     } else {
@@ -473,9 +476,9 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   ffmpegArgs.push(
     '-an',
     '-f', 'hls',
-    '-hls_time', '2',
-    '-hls_list_size', '5',
-    '-hls_flags', 'delete_segments+omit_endlist+independent_segments+program_date_time',
+    '-hls_time', '1',
+    '-hls_list_size', '4',
+    '-hls_flags', 'delete_segments+omit_endlist+temp_file',
     '-hls_segment_filename', path.join(hlsDir, `${key}_%05d.ts`),
     '-y',
     hlsPath
@@ -2800,24 +2803,35 @@ async function startServer() {
     deletedRecordingIds.add(id);
 
     const targets = recordings.filter(
-      (r) => r.id === id || (r.streamUrl && r.streamUrl.includes(id)) || (id.startsWith('rec_') && r.streamUrl && r.streamUrl.includes(id.replace('.mp4', '')))
+      (r) =>
+        r.id === id ||
+        (r.streamUrl && r.streamUrl.includes(id)) ||
+        (id.startsWith('rec_') && r.streamUrl && r.streamUrl.includes(id.replace('.mp4', '')))
     );
 
     const filesToDelete = new Set<string>();
     filesToDelete.add(id);
+    if (id.endsWith('.mp4')) {
+      filesToDelete.add(id);
+      filesToDelete.add(id.replace('.mp4', '.part.mp4'));
+      filesToDelete.add(id.replace('.mp4', '.tmp_fixed.mp4'));
+    }
 
     for (const target of targets) {
       deletedRecordingIds.add(target.id);
       if (target.streamUrl) {
         const fileName = path.basename(target.streamUrl);
+        const baseName = fileName.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4)$/, '');
         filesToDelete.add(fileName);
-        filesToDelete.add(fileName.replace('.mp4', '.part.mp4'));
-        filesToDelete.add(fileName.replace('.mp4', '.tmp_fixed.mp4'));
-        filesToDelete.add(`thumb_auto_${fileName.replace('rec_auto_', '').replace('.mp4', '.jpg')}`);
-        filesToDelete.add(`thumb_disk_${fileName.replace('.mp4', '.jpg')}`);
-        filesToDelete.add(`thumb_real_${fileName.replace('rec_real_', '').replace('.mp4', '.jpg')}`);
+        filesToDelete.add(`${baseName}.mp4`);
+        filesToDelete.add(`${baseName}.part.mp4`);
+        filesToDelete.add(`${baseName}.tmp_fixed.mp4`);
+        filesToDelete.add(`thumb_auto_${baseName.replace('rec_auto_', '')}.jpg`);
+        filesToDelete.add(`thumb_disk_${baseName}.jpg`);
+        filesToDelete.add(`thumb_real_${baseName.replace('rec_real_', '')}.jpg`);
         deletedRecordingIds.add(target.streamUrl);
         deletedRecordingIds.add(fileName);
+        deletedRecordingIds.add(baseName);
       }
       if (target.thumbnailUrl && target.thumbnailUrl.startsWith('/recordings/')) {
         const thumbFile = path.basename(target.thumbnailUrl);
@@ -2827,13 +2841,15 @@ async function startServer() {
     }
 
     if (id.endsWith('.mp4') || id.startsWith('rec_')) {
-      const baseName = id.replace('.mp4', '');
+      const baseName = id.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4)$/, '');
       filesToDelete.add(`${baseName}.mp4`);
       filesToDelete.add(`${baseName}.part.mp4`);
       filesToDelete.add(`${baseName}.tmp_fixed.mp4`);
       filesToDelete.add(`thumb_disk_${baseName}.jpg`);
       filesToDelete.add(`thumb_auto_${baseName.replace('rec_auto_', '')}.jpg`);
       filesToDelete.add(`thumb_real_${baseName.replace('rec_real_', '')}.jpg`);
+      deletedRecordingIds.add(`${baseName}.mp4`);
+      deletedRecordingIds.add(baseName);
     }
 
     // Unlink files from all recording dirs
@@ -2850,7 +2866,10 @@ async function startServer() {
       try {
         const dirFiles = fs.readdirSync(dir);
         for (const df of dirFiles) {
-          if (filesToDelete.has(df) || Array.from(filesToDelete).some((f) => f && df.includes(f.replace('.mp4', '')))) {
+          if (
+            filesToDelete.has(df) ||
+            Array.from(filesToDelete).some((f) => f && (df === f || (f.length > 5 && df.includes(f.replace(/\.(mp4|jpg)$/, '')))))
+          ) {
             const fullPath = path.join(dir, df);
             try {
               if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
@@ -2863,7 +2882,10 @@ async function startServer() {
     // Delete from SQLite
     if (sqliteDb) {
       try {
-        sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url LIKE ?', [id, `%${id}%`]);
+        sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ? OR stream_url LIKE ?', [id, id, `%${id}%`]);
+        for (const target of targets) {
+          sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [target.id, target.streamUrl]);
+        }
         saveSqliteFile();
       } catch (e) {}
     }
@@ -2871,12 +2893,20 @@ async function startServer() {
     // Delete from PostgreSQL
     if (isPgActive && pool) {
       try {
-        await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url LIKE ?', [id, `%${id}%`]);
+        await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ? OR stream_url LIKE ?', [id, id, `%${id}%`]);
+        for (const target of targets) {
+          await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [target.id, target.streamUrl]);
+        }
       } catch (e) {}
     }
 
     // Filter memory recordings
-    recordings = recordings.filter((r) => r.id !== id && !filesToDelete.has(path.basename(r.streamUrl || '')));
+    recordings = recordings.filter(
+      (r) =>
+        r.id !== id &&
+        !deletedRecordingIds.has(r.id) &&
+        !filesToDelete.has(path.basename(r.streamUrl || ''))
+    );
     saveToLocalFile();
   }
 
@@ -2952,12 +2982,15 @@ async function startServer() {
             const fullPath = path.join(dirPath, file);
 
             // If marked as deleted, immediately purge from disk
-            if (
+            const baseFileNoExt = file.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/, '');
+            const isMarkedDeleted =
               deletedRecordingIds.has(file) ||
-              deletedRecordingIds.has(file.replace('.part.mp4', '.mp4')) ||
-              deletedRecordingIds.has(file.replace('.mp4', '')) ||
-              deletedRecordingIds.has(`/recordings/${file}`)
-            ) {
+              deletedRecordingIds.has(baseFileNoExt) ||
+              deletedRecordingIds.has(`${baseFileNoExt}.mp4`) ||
+              deletedRecordingIds.has(`/recordings/${file}`) ||
+              Array.from(deletedRecordingIds).some((dId) => dId && (dId === file || (dId.length > 5 && file.includes(dId.replace(/\.(mp4|jpg)$/, '')))));
+
+            if (isMarkedDeleted) {
               try { if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath); } catch (e) {}
               continue;
             }
@@ -3226,15 +3259,15 @@ async function startServer() {
       if (effectiveInputSource.startsWith('rtsp://')) {
         ffmpegArgs.push(
           '-rtsp_transport', 'tcp',
-          '-stimeout', '15000000',
-          '-analyzeduration', '5000000',
-          '-probesize', '5000000'
+          '-stimeout', '8000000',
+          '-analyzeduration', '1000000',
+          '-probesize', '1000000'
         );
       } else if (effectiveInputSource.startsWith('rtmp://')) {
         ffmpegArgs.push(
-          '-rw_timeout', '10000000',
-          '-analyzeduration', '3000000',
-          '-probesize', '3000000'
+          '-rw_timeout', '8000000',
+          '-analyzeduration', '1000000',
+          '-probesize', '1000000'
         );
       } else if (effectiveInputSource.startsWith('http://') || effectiveInputSource.startsWith('https://')) {
         ffmpegArgs.push(
@@ -4913,6 +4946,99 @@ async function startServer() {
     res.setHeader('Content-Type', 'image/svg+xml');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     return res.send(svg);
+  });
+
+  // Real-time direct MJPEG stream endpoint for cameras (Instantaneous low-latency stream for RTSP / RTMP / HLS fallback)
+  app.get(['/api/cameras/:id/stream', '/api/cameras/:id/mjpeg', '/api/cameras/:id/live-feed'], async (req, res) => {
+    const { id } = req.params;
+    const cleanId = id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const rawId = id.replace(/^cam[-_]/i, '');
+
+    const reqUser = getUserFromReq(req);
+    if (reqUser && reqUser.role !== 'ADMIN' && reqUser.allowedCameraIds && !reqUser.allowedCameraIds.includes('ALL')) {
+      const isAllowed = reqUser.allowedCameraIds.some((aId) => {
+        const cleanAId = aId.replace(/^cam-/, '').replace(/^cam_/, '');
+        return aId === id || cleanAId === rawId || id.includes(aId);
+      });
+      if (!isAllowed) {
+        return res.status(403).json({ error: 'Acesso não autorizado para esta câmera' });
+      }
+    }
+
+    const cam = cameras.find(
+      (c) =>
+        c.id === id ||
+        c.streamKey === id ||
+        c.id === `cam-${id}` ||
+        c.id === `cam_${id}` ||
+        (c.streamKey && c.streamKey.replace(/^cam[-_]/i, '') === rawId)
+    );
+
+    let streamSource = '';
+    if (req.query.url && typeof req.query.url === 'string') {
+      streamSource = req.query.url;
+    } else if (cam) {
+      streamSource = getValidStreamSource(cam, true);
+    }
+
+    if (!streamSource) {
+      return res.status(404).send('Nenhuma fonte de fluxo de vídeo encontrada para esta câmera');
+    }
+
+    const boundary = 'ffserver_mjpeg_stream';
+    res.writeHead(200, {
+      'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
+      'Cache-Control': 'no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0',
+      'Connection': 'close',
+      'Pragma': 'no-cache',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    const ffmpegArgs: string[] = [
+      '-fflags', '+nobuffer+discardcorrupt+genpts',
+      '-flags', 'low_delay',
+    ];
+
+    if (streamSource.startsWith('rtsp://')) {
+      ffmpegArgs.push(
+        '-rtsp_transport', 'tcp',
+        '-stimeout', '6000000',
+        '-analyzeduration', '800000',
+        '-probesize', '800000'
+      );
+    } else if (streamSource.startsWith('rtmp://')) {
+      ffmpegArgs.push(
+        '-rw_timeout', '6000000',
+        '-analyzeduration', '800000',
+        '-probesize', '800000'
+      );
+    }
+
+    ffmpegArgs.push(
+      '-i', streamSource,
+      '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,format=yuvj420p',
+      '-r', '20',
+      '-q:v', '5',
+      '-an',
+      '-f', 'mpjpeg',
+      '-boundary_tag', boundary,
+      'pipe:1'
+    );
+
+    let ffmpegProc: ReturnType<typeof spawn> | null = null;
+    try {
+      ffmpegProc = spawn('ffmpeg', ffmpegArgs);
+      ffmpegProc.stdout?.pipe(res);
+      ffmpegProc.stderr?.on('data', () => {});
+    } catch (e) {
+      return res.end();
+    }
+
+    req.on('close', () => {
+      if (ffmpegProc) {
+        try { ffmpegProc.kill('SIGKILL'); } catch (e) {}
+      }
+    });
   });
 
   // Real-time camera connection test and diagnostic endpoint (RTSP / RTMP / ONVIF / HLS)

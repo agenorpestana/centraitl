@@ -316,8 +316,13 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
   const handleVideoError = () => {
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
-    // Do not automatically switch to MJPEG streaming in grid view as MJPEG holds a persistent HTTP connection open
-    // which exhausts browser's 6-connection limit per domain. Keep HLS or retry connection.
+    // If HLS fails on RTSP stream, try instant MJPEG stream fallback
+    if (!useMjpegStream && camera.protocol === 'RTSP') {
+      console.log(`[Stream Fallback] Tentando fluxo direto MJPEG para câmera RTSP '${camera.name}'...`);
+      setUseMjpegStream(true);
+      setConnectionState('LOADING');
+      return;
+    }
     setConnectionState('OFFLINE');
   };
 
@@ -634,11 +639,27 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
                 }`}
                 title={useSubStream && !isFullscreen ? 'Modo de menor resolução para economia de CPU/Processamento' : 'Modo Alta Definição Full HD'}
               >
-                {useSubStream && !isFullscreen ? 'SD 360p (30fps)' : 'Full HD 1080p'}
+                {useMjpegStream ? 'MJPEG Direto' : useSubStream && !isFullscreen ? 'SD 360p HLS' : 'Full HD HLS'}
               </span>
             </div>
 
             <div className="flex items-center space-x-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setUseMjpegStream((prev) => !prev);
+                  setConnectionState('LOADING');
+                }}
+                className={`px-2 py-0.5 rounded text-[10px] font-bold border transition ${
+                  useMjpegStream
+                    ? 'bg-cyan-950/80 text-cyan-300 border-cyan-700 hover:bg-cyan-900/80'
+                    : 'bg-slate-950/80 text-slate-300 border-slate-700 hover:bg-slate-800'
+                }`}
+                title="Alternar entre protocolo HLS (H.264 acelerado) e MJPEG direto de baixa latência"
+              >
+                {useMjpegStream ? '⚡ MJPEG' : '📺 HLS'}
+              </button>
+
               <span
                 className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
                   connectionState === 'OFFLINE'
