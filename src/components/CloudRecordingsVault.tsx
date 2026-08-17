@@ -444,14 +444,14 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
       onDeleteRecordingsBatch(idsToDelete);
     } else {
       idsToDelete.forEach((id) => onDeleteRecording(id));
+      try {
+        await fetch('/api/recordings/batch-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: idsToDelete }),
+        });
+      } catch (e) {}
     }
-    try {
-      await fetch('/api/recordings/batch-delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: idsToDelete }),
-      });
-    } catch (e) {}
   };
 
   const handleDeleteAllFiltered = async () => {

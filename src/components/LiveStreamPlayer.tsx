@@ -84,8 +84,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO'
   );
 
-  // Default to MJPEG for RTSP cameras, and HLS for RTMP / Web streams
-  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(() => isRtspCameraSource(camera));
+  // Default to HLS for high performance hardware-accelerated playback
+  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(false);
 
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');
@@ -115,6 +115,16 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const rawStreamUrl = camera.rtspUrl || camera.rtmpUrl || camera.fullRtmpUrl || videoUrl || '';
   const mjpegUrl = `/api/cameras/${camera.id}/stream?key=cam_${cleanKey}&url=${encodeURIComponent(rawStreamUrl)}&t=${retryCount}`;
 
+  // When using MJPEG stream, mark online quickly since multipart stream does not fire onload
+  useEffect(() => {
+    if (useMjpegStream && isVisible && streamMode === 'VIDEO') {
+      const timer = setTimeout(() => {
+        setConnectionState('ONLINE');
+      }, 350);
+      return () => clearTimeout(timer);
+    }
+  }, [useMjpegStream, isVisible, streamMode, retryCount]);
+
   const displayStreamUrl = React.useMemo(() => {
     if (camera.protocol === 'RTSP') {
       return camera.rtspUrl || rawStreamUrl;
@@ -133,7 +143,6 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   useEffect(() => {
     const initialUrl = cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream));
     setVideoUrl(initialUrl);
-    setUseMjpegStream(isRtspCameraSource(camera));
     setStreamMode(camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO');
     setTempUrlInput(cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || initialUrl));
     if (camera.status === 'OFFLINE') {
@@ -392,15 +401,17 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           hlsInstance = new HlsClass({
             enableWorker: true,
             lowLatencyMode: true,
-            backBufferLength: 10,
-            liveSyncDurationCount: 2,
-            liveMaxLatencyDurationCount: 5,
-            manifestLoadingTimeOut: 15000,
+            backBufferLength: 4,
+            maxBufferLength: 4,
+            maxMaxBufferLength: 8,
+            liveSyncDurationCount: 1,
+            liveMaxLatencyDurationCount: 3,
+            manifestLoadingTimeOut: 8000,
             manifestLoadingMaxRetry: 6,
-            levelLoadingTimeOut: 15000,
+            levelLoadingTimeOut: 8000,
             levelLoadingMaxRetry: 6,
-            fragLoadingTimeOut: 20000,
-            fragLoadingMaxRetry: 8,
+            fragLoadingTimeOut: 10000,
+            fragLoadingMaxRetry: 6,
           });
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);

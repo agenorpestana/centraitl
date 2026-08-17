@@ -449,15 +449,15 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
-      '-stimeout', '30000000',
-      '-analyzeduration', '1000000',
-      '-probesize', '1000000'
+      '-stimeout', '15000000',
+      '-analyzeduration', '500000',
+      '-probesize', '500000'
     );
   } else if (streamSource.startsWith('rtmp://')) {
     ffmpegArgs.push(
-      '-rw_timeout', '30000000',
-      '-analyzeduration', '1000000',
-      '-probesize', '1000000'
+      '-rw_timeout', '15000000',
+      '-analyzeduration', '500000',
+      '-probesize', '500000'
     );
   } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
     ffmpegArgs.push(
@@ -477,7 +477,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     if (hasNativeHardwareSubStream && !streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push('-c:v', 'copy');
     } else {
-      // Fast browser-compatible H.264 normalization for RTSP feeds
+      // Fast browser-compatible H.264 normalization (SD 360p @ 30fps fluid for grid cards)
       ffmpegArgs.push(
         '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
         '-c:v', 'libx264',
@@ -486,16 +486,16 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         '-profile:v', 'baseline',
         '-level', '3.1',
         '-threads', '1',
-        '-r', '25',
-        '-g', '50',
-        '-b:v', '400k',
-        '-maxrate', '500k',
-        '-bufsize', '800k',
+        '-r', '30',
+        '-g', '30',
+        '-b:v', '450k',
+        '-maxrate', '600k',
+        '-bufsize', '600k',
         '-max_muxing_queue_size', '2048'
       );
     }
   } else {
-    // Full HD stream: For RTSP, normalize to browser-safe H.264 (yuv420p); RTMP remains direct copy
+    // Full HD stream (1080p for fullscreen & high-res inspection)
     if (streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-vf', 'format=yuv420p',
@@ -505,7 +505,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         '-profile:v', 'main',
         '-threads', '2',
         '-r', '30',
-        '-g', '60',
+        '-g', '30',
         '-crf', '23',
         '-max_muxing_queue_size', '2048'
       );
@@ -519,7 +519,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     '-f', 'hls',
     '-hls_time', '1',
     '-hls_list_size', '4',
-    '-hls_flags', 'delete_segments+omit_endlist+temp_file',
+    '-hls_flags', 'delete_segments+omit_endlist',
     '-hls_segment_filename', path.join(hlsDir, `${key}_%05d.ts`),
     '-y',
     hlsPath
@@ -2841,31 +2841,56 @@ async function startServer() {
 
   async function permanentlyDeleteRecording(id: string) {
     if (!id) return;
-    const cleanCamId = id.trim();
-    const cleanNoExt = cleanCamId.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/, '');
+    const rawId = String(id).trim();
+    const cleanNoExt = rawId
+      .replace(/^rec-disk-/, '')
+      .replace(/^rec_disk_/, '')
+      .replace(/^rec-auto-/, '')
+      .replace(/^rec_auto_/, '')
+      .replace(/^rec-real-/, '')
+      .replace(/^rec_real_/, '')
+      .replace(/_(mp4|jpg|part)$/i, '')
+      .replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/i, '');
+
     const dashId = cleanNoExt.replace(/_/g, '-');
     const underscoreId = cleanNoExt.replace(/-/g, '_');
     const alphaNumericOnly = cleanNoExt.replace(/[^a-zA-Z0-9]/g, '');
 
-    deletedRecordingIds.add(cleanCamId);
+    deletedRecordingIds.add(rawId);
     deletedRecordingIds.add(cleanNoExt);
     deletedRecordingIds.add(dashId);
     deletedRecordingIds.add(underscoreId);
     deletedRecordingIds.add(alphaNumericOnly);
+    deletedRecordingIds.add(`rec-disk-${underscoreId}_mp4`);
+    deletedRecordingIds.add(`rec-disk-${dashId}_mp4`);
+    deletedRecordingIds.add(`rec_auto_${underscoreId}`);
+    deletedRecordingIds.add(`rec-auto-${dashId}`);
     deletedRecordingIds.add(`${cleanNoExt}.mp4`);
     deletedRecordingIds.add(`${dashId}.mp4`);
     deletedRecordingIds.add(`${underscoreId}.mp4`);
+    deletedRecordingIds.add(`/recordings/${underscoreId}.mp4`);
+    deletedRecordingIds.add(`/recordings/${dashId}.mp4`);
+    deletedRecordingIds.add(`/recordings/rec_auto_${underscoreId}.mp4`);
+    deletedRecordingIds.add(`/recordings/rec-auto-${dashId}.mp4`);
 
     const targets = recordings.filter(
       (r) =>
-        r.id === cleanCamId ||
+        r.id === rawId ||
+        r.id === cleanNoExt ||
         r.id === dashId ||
         r.id === underscoreId ||
-        (r.streamUrl && (r.streamUrl.includes(cleanNoExt) || r.streamUrl.includes(dashId) || r.streamUrl.includes(underscoreId)))
+        r.id === `rec-disk-${underscoreId}_mp4` ||
+        (r.streamUrl && (
+          r.streamUrl.includes(cleanNoExt) ||
+          r.streamUrl.includes(dashId) ||
+          r.streamUrl.includes(underscoreId) ||
+          (alphaNumericOnly.length >= 8 && r.streamUrl.replace(/[^a-zA-Z0-9]/g, '').includes(alphaNumericOnly))
+        ))
     );
 
     const filesToDelete = new Set<string>();
-    filesToDelete.add(cleanCamId);
+    filesToDelete.add(rawId);
+    filesToDelete.add(`${rawId}.mp4`);
     filesToDelete.add(`${cleanNoExt}.mp4`);
     filesToDelete.add(`${cleanNoExt}.part.mp4`);
     filesToDelete.add(`${cleanNoExt}.tmp_fixed.mp4`);
@@ -2875,9 +2900,16 @@ async function startServer() {
     filesToDelete.add(`${underscoreId}.mp4`);
     filesToDelete.add(`${underscoreId}.part.mp4`);
     filesToDelete.add(`${underscoreId}.tmp_fixed.mp4`);
-    filesToDelete.add(`thumb_auto_${underscoreId.replace(/^rec_auto_/, '').replace(/^rec-auto-/, '')}.jpg`);
+    filesToDelete.add(`rec_auto_${underscoreId}.mp4`);
+    filesToDelete.add(`rec_auto_${underscoreId}.part.mp4`);
+    filesToDelete.add(`rec-auto-${dashId}.mp4`);
+    filesToDelete.add(`rec_real_${underscoreId}.mp4`);
+    filesToDelete.add(`thumb_auto_${underscoreId}.jpg`);
     filesToDelete.add(`thumb_disk_${underscoreId}.jpg`);
-    filesToDelete.add(`thumb_real_${underscoreId.replace(/^rec_real_/, '').replace(/^rec-real-/, '')}.jpg`);
+    filesToDelete.add(`thumb_real_${underscoreId}.jpg`);
+    filesToDelete.add(`thumb_auto_${cleanNoExt}.jpg`);
+    filesToDelete.add(`thumb_disk_${cleanNoExt}.jpg`);
+    filesToDelete.add(`thumb_real_${cleanNoExt}.jpg`);
 
     for (const target of targets) {
       deletedRecordingIds.add(target.id);
@@ -2888,9 +2920,12 @@ async function startServer() {
         filesToDelete.add(`${baseName}.mp4`);
         filesToDelete.add(`${baseName}.part.mp4`);
         filesToDelete.add(`${baseName}.tmp_fixed.mp4`);
-        filesToDelete.add(`thumb_auto_${baseName.replace('rec_auto_', '')}.jpg`);
+        filesToDelete.add(`thumb_auto_${baseName}.jpg`);
         filesToDelete.add(`thumb_disk_${baseName}.jpg`);
-        filesToDelete.add(`thumb_real_${baseName.replace('rec_real_', '')}.jpg`);
+        filesToDelete.add(`thumb_real_${baseName}.jpg`);
+        filesToDelete.add(`thumb_auto_${baseName.replace(/^rec_auto_/, '')}.jpg`);
+        filesToDelete.add(`thumb_disk_${baseName.replace(/^rec_auto_/, '')}.jpg`);
+        filesToDelete.add(`thumb_real_${baseName.replace(/^rec_real_/, '')}.jpg`);
         deletedRecordingIds.add(target.streamUrl);
         deletedRecordingIds.add(fileName);
         deletedRecordingIds.add(baseName);
@@ -2900,6 +2935,12 @@ async function startServer() {
         filesToDelete.add(thumbFile);
         deletedRecordingIds.add(thumbFile);
       }
+    }
+
+    // Clear from reconciled disk tracker
+    for (const f of filesToDelete) {
+      reconciledDiskFiles.delete(f);
+      reconciledDiskFiles.delete(`/recordings/${f}`);
     }
 
     // Unlink files from all recording dirs
@@ -2927,6 +2968,7 @@ async function startServer() {
             try {
               if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
             } catch (e) {}
+            reconciledDiskFiles.delete(df);
           }
         }
       } catch (e) {}
@@ -2935,7 +2977,13 @@ async function startServer() {
     // Delete from SQLite
     if (sqliteDb) {
       try {
-        sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR id = ? OR id = ? OR stream_url LIKE ?', [cleanCamId, dashId, underscoreId, `%${cleanNoExt}%`]);
+        sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR id = ? OR id = ? OR id LIKE ? OR stream_url LIKE ?', [
+          rawId,
+          dashId,
+          underscoreId,
+          `%${cleanNoExt}%`,
+          `%${cleanNoExt}%`
+        ]);
         for (const target of targets) {
           sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [target.id, target.streamUrl]);
         }
@@ -2946,7 +2994,13 @@ async function startServer() {
     // Delete from PostgreSQL
     if (isPgActive && pool) {
       try {
-        await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR id = ? OR id = ? OR stream_url LIKE ?', [cleanCamId, dashId, underscoreId, `%${cleanNoExt}%`]);
+        await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR id = ? OR id = ? OR id LIKE ? OR stream_url LIKE ?', [
+          rawId,
+          dashId,
+          underscoreId,
+          `%${cleanNoExt}%`,
+          `%${cleanNoExt}%`
+        ]);
         for (const target of targets) {
           await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [target.id, target.streamUrl]);
         }
@@ -2955,7 +3009,7 @@ async function startServer() {
 
     // Filter memory recordings
     recordings = recordings.filter((r) => {
-      if (r.id === cleanCamId || r.id === dashId || r.id === underscoreId) return false;
+      if (r.id === rawId || r.id === cleanNoExt || r.id === dashId || r.id === underscoreId) return false;
       if (deletedRecordingIds.has(r.id)) return false;
       const recBase = path.basename(r.streamUrl || '');
       if (filesToDelete.has(recBase)) return false;
@@ -2963,6 +3017,7 @@ async function startServer() {
       if (alphaNumericOnly.length >= 8 && recAlpha.includes(alphaNumericOnly)) return false;
       return true;
     });
+
     saveToLocalFile();
   }
 
