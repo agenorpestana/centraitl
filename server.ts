@@ -532,8 +532,8 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   );
 
   if (isSubStream) {
-    if ((hasNativeHardwareSubStream && !streamSource.startsWith('rtsp://')) || streamSource.startsWith('rtmp://')) {
-      // Direct stream copy for native sub-stream or RTMP stream (instant start, 0% CPU, no buffering)
+    if (hasNativeHardwareSubStream || streamSource.startsWith('rtmp://') || streamSource.startsWith('rtsp://')) {
+      // Direct stream copy for native sub-stream, RTMP or RTSP stream (instant start, 0% CPU, no buffering)
       ffmpegArgs.push(
         '-c:v', 'copy',
         '-c:a', 'aac',
@@ -562,31 +562,13 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
       );
     }
   } else {
-    // Full HD stream (1080p for fullscreen & high-res inspection)
-    if (streamSource.startsWith('rtsp://')) {
-      ffmpegArgs.push(
-        '-vf', 'format=yuv420p',
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-tune', 'zerolatency',
-        '-profile:v', 'main',
-        '-threads', '2',
-        '-r', '30',
-        '-g', '30',
-        '-crf', '23',
-        '-c:a', 'aac',
-        '-ar', '44100',
-        '-b:a', '128k',
-        '-max_muxing_queue_size', '2048'
-      );
-    } else {
-      ffmpegArgs.push(
-        '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-ar', '44100',
-        '-b:a', '128k'
-      );
-    }
+    // Full HD stream (Direct copy for high-fps, zero delay on RTSP & RTMP)
+    ffmpegArgs.push(
+      '-c:v', 'copy',
+      '-c:a', 'aac',
+      '-ar', '44100',
+      '-b:a', '128k'
+    );
   }
 
   ffmpegArgs.push(

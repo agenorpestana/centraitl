@@ -84,8 +84,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO'
   );
 
-  // Default to MJPEG for RTSP cameras, and HLS for RTMP / Web streams
-  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(() => isRtspCameraSource(camera));
+  // Default to HLS high-performance stream for all cameras (supports audio, zero latency, and hardware decode)
+  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(false);
 
   const [localMuted, setLocalMuted] = useState<boolean>(isMuted);
 
@@ -165,7 +165,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   useEffect(() => {
     const initialUrl = cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream));
     setVideoUrl(initialUrl);
-    setUseMjpegStream(isRtspCameraSource(camera));
+    setUseMjpegStream(false);
     setStreamMode(camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO');
     setTempUrlInput(cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || initialUrl));
     if (camera.status === 'OFFLINE') {
@@ -410,17 +410,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       loadingTimerRef.current = null;
     }
 
-    // If HLS fails on RTSP stream, try instant MJPEG stream fallback
-    if (!useMjpegStream && camera.protocol === 'RTSP') {
-      console.log(`[Stream Fallback] Tentando fluxo direto MJPEG para câmera RTSP '${camera.name}'...`);
-      setUseMjpegStream(true);
-      setConnectionState('LOADING');
-      connectStream();
-      return;
-    }
-
     consecutiveErrorsRef.current += 1;
-    if (useMjpegStream && consecutiveErrorsRef.current <= 2) {
+    if (consecutiveErrorsRef.current <= 3) {
       setTimeout(() => {
         setRetryCount((prev) => prev + 1);
       }, 1500);
@@ -439,7 +430,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   };
 
   const handleRetryConnection = () => {
-    setUseMjpegStream(isRtspCameraSource(camera));
+    setUseMjpegStream(false);
     setConnectionState('LOADING');
     consecutiveErrorsRef.current = 0;
     setRetryCount((prev) => prev + 1);
