@@ -458,19 +458,24 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           const HlsClass = (window as any).Hls;
           hlsInstance = new HlsClass({
             enableWorker: true,
-            lowLatencyMode: true,
-            backBufferLength: 4,
-            maxBufferLength: 4,
-            maxMaxBufferLength: 8,
-            liveSyncDurationCount: 1,
-            liveMaxLatencyDurationCount: 3,
-            manifestLoadingTimeOut: 8000,
-            manifestLoadingMaxRetry: 6,
-            levelLoadingTimeOut: 8000,
-            levelLoadingMaxRetry: 6,
-            fragLoadingTimeOut: 10000,
-            fragLoadingMaxRetry: 6,
+            lowLatencyMode: false,
+            backBufferLength: 10,
+            maxBufferLength: 15,
+            maxMaxBufferLength: 30,
+            liveSyncDurationCount: 3,
+            liveMaxLatencyDurationCount: 8,
+            startFragPrefetch: true,
+            nudgeOffset: 0.2,
+            nudgeMaxRetry: 10,
+            manifestLoadingTimeOut: 10000,
+            manifestLoadingMaxRetry: 8,
+            levelLoadingTimeOut: 10000,
+            levelLoadingMaxRetry: 8,
+            fragLoadingTimeOut: 12000,
+            fragLoadingMaxRetry: 8,
           });
+          videoElement.muted = isMuted;
+          videoElement.playsInline = true;
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);
           hlsInstance.on(HlsClass.Events.MANIFEST_PARSED, () => {
@@ -502,6 +507,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             }
           });
         } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+          videoElement.muted = isMuted;
+          videoElement.playsInline = true;
           videoElement.src = videoUrl;
           videoElement.play().then(() => {
             if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);

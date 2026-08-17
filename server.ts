@@ -531,7 +531,8 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   );
 
   if (isSubStream) {
-    if (hasNativeHardwareSubStream && !streamSource.startsWith('rtsp://')) {
+    if ((hasNativeHardwareSubStream && !streamSource.startsWith('rtsp://')) || streamSource.startsWith('rtmp://')) {
+      // Direct stream copy for native sub-stream or RTMP stream (instant start, 0% CPU, no buffering)
       ffmpegArgs.push('-c:v', 'copy');
     } else {
       // Fast browser-compatible H.264 normalization (SD 360p @ 30fps fluid for grid cards)
@@ -545,9 +546,9 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         '-threads', '1',
         '-r', '30',
         '-g', '30',
-        '-b:v', '450k',
-        '-maxrate', '600k',
-        '-bufsize', '600k',
+        '-b:v', '500k',
+        '-maxrate', '700k',
+        '-bufsize', '700k',
         '-max_muxing_queue_size', '2048'
       );
     }
@@ -574,8 +575,8 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   ffmpegArgs.push(
     '-an',
     '-f', 'hls',
-    '-hls_time', '1',
-    '-hls_list_size', '4',
+    '-hls_time', '2',
+    '-hls_list_size', '6',
     '-hls_flags', 'delete_segments+omit_endlist',
     '-hls_segment_filename', path.join(hlsDir, `${key}_%05d.ts`),
     '-y',
@@ -3428,39 +3429,40 @@ async function startServer() {
       const ffmpegArgs: string[] = [
         '-y',
         '-avoid_negative_ts', 'make_zero',
-        '-fflags', '+genpts+discardcorrupt',
-        '-threads', '1',
       ];
 
       if (effectiveInputSource.startsWith('rtsp://')) {
         ffmpegArgs.push(
           '-rtsp_transport', 'tcp',
-          '-stimeout', '20000000',
+          '-stimeout', '15000000',
           '-analyzeduration', '1000000',
-          '-probesize', '1000000'
+          '-probesize', '1000000',
+          '-fflags', '+genpts+discardcorrupt+nobuffer'
         );
       } else if (effectiveInputSource.startsWith('rtmp://')) {
         ffmpegArgs.push(
-          '-rw_timeout', '20000000',
+          '-rw_timeout', '15000000',
           '-analyzeduration', '1000000',
-          '-probesize', '1000000'
+          '-probesize', '1000000',
+          '-fflags', '+genpts+discardcorrupt'
         );
       } else if (effectiveInputSource.startsWith('http://') || effectiveInputSource.startsWith('https://')) {
         ffmpegArgs.push(
           '-reconnect', '1',
           '-reconnect_at_eof', '1',
           '-reconnect_streamed', '1',
-          '-reconnect_delay_max', '5'
+          '-reconnect_delay_max', '5',
+          '-fflags', '+genpts+discardcorrupt'
         );
       }
 
       ffmpegArgs.push(
         '-i', effectiveInputSource,
-        '-map', '0:v:0',
+        '-map', '0:v:0?',
         '-c:v', 'copy',
         '-an',
         '-max_muxing_queue_size', '4096',
-        '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+        '-movflags', '+frag_keyframe+empty_moov+default_base_moof+faststart',
         '-t', autoRecordingDurationSec.toString(),
         partPath
       );
@@ -3468,6 +3470,7 @@ async function startServer() {
       let proc: ReturnType<typeof spawn> | null = null;
       const processStartTime = Date.now();
       try {
+        console.log(`[Auto Recorder] Gravando fatia contínua para ${cam.name} (${cam.protocol || 'RTSP/RTMP'} -> ${fileName})...`);
         proc = spawn('ffmpeg', ffmpegArgs);
         activeAutoRecordingProcesses.set(cam.id, proc);
         activeAutoRecordingStartTimes.set(cam.id, processStartTime);
@@ -3498,8 +3501,8 @@ async function startServer() {
         if (fs.existsSync(sourceFileToProcess)) {
           try {
             const stats = fs.statSync(sourceFileToProcess);
-            // Process any file with valid content (> 25KB)
-            if (stats.size > 25000) {
+            // Process any file with valid content (> 10KB)
+            if (stats.size > 10000) {
               const repaired = await repairAndFinalizeMp4(sourceFileToProcess, outputPath);
               if (repaired && fs.existsSync(outputPath)) {
                 const finalStats = fs.statSync(outputPath);
@@ -3508,9 +3511,10 @@ async function startServer() {
                 const probedDur = await getMp4Duration(outputPath);
                 if (probedDur > 0) realDurationSec = probedDur;
 
-                // Accept any valid slice with duration >= 5s and size > 25KB
-                if (realDurationSec >= 5 && finalStats.size > 25000) {
+                // Accept any valid slice with duration >= 3s and size > 10KB
+                if (realDurationSec >= 3 && finalStats.size > 10000) {
                   validFile = true;
+                  console.log(`[Auto Recorder] Fatia salva com sucesso: ${cam.name} (${realDurationSec}s, ${fileSizeMB}MB) -> ${fileName}`);
                 } else {
                   try { fs.unlinkSync(outputPath); } catch (e) {}
                 }
@@ -3574,10 +3578,10 @@ async function startServer() {
             }, 2000);
           }
         } else {
-          // If slice was < 30s or failed, set exponential backoff to avoid hammering the CPU or camera
+          // If slice failed, set brief backoff (8s-30s) to resume quickly
           const failCount = (recordingFailureCounts.get(cam.id) || 0) + 1;
           recordingFailureCounts.set(cam.id, failCount);
-          const backoffMs = Math.min(180000, 15000 * Math.pow(1.8, Math.min(failCount - 1, 5)));
+          const backoffMs = Math.min(30000, 8000 * Math.min(failCount, 4));
           recordingLastFailureTimes.set(cam.id, Date.now() + backoffMs);
 
           if (currentCam && currentCam.cloudRecordingsActive !== false) {
@@ -3774,18 +3778,33 @@ async function startServer() {
     const width = (req.query.w || '1280').toString();
     const fps = (req.query.fps || '15').toString();
 
-    const ffmpegArgs: string[] = [];
+    const ffmpegArgs: string[] = [
+      '-fflags', '+nobuffer+discardcorrupt+genpts',
+      '-flags', 'low_delay',
+      '-use_wallclock_as_timestamps', '1',
+    ];
 
     if (targetUrl.startsWith('rtsp://')) {
-      ffmpegArgs.push('-rtsp_transport', 'tcp');
+      ffmpegArgs.push(
+        '-rtsp_transport', 'tcp',
+        '-stimeout', '10000000',
+        '-analyzeduration', '1000000',
+        '-probesize', '1000000'
+      );
+    } else if (targetUrl.startsWith('rtmp://')) {
+      ffmpegArgs.push(
+        '-rw_timeout', '10000000',
+        '-analyzeduration', '1000000',
+        '-probesize', '1000000'
+      );
     }
 
     ffmpegArgs.push(
-      '-analyzeduration', '1000000',
-      '-probesize', '1000000',
       '-i', targetUrl,
-      '-vf', `fps=${fps},scale=${width}:-1`,
-      '-q:v', '5',
+      '-vf', `scale=${width}:-1,format=yuvj420p`,
+      '-r', '25',
+      '-vsync', 'drop',
+      '-q:v', '3',
       '-f', 'mpjpeg',
       '-boundary_tag', 'ffmpegboundary',
       'pipe:1'
@@ -5240,6 +5259,7 @@ async function startServer() {
     const ffmpegArgs: string[] = [
       '-fflags', '+nobuffer+discardcorrupt+genpts',
       '-flags', 'low_delay',
+      '-use_wallclock_as_timestamps', '1',
     ];
 
     if (streamSource.startsWith('rtsp://')) {
@@ -5259,9 +5279,10 @@ async function startServer() {
 
     ffmpegArgs.push(
       '-i', streamSource,
-      '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,format=yuvj420p',
-      '-r', '20',
-      '-q:v', '4',
+      '-vf', 'scale=854:480:force_original_aspect_ratio=decrease,format=yuvj420p',
+      '-r', '25',
+      '-vsync', 'drop',
+      '-q:v', '3',
       '-an',
       '-f', 'mpjpeg',
       '-boundary_tag', boundary,
