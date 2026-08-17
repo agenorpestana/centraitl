@@ -197,6 +197,63 @@ const deletedPlanIds = new Set<string>();
 const deletedInvoiceIds = new Set<string>();
 const activeTokensMap: Record<string, string> = {};
 
+const activeStreamActivityMap = new Map<string, { lastFrameAt: number; protocol: string }>();
+
+function markStreamActivity(identifier: string, protocol = 'RTSP') {
+  if (!identifier) return;
+  const now = Date.now();
+  const raw = String(identifier).trim();
+  const clean = raw.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+  activeStreamActivityMap.set(raw, { lastFrameAt: now, protocol });
+  activeStreamActivityMap.set(clean, { lastFrameAt: now, protocol });
+  activeStreamActivityMap.set(`cam_${clean}`, { lastFrameAt: now, protocol });
+  activeStreamActivityMap.set(`cam-${clean}`, { lastFrameAt: now, protocol });
+}
+
+function isCameraActivelyStreaming(camOrKey: any): { isOnline: boolean; protocol: string; ageMs: number } {
+  if (!camOrKey) return { isOnline: false, protocol: 'RTSP', ageMs: Infinity };
+  const key = typeof camOrKey === 'string' ? camOrKey : (camOrKey.streamKey || camOrKey.id || camOrKey.name || '');
+  const clean = String(key).replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+  const now = Date.now();
+
+  const keysToCheck = [
+    String(key),
+    clean,
+    `cam_${clean}`,
+    `cam-${clean}`,
+    `cam_${clean}_sub`,
+    `cam-${clean}_sub`,
+  ];
+  if (typeof camOrKey === 'object' && camOrKey.id) {
+    keysToCheck.push(String(camOrKey.id));
+    const cleanId = String(camOrKey.id).replace(/^cam[-_]/i, '');
+    keysToCheck.push(cleanId);
+    keysToCheck.push(`cam_${cleanId}`);
+    keysToCheck.push(`cam-${cleanId}`);
+  }
+  if (typeof camOrKey === 'object' && camOrKey.name) {
+    keysToCheck.push(String(camOrKey.name));
+  }
+
+  // 1. Check MJPEG / Live stream memory activity (within last 12 seconds)
+  for (const k of keysToCheck) {
+    if (activeStreamActivityMap.has(k)) {
+      const act = activeStreamActivityMap.get(k)!;
+      const ageMs = now - act.lastFrameAt;
+      if (ageMs < 12000) {
+        return { isOnline: true, protocol: act.protocol || 'RTSP', ageMs };
+      }
+    }
+  }
+
+  // 2. Check RTMP/HLS file creation on disk (within last 15 seconds)
+  if (isCameraHlsActivelyStreaming(key)) {
+    return { isOnline: true, protocol: 'RTMP', ageMs: 1000 };
+  }
+
+  return { isOnline: false, protocol: 'RTSP', ageMs: Infinity };
+}
+
 function isCameraHlsActivelyStreaming(rawKey: string): boolean {
   if (!rawKey) return false;
 
@@ -3773,6 +3830,12 @@ async function startServer() {
       hasReceivedData = true;
       clearTimeout(timeoutTimer);
       writeHeaders();
+      markStreamActivity(key, targetUrl.startsWith('rtsp://') ? 'RTSP' : (targetUrl.startsWith('rtmp://') ? 'RTMP' : 'HTTP'));
+      if (matchedCam) {
+        markStreamActivity(matchedCam.id, targetUrl.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
+        markStreamActivity(matchedCam.name, targetUrl.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
+        matchedCam.status = 'ONLINE';
+      }
       res.write(chunk);
     });
 
@@ -3905,6 +3968,23 @@ async function startServer() {
     if (!cam || !cam.id) return { isOnline: false, status: 'OFFLINE', message: 'Câmera não especificada' };
     const startTime = Date.now();
 
+    // 0. ESTRATÉGIA PRIORITÁRIA: Verificar se a câmera está com fluxo ativo em transmissão (MJPEG, HLS ou FFmpeg)
+    const activeCheck = isCameraActivelyStreaming(cam);
+    if (activeCheck.isOnline) {
+      cam.status = 'ONLINE';
+      const latencyMs = Math.max(8, Date.now() - startTime);
+      return {
+        isOnline: true,
+        status: 'ONLINE',
+        message: `On-line (Fluxo em Transmissão Ativa - ${activeCheck.protocol})`,
+        details: `Câmera transmitindo pacotes de vídeo continuamente com sucesso (atualizado há ${Math.round(activeCheck.ageMs / 1000)}s).`,
+        codec: 'H264 / MJPEG',
+        resolution: cam.resolution || '1920x1080',
+        fps: cam.fps || 30,
+        latencyMs,
+      };
+    }
+
     // 1. Demo / Webcams públicas (HTTP / HTTPS / HLS)
     if (cam.isDemo || cam.isLiveWebcam || (cam.videoStreamUrl && cam.videoStreamUrl.startsWith('http'))) {
       const targetUrl = cam.videoStreamUrl || cam.fullRtmpUrl || '';
@@ -3935,33 +4015,7 @@ async function startServer() {
     if (isRtsp) {
       const targetRtsp = getValidStreamSource(cam);
       if (targetRtsp && targetRtsp.startsWith('rtsp://')) {
-        // Fast TCP Socket check FIRST (< 1.8s) - prevents long hangs on offline IPs
-        let isReachable = false;
-        let host = '';
-        let port = 554;
-        try {
-          const cleanUrl = targetRtsp.replace(/^rtsp:\/\/(.*@)?/i, 'http://');
-          const urlObj = new URL(cleanUrl);
-          host = urlObj.hostname;
-          port = parseInt(urlObj.port || '554', 10);
-          isReachable = await testTcpPortReachable(host, port, 1800);
-        } catch (e) {
-          isReachable = false;
-        }
-
-        if (!isReachable) {
-          cam.status = 'OFFLINE';
-          const latencyMs = Date.now() - startTime;
-          return {
-            isOnline: false,
-            status: 'OFFLINE',
-            message: `Off-line (Porta ${port} Inacessível / Câmera Desconectada)`,
-            details: `Dispositivo IP ${host || 'desconhecido'}:${port} não respondeu à tentativa de conexão TCP (Timeout 1.8s). Verifique a rede ou alimentação da câmera.`,
-            latencyMs,
-          };
-        }
-
-        // Port is reachable! Probe stream parameters with ffprobe (timeout 2.5s)
+        // Validação direta via FFprobe / FFmpeg com timeout curto (2.5s)
         try {
           const probeRes = await execWithOutput(
             `ffprobe -v error -rtsp_transport tcp -stimeout 2500000 -analyzeduration 500000 -probesize 500000 -select_streams v:0 -show_entries stream=codec_name,width,height,avg_frame_rate -of json "${targetRtsp}"`,
@@ -3986,7 +4040,7 @@ async function startServer() {
               isOnline: true,
               status: 'ONLINE',
               message: `On-line (Sinal RTSP Estabelecido - ${codec})`,
-              details: `Conexão RTSP (porta ${port}/TCP) verificada com sucesso: ${width}x${height} @ ${fps} FPS`,
+              details: `Conexão RTSP verificada com sucesso: ${width}x${height} @ ${fps} FPS`,
               codec,
               resolution: `${width}x${height}`,
               fps,
@@ -3998,8 +4052,8 @@ async function startServer() {
             return {
               isOnline: false,
               status: 'OFFLINE',
-              message: 'Off-line (Porta de rede aberta, mas o fluxo RTSP falhou ou recusou autenticação)',
-              details: probeRes.stderr || probeRes.error?.message || 'Verifique usuário, senha ou canal RTSP da câmera',
+              message: 'Off-line (Sem pacotes RTSP recebidos no momento)',
+              details: probeRes.stderr ? probeRes.stderr.substring(0, 200) : 'Dispositivo não respondeu à solicitação de pacotes RTSP',
               latencyMs,
             };
           }
@@ -4031,7 +4085,7 @@ async function startServer() {
       const rawKey = cam.streamKey || cam.id;
       const cleanKey = rawKey.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
       const hlsPath = `/tmp/hls/cam_${cleanKey}.m3u8`;
-      const isHlsStreaming = fs.existsSync(hlsPath) && (Date.now() - fs.statSync(hlsPath).mtimeMs < 10000);
+      const isHlsStreaming = fs.existsSync(hlsPath) && (Date.now() - fs.statSync(hlsPath).mtimeMs < 15000);
 
       if (isHlsStreaming) {
         cam.status = 'ONLINE';
@@ -5242,6 +5296,14 @@ async function startServer() {
             'X-Accel-Buffering': 'no',
             'Access-Control-Allow-Origin': '*',
           });
+        }
+
+        markStreamActivity(id, streamSource.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
+        markStreamActivity(cleanId, streamSource.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
+        if (cam) {
+          markStreamActivity(cam.id, streamSource.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
+          markStreamActivity(cam.name, streamSource.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
+          cam.status = 'ONLINE';
         }
 
         if (isClientConnected && !res.writableEnded) {

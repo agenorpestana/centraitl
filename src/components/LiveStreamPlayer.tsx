@@ -233,7 +233,12 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
         consecutiveErrorsRef.current = 0;
         setConnectionState('ONLINE');
       } else {
-        setConnectionState('OFFLINE');
+        const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
+        if (useMjpegStream && imgEl && imgEl.naturalWidth > 0) {
+          setConnectionState('ONLINE');
+        } else {
+          setConnectionState('OFFLINE');
+        }
       }
     } catch (e: any) {
       setPlayerDiag({
