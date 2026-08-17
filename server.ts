@@ -3891,7 +3891,7 @@ async function startServer() {
     });
   });
 
-  // Função Precisa e Confiável para Diagnóstico de Conexão da Câmera (RTSP/RTMP)
+  // Função Precisa, Rápida e Confiável para Diagnóstico de Conexão da Câmera (RTSP/RTMP)
   async function checkSingleCameraHealth(cam: Camera): Promise<{
     isOnline: boolean;
     status: 'ONLINE' | 'OFFLINE';
@@ -3905,41 +3905,15 @@ async function startServer() {
     if (!cam || !cam.id) return { isOnline: false, status: 'OFFLINE', message: 'Câmera não especificada' };
     const startTime = Date.now();
 
-    const rawKey = cam.streamKey || cam.id;
-    const cleanKey = rawKey.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
-    const isStreaming = isCameraHlsActivelyStreaming(rawKey) ||
-      isCameraHlsActivelyStreaming(`cam_${cleanKey}`) ||
-      isCameraHlsActivelyStreaming(`cam_${cleanKey}_sub`) ||
-      activeFfmpegProcesses.has(`cam_${cleanKey}`) ||
-      activeFfmpegProcesses.has(`cam_${cleanKey}_sub`) ||
-      activeAutoRecordingProcesses.has(cam.id);
-
-    // 1. Se a câmera já possui fluxo ativo ou processo FFmpeg em execução -> ONLINE imediato
-    if (isStreaming) {
-      cam.status = 'ONLINE';
-      const latencyMs = Math.max(12, Date.now() - startTime);
-      return {
-        isOnline: true,
-        status: 'ONLINE',
-        message: 'On-line (Transmissão Ao Vivo em Tempo Real)',
-        details: 'Fluxo ativo gerando vídeo fluido com estabilidade',
-        codec: 'H264',
-        resolution: '1920x1080 (Full HD)',
-        fps: 30,
-        latencyMs,
-      };
-    }
-
-    // 2. Demo / Webcams públicas (HTTP / HTTPS / HLS)
+    // 1. Demo / Webcams públicas (HTTP / HTTPS / HLS)
     if (cam.isDemo || cam.isLiveWebcam || (cam.videoStreamUrl && cam.videoStreamUrl.startsWith('http'))) {
       const targetUrl = cam.videoStreamUrl || cam.fullRtmpUrl || '';
       if (targetUrl.startsWith('http')) {
         try {
-          const probe = await execWithOutput(`curl -s -o /dev/null -w "%{http_code}" -m 3 "${targetUrl}"`, 3500);
+          const probe = await execWithOutput(`curl -s -o /dev/null -w "%{http_code}" -m 2 "${targetUrl}"`, 2500);
           const code = parseInt((probe.stdout || '').trim(), 10);
           if (code >= 200 && code < 400) {
             cam.status = 'ONLINE';
-            startCameraRtspStream(cam);
             const latencyMs = Date.now() - startTime;
             return {
               isOnline: true,
@@ -3956,16 +3930,42 @@ async function startServer() {
       }
     }
 
-    // 3. Câmeras com Protocolo RTSP (Rede Local / Intranet ou Remoto)
+    // 2. Câmeras com Protocolo RTSP (Rede Local / Intranet ou Remoto)
     const isRtsp = cam.protocol === 'RTSP' || cam.networkType === 'LOCAL' || (cam.rtspUrl && cam.rtspUrl.trim().startsWith('rtsp://'));
     if (isRtsp) {
       const targetRtsp = getValidStreamSource(cam);
       if (targetRtsp && targetRtsp.startsWith('rtsp://')) {
-        // A) Sonda profunda via ffprobe (TCP) - identifica fluxo de vídeo real, codec e resolução
+        // Fast TCP Socket check FIRST (< 1.8s) - prevents long hangs on offline IPs
+        let isReachable = false;
+        let host = '';
+        let port = 554;
+        try {
+          const cleanUrl = targetRtsp.replace(/^rtsp:\/\/(.*@)?/i, 'http://');
+          const urlObj = new URL(cleanUrl);
+          host = urlObj.hostname;
+          port = parseInt(urlObj.port || '554', 10);
+          isReachable = await testTcpPortReachable(host, port, 1800);
+        } catch (e) {
+          isReachable = false;
+        }
+
+        if (!isReachable) {
+          cam.status = 'OFFLINE';
+          const latencyMs = Date.now() - startTime;
+          return {
+            isOnline: false,
+            status: 'OFFLINE',
+            message: `Off-line (Porta ${port} Inacessível / Câmera Desconectada)`,
+            details: `Dispositivo IP ${host || 'desconhecido'}:${port} não respondeu à tentativa de conexão TCP (Timeout 1.8s). Verifique a rede ou alimentação da câmera.`,
+            latencyMs,
+          };
+        }
+
+        // Port is reachable! Probe stream parameters with ffprobe (timeout 2.5s)
         try {
           const probeRes = await execWithOutput(
-            `ffprobe -v error -rtsp_transport tcp -stimeout 3500000 -analyzeduration 1500000 -probesize 1500000 -select_streams v:0 -show_entries stream=codec_name,width,height,avg_frame_rate -of json "${targetRtsp}"`,
-            4500
+            `ffprobe -v error -rtsp_transport tcp -stimeout 2500000 -analyzeduration 500000 -probesize 500000 -select_streams v:0 -show_entries stream=codec_name,width,height,avg_frame_rate -of json "${targetRtsp}"`,
+            3000
           );
           if (probeRes.stdout && !probeRes.error) {
             let parsed: any = {};
@@ -3981,46 +3981,39 @@ async function startServer() {
             }
 
             cam.status = 'ONLINE';
-            startCameraRtspStream(cam, false, true);
-            startCameraRtspStream(cam, false, false);
             const latencyMs = Date.now() - startTime;
             return {
               isOnline: true,
               status: 'ONLINE',
               message: `On-line (Sinal RTSP Estabelecido - ${codec})`,
-              details: `Conexão RTSP (porta 554/TCP) verificada: ${width}x${height} @ ${fps} FPS`,
+              details: `Conexão RTSP (porta ${port}/TCP) verificada com sucesso: ${width}x${height} @ ${fps} FPS`,
               codec,
               resolution: `${width}x${height}`,
               fps,
               latencyMs,
             };
-          }
-        } catch (e) {}
-
-        // B) Sonda via Socket TCP rápido na porta 554 / customizada
-        try {
-          const cleanUrl = targetRtsp.replace(/^rtsp:\/\/(.*@)?/i, 'http://');
-          const urlObj = new URL(cleanUrl);
-          const host = urlObj.hostname;
-          const port = parseInt(urlObj.port || '554', 10);
-          const socketOk = await testTcpPortReachable(host, port, 2500);
-          if (socketOk) {
-            cam.status = 'ONLINE';
-            startCameraRtspStream(cam, false, true);
-            startCameraRtspStream(cam, false, false);
+          } else {
+            cam.status = 'OFFLINE';
             const latencyMs = Date.now() - startTime;
             return {
-              isOnline: true,
-              status: 'ONLINE',
-              message: `On-line (Porta ${port} Aberta / RTSP Conectado)`,
-              details: `Dispositivo IP ${host}:${port} respondendo à sondagem de rede local`,
-              codec: 'H264',
-              resolution: '1920x1080',
-              fps: 30,
+              isOnline: false,
+              status: 'OFFLINE',
+              message: 'Off-line (Porta de rede aberta, mas o fluxo RTSP falhou ou recusou autenticação)',
+              details: probeRes.stderr || probeRes.error?.message || 'Verifique usuário, senha ou canal RTSP da câmera',
               latencyMs,
             };
           }
-        } catch (e) {}
+        } catch (e: any) {
+          cam.status = 'OFFLINE';
+          const latencyMs = Date.now() - startTime;
+          return {
+            isOnline: false,
+            status: 'OFFLINE',
+            message: 'Off-line (Falha ao inicializar fluxo RTSP)',
+            details: e.message || String(e),
+            latencyMs,
+          };
+        }
       }
 
       cam.status = 'OFFLINE';
@@ -4028,49 +4021,31 @@ async function startServer() {
       return {
         isOnline: false,
         status: 'OFFLINE',
-        message: 'Off-line (Sem Resposta no Fluxo RTSP / Timeout)',
-        details: 'Câmera inacessível ou sem resposta na porta 554 (TCP/RTSP)',
+        message: 'Off-line (URL RTSP não configurada)',
         latencyMs,
       };
     }
 
-    // 4. Câmeras com Protocolo RTMP
+    // 3. Câmeras com Protocolo RTMP
     if (cam.protocol === 'RTMP' || cam.networkType === 'REMOTE' || cam.rtmpUrl || cam.fullRtmpUrl) {
-      const targetSource = getValidStreamSource(cam);
-      if (targetSource && targetSource.startsWith('rtmp://')) {
-        try {
-          const probeRes = await execWithOutput(
-            `ffprobe -v error -rw_timeout 2500000 -analyzeduration 1000000 -probesize 1000000 -select_streams v:0 -show_entries stream=codec_name,width,height,avg_frame_rate -of json "${targetSource}"`,
-            3500
-          );
-          if (probeRes.stdout && probeRes.stdout.trim().length > 0 && !probeRes.error) {
-            let parsed: any = {};
-            try { parsed = JSON.parse(probeRes.stdout); } catch (e) {}
-            const streamInfo = parsed?.streams?.[0] || {};
-            const codec = (streamInfo.codec_name || 'H264').toUpperCase();
-            const width = streamInfo.width || 1920;
-            const height = streamInfo.height || 1080;
-            let fps = 30;
-            if (streamInfo.avg_frame_rate && streamInfo.avg_frame_rate.includes('/')) {
-              const [num, den] = streamInfo.avg_frame_rate.split('/').map(Number);
-              if (den > 0) fps = Math.round(num / den);
-            }
+      const rawKey = cam.streamKey || cam.id;
+      const cleanKey = rawKey.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+      const hlsPath = `/tmp/hls/cam_${cleanKey}.m3u8`;
+      const isHlsStreaming = fs.existsSync(hlsPath) && (Date.now() - fs.statSync(hlsPath).mtimeMs < 10000);
 
-            cam.status = 'ONLINE';
-            startCameraRtspStream(cam);
-            const latencyMs = Date.now() - startTime;
-            return {
-              isOnline: true,
-              status: 'ONLINE',
-              message: 'On-line (Fluxo RTMP Publicando)',
-              details: `Transmissão RTMP recebida com sucesso: ${width}x${height} @ ${fps} FPS`,
-              codec,
-              resolution: `${width}x${height}`,
-              fps,
-              latencyMs,
-            };
-          }
-        } catch (e) {}
+      if (isHlsStreaming) {
+        cam.status = 'ONLINE';
+        const latencyMs = Date.now() - startTime;
+        return {
+          isOnline: true,
+          status: 'ONLINE',
+          message: 'On-line (Fluxo RTMP Publicando)',
+          details: `Transmissão RTMP ativa na chave cam_${cleanKey}`,
+          codec: 'H264',
+          resolution: '1920x1080',
+          fps: 30,
+          latencyMs,
+        };
       }
 
       cam.status = 'OFFLINE';
@@ -4079,7 +4054,7 @@ async function startServer() {
         isOnline: false,
         status: 'OFFLINE',
         message: 'Off-line (Aguardando Publicação RTMP)',
-        details: 'Aguardando publicação do encoder/câmera no servidor RTMP',
+        details: 'Aguardando publicação do codificador/câmera no servidor RTMP',
         latencyMs,
       };
     }
@@ -4125,12 +4100,12 @@ async function startServer() {
   });
 
   // Endpoint para Teste / Diagnóstico Individual de Conexão da Câmera (RTSP/RTMP)
-  app.post('/api/cameras/test-connection', async (req, res) => {
+  app.post(['/api/cameras/test-connection', '/api/v1/cameras/test-connection'], async (req, res) => {
     try {
-      const { protocol, rtspUrl, rtmpUrl, streamKey, id } = req.body;
-      const key = streamKey || id || 'stream';
+      const { protocol, rtspUrl, rtmpUrl, streamKey, id, cameraId } = req.body;
+      const key = streamKey || id || cameraId || 'stream';
 
-      let cam = cameras.find((c) => (c.streamKey || c.id) === key || c.id === key);
+      let cam = cameras.find((c) => (c.streamKey || c.id) === key || c.id === key || c.id === `cam-${key}` || c.id === `cam_${key}`);
       if (!cam) {
         cam = {
           id: key,
@@ -4150,6 +4125,15 @@ async function startServer() {
       saveToLocalFile();
       saveSqliteFile();
 
+      const logs: string[] = [
+        `[${new Date().toLocaleTimeString()}] Diagnóstico executado para '${cam.name}' (${cam.protocol || 'RTSP'}).`,
+        `[${new Date().toLocaleTimeString()}] Resultado: ${result.status} (${result.latencyMs}ms).`,
+        `[${new Date().toLocaleTimeString()}] ${result.message}`,
+      ];
+      if (result.details) {
+        logs.push(`[${new Date().toLocaleTimeString()}] Detalhes: ${result.details}`);
+      }
+
       return res.json({
         success: result.isOnline,
         status: result.isOnline ? 'ONLINE' : 'OFFLINE',
@@ -4158,7 +4142,7 @@ async function startServer() {
         latencyMs: result.latencyMs,
         protocol: cam.protocol,
         streamKey: key,
-        logs: lastFfmpegLogs.get(key) || [],
+        logs,
       });
     } catch (e: any) {
       return res.status(500).json({
@@ -5154,14 +5138,29 @@ async function startServer() {
     }
 
     const boundary = 'ffserver_mjpeg_stream';
-    res.writeHead(200, {
-      'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
-      'Cache-Control': 'no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0',
-      'Connection': 'close',
-      'Pragma': 'no-cache',
-      'X-Accel-Buffering': 'no',
-      'Access-Control-Allow-Origin': '*',
-    });
+    let headersSent = false;
+    let isClientConnected = true;
+    let currentProc: ReturnType<typeof spawn> | null = null;
+    let connectTimeoutTimer: NodeJS.Timeout | null = null;
+
+    const cleanup = () => {
+      isClientConnected = false;
+      if (connectTimeoutTimer) {
+        clearTimeout(connectTimeoutTimer);
+        connectTimeoutTimer = null;
+      }
+      if (currentProc) {
+        try { currentProc.kill('SIGKILL'); } catch (e) {}
+        currentProc = null;
+      }
+      try {
+        if (!res.writableEnded) res.end();
+      } catch (e) {}
+    };
+
+    req.on('close', cleanup);
+    res.on('close', cleanup);
+    res.on('error', cleanup);
 
     const ffmpegArgs: string[] = [
       '-fflags', '+nobuffer+discardcorrupt+genpts',
@@ -5171,15 +5170,15 @@ async function startServer() {
     if (streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-stimeout', '15000000',
-        '-analyzeduration', '1000000',
-        '-probesize', '1000000'
+        '-stimeout', '4000000',
+        '-analyzeduration', '500000',
+        '-probesize', '500000'
       );
     } else if (streamSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '15000000',
-        '-analyzeduration', '1000000',
-        '-probesize', '1000000'
+        '-rw_timeout', '4000000',
+        '-analyzeduration', '500000',
+        '-probesize', '500000'
       );
     }
 
@@ -5194,28 +5193,38 @@ async function startServer() {
       'pipe:1'
     );
 
-    let isClientConnected = true;
-    let currentProc: ReturnType<typeof spawn> | null = null;
-
-    const cleanup = () => {
-      isClientConnected = false;
-      if (currentProc) {
-        try { currentProc.kill('SIGKILL'); } catch (e) {}
-        currentProc = null;
+    // Watchdog timer: If no data is received within 4.5 seconds, mark offline with 503
+    connectTimeoutTimer = setTimeout(() => {
+      if (!headersSent && isClientConnected && !res.headersSent) {
+        headersSent = true;
+        if (cam) cam.status = 'OFFLINE';
+        res.status(503).json({ error: 'Câmera off-line ou sinal de vídeo indisponível', id: cam?.id });
       }
-      try {
-        if (!res.writableEnded) res.end();
-      } catch (e) {}
-    };
-
-    req.on('close', cleanup);
-    res.on('close', cleanup);
-    res.on('error', cleanup);
+      cleanup();
+    }, 4500);
 
     try {
       currentProc = spawn('ffmpeg', ffmpegArgs);
 
       currentProc.stdout?.on('data', (chunk) => {
+        if (connectTimeoutTimer) {
+          clearTimeout(connectTimeoutTimer);
+          connectTimeoutTimer = null;
+        }
+
+        if (!headersSent && isClientConnected && !res.headersSent) {
+          headersSent = true;
+          if (cam) cam.status = 'ONLINE';
+          res.writeHead(200, {
+            'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
+            'Cache-Control': 'no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0',
+            'Connection': 'close',
+            'Pragma': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Access-Control-Allow-Origin': '*',
+          });
+        }
+
         if (isClientConnected && !res.writableEnded) {
           try {
             res.write(chunk);
@@ -5227,151 +5236,30 @@ async function startServer() {
 
       currentProc.stderr?.on('data', () => {});
 
-      currentProc.on('close', () => {
+      currentProc.on('close', (code) => {
+        if (!headersSent && isClientConnected && !res.headersSent) {
+          headersSent = true;
+          if (cam) cam.status = 'OFFLINE';
+          res.status(503).json({ error: 'Câmera off-line ou fluxo encerrado', code });
+        }
         cleanup();
       });
 
-      currentProc.on('error', () => {
+      currentProc.on('error', (err) => {
+        if (!headersSent && isClientConnected && !res.headersSent) {
+          headersSent = true;
+          if (cam) cam.status = 'OFFLINE';
+          res.status(503).json({ error: 'Falha ao iniciar processo de vídeo', details: err.message });
+        }
         cleanup();
       });
-    } catch (e) {
-      cleanup();
-    }
-  });
-
-  // Real-time camera connection test and diagnostic endpoint (RTSP / RTMP / ONVIF / HLS)
-  app.post(['/api/cameras/test-connection', '/api/v1/cameras/test-connection'], async (req, res) => {
-    try {
-      const { protocol, rtspUrl, rtmpUrl, streamKey, cameraId } = req.body;
-      const targetProtocol = (protocol || (rtspUrl ? 'RTSP' : 'RTMP')).toUpperCase();
-
-      let targetCam = cameras.find((c) => 
-        (cameraId && (c.id === cameraId || c.streamKey === cameraId)) ||
-        (streamKey && (c.streamKey === streamKey || c.id === streamKey || c.id === `cam-${streamKey}`))
-      );
-
-      let effectiveRtsp = (rtspUrl || (targetCam ? targetCam.rtspUrl : '') || '').trim();
-      let effectiveRtmp = (rtmpUrl || (targetCam ? (targetCam.rtmpUrl || targetCam.fullRtmpUrl) : '') || '').trim();
-
-      const logs: string[] = [
-        `[${new Date().toLocaleTimeString()}] Iniciando diagnóstico de conexão (${targetProtocol})...`
-      ];
-
-      if (targetProtocol === 'RTSP' || (effectiveRtsp && targetProtocol !== 'RTMP')) {
-        if (!effectiveRtsp) {
-          return res.status(400).json({
-            success: false,
-            message: 'URL RTSP não informada para o teste de conexão.',
-            logs: ['[ERRO] Nenhuma URL RTSP válida fornecida.']
-          });
-        }
-
-        if (!effectiveRtsp.startsWith('rtsp://')) {
-          effectiveRtsp = `rtsp://${effectiveRtsp}`;
-        }
-
-        const maskedRtsp = effectiveRtsp.replace(/:[^:@]+@/, ':****@');
-        logs.push(`[${new Date().toLocaleTimeString()}] Testando handshake TCP na rota: ${maskedRtsp}`);
-
-        // Run ffprobe with JSON output to test connectivity and extract stream parameters
-        const probeCmd = `ffprobe -v error -rtsp_transport tcp -stimeout 6000000 -select_streams v:0 -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate -of json "${effectiveRtsp}"`;
-
-        try {
-          const probeOutput = await execWithOutput(probeCmd, 8000);
-          if (probeOutput.error && !probeOutput.stdout) {
-            throw probeOutput.error;
-          }
-          let videoInfo: any = null;
-          try {
-            const parsed = JSON.parse(probeOutput.stdout || '{}');
-            if (parsed && parsed.streams && parsed.streams[0]) {
-              videoInfo = parsed.streams[0];
-            }
-          } catch (e) {}
-
-          const codec = videoInfo?.codec_name?.toUpperCase() || 'H264';
-          const width = videoInfo?.width || 1920;
-          const height = videoInfo?.height || 1080;
-          let fps = 30;
-          if (videoInfo?.avg_frame_rate && videoInfo.avg_frame_rate.includes('/')) {
-            const [num, den] = videoInfo.avg_frame_rate.split('/').map(Number);
-            if (den > 0) fps = Math.round(num / den);
-          }
-
-          logs.push(`[${new Date().toLocaleTimeString()}] Handshake RTSP TCP efetuado com sucesso.`);
-          logs.push(`[${new Date().toLocaleTimeString()}] Fluxo de vídeo detectado: ${codec} ${width}x${height} @ ${fps} FPS.`);
-          logs.push(`[${new Date().toLocaleTimeString()}] Conexão validada e pronta para transmissão.`);
-
-          // If camera exists in list, ensure its background stream is active
-          if (targetCam) {
-            startCameraRtspStream(targetCam, true, true);
-          }
-
-          return res.json({
-            success: true,
-            message: `Conexão RTSP estabelecida com sucesso! Sinal de vídeo ativo: ${codec} ${width}x${height} a ${fps} FPS via TCP.`,
-            details: `Codec: ${codec} | Resolução: ${width}x${height} | Taxa de quadros: ${fps} fps`,
-            codec,
-            resolution: `${width}x${height}`,
-            fps,
-            logs
-          });
-        } catch (probeErr: any) {
-          const errOutput = probeErr.message || String(probeErr);
-          logs.push(`[${new Date().toLocaleTimeString()}] Falha na resposta RTSP: ${errOutput.slice(0, 150)}`);
-
-          let hint = 'Verifique se o IP, porta (554), usuário/senha e rota da câmera estão corretos e acessíveis.';
-          if (errOutput.includes('Connection refused') || errOutput.includes('111')) {
-            hint = 'Porta 554 recusou conexão. Verifique se o serviço RTSP está ativo na câmera e se o IP está correto.';
-          } else if (errOutput.includes('401') || errOutput.includes('Unauthorized')) {
-            hint = 'Falha de autenticação (401). Verifique o usuário e senha da câmera na URL RTSP.';
-          } else if (errOutput.includes('timed out') || errOutput.includes('110')) {
-            hint = 'Tempo limite esgotado. Verifique se o IP da câmera está acessível na rede e sem bloqueio de firewall.';
-          } else if (errOutput.includes('404') || errOutput.includes('Not Found')) {
-            hint = 'Caminho do fluxo não encontrado (404). Verifique o canal/profile da câmera (ex: /live, /stream1, /onvif1, /ch0/main/av_stream).';
-          }
-
-          return res.json({
-            success: false,
-            message: `Não foi possível conectar ao fluxo RTSP: ${hint}`,
-            details: errOutput,
-            logs
-          });
-        }
-      } else {
-        // RTMP Protocol Test
-        const key = streamKey || (targetCam ? (targetCam.streamKey || targetCam.id) : 'stream');
-        const cleanKey = key.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
-        const hlsPath = `/tmp/hls/cam_${cleanKey}.m3u8`;
-        const isHlsActive = fs.existsSync(hlsPath);
-
-        logs.push(`[${new Date().toLocaleTimeString()}] Validando canal RTMP chave 'cam_${cleanKey}'...`);
-
-        if (isHlsActive || isCameraHlsActivelyStreaming(cleanKey)) {
-          logs.push(`[${new Date().toLocaleTimeString()}] Sinal RTMP ativo e gerando segmentos HLS.`);
-          return res.json({
-            success: true,
-            message: `Transmissão RTMP recebida com sucesso! O sinal ao vivo está ativo e sincronizado.`,
-            details: `Chave: cam_${cleanKey} | HLS: /live/cam_${cleanKey}.m3u8`,
-            logs
-          });
-        } else {
-          logs.push(`[${new Date().toLocaleTimeString()}] Aguardando pacotes RTMP do codificador/câmera na porta 1935.`);
-          return res.json({
-            success: false,
-            message: `Aguardando sinal RTMP na chave '${key}'. Inicie o envio do fluxo no OBS/codificador para rtmp://.../live/${key}`,
-            details: `Nenhum pacote recebido no momento.`,
-            logs
-          });
-        }
+    } catch (e: any) {
+      if (!headersSent && isClientConnected && !res.headersSent) {
+        headersSent = true;
+        if (cam) cam.status = 'OFFLINE';
+        res.status(503).json({ error: 'Exceção ao conectar à câmera', details: e?.message });
       }
-    } catch (error: any) {
-      console.error('[POST /api/cameras/test-connection Error]:', error);
-      return res.status(500).json({
-        success: false,
-        message: `Erro interno no servidor ao executar diagnóstico: ${error.message || error}`,
-        logs: [`[ERRO SERVIDOR] ${error.message || error}`]
-      });
+      cleanup();
     }
   });
 

@@ -115,15 +115,24 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const rawStreamUrl = camera.rtspUrl || camera.rtmpUrl || camera.fullRtmpUrl || videoUrl || '';
   const mjpegUrl = `/api/cameras/${camera.id}/stream?key=cam_${cleanKey}&url=${encodeURIComponent(rawStreamUrl)}&t=${retryCount}`;
 
-  // When using MJPEG stream, mark online quickly since multipart stream does not fire onload
+  // For MJPEG stream, verify that valid image data is actively rendering before setting ONLINE
   useEffect(() => {
-    if (useMjpegStream && isVisible && streamMode === 'VIDEO') {
-      const timer = setTimeout(() => {
-        setConnectionState('ONLINE');
-      }, 350);
-      return () => clearTimeout(timer);
+    if (!useMjpegStream || streamMode !== 'VIDEO' || !isVisible) return;
+    if (camera.status === 'OFFLINE') {
+      setConnectionState('OFFLINE');
+      return;
     }
-  }, [useMjpegStream, isVisible, streamMode, retryCount]);
+
+    // Check periodically if the <img> tag has loaded real pixel dimensions
+    const checkInterval = setInterval(() => {
+      const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
+      if (imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+        setConnectionState('ONLINE');
+      }
+    }, 600);
+
+    return () => clearInterval(checkInterval);
+  }, [useMjpegStream, isVisible, streamMode, retryCount, camera.status]);
 
   const displayStreamUrl = React.useMemo(() => {
     if (camera.protocol === 'RTSP') {
@@ -333,17 +342,16 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     }
 
     setConnectionState('LOADING');
-    // Allow up to 12s for initial connection
+    // Allow up to 5.5s for initial connection. If no video/image frames received, mark OFFLINE
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
-          console.log(`[Stream Player] Tempo limite de carregamento para ${camera.name}. Reconectando...`);
-          setRetryCount((prev) => prev + 1);
-          return 'LOADING';
+          console.log(`[Stream Player] Tempo limite de conexão esgotado para ${camera.name}. Sinal marcado como OFFLINE.`);
+          return 'OFFLINE';
         }
         return curr;
       });
-    }, 12000);
+    }, 5500);
   };
 
   const handleVideoError = () => {
@@ -353,14 +361,16 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       console.log(`[Stream Fallback] Tentando fluxo direto MJPEG para câmera RTSP '${camera.name}'...`);
       setUseMjpegStream(true);
       setConnectionState('LOADING');
+      connectStream();
       return;
     }
     if (useMjpegStream) {
-      // Auto-retry MJPEG stream immediately if disconnected
-      setTimeout(() => {
-        setRetryCount((prev) => prev + 1);
-      }, 1000);
-      return;
+      if (retryCount < 1) {
+        setTimeout(() => {
+          setRetryCount((prev) => prev + 1);
+        }, 1200);
+        return;
+      }
     }
     setConnectionState('OFFLINE');
   };
@@ -373,7 +383,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const handleRetryConnection = () => {
     setUseMjpegStream(isRtspCameraSource(camera));
     setConnectionState('LOADING');
-    setRetryCount((prev) => prev + 1);
+    setRetryCount(0);
     connectStream();
     if (videoRef.current) {
       videoRef.current.load();
