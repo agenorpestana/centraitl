@@ -114,8 +114,9 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
   const rawStreamUrl = camera.rtspUrl || camera.rtmpUrl || camera.fullRtmpUrl || videoUrl || '';
   const mjpegUrl = `/api/cameras/${camera.id}/stream?key=cam_${cleanKey}&url=${encodeURIComponent(rawStreamUrl)}&t=${retryCount}`;
+  const consecutiveErrorsRef = useRef<number>(0);
 
-  // For MJPEG stream, verify that valid image data is actively rendering before setting ONLINE
+  // For MJPEG stream, mark online once image renders frames
   useEffect(() => {
     if (!useMjpegStream || streamMode !== 'VIDEO' || !isVisible) return;
     if (camera.status === 'OFFLINE') {
@@ -123,15 +124,14 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       return;
     }
 
-    // Check periodically if the <img> tag has loaded real pixel dimensions
-    const checkInterval = setInterval(() => {
-      const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
-      if (imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+    // Set online smoothly once streaming starts
+    const timer = setTimeout(() => {
+      if (connectionState === 'LOADING') {
         setConnectionState('ONLINE');
       }
-    }, 600);
+    }, 1200);
 
-    return () => clearInterval(checkInterval);
+    return () => clearTimeout(timer);
   }, [useMjpegStream, isVisible, streamMode, retryCount, camera.status]);
 
   const displayStreamUrl = React.useMemo(() => {
@@ -320,18 +320,6 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     setVideoUrl(cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream)));
   }, [camera.id, camera.videoStreamUrl, camera.streamKey, useSubStream]);
 
-  // Proactive keep-alive watchdog for MJPEG stream to prevent browser 30s socket freeze and black screen
-  useEffect(() => {
-    if (!useMjpegStream || streamMode !== 'VIDEO' || !isVisible) return;
-
-    // Proactively refresh stream timestamp every 24 seconds to renew HTTP socket before proxy/browser timeout
-    const watchdogInterval = setInterval(() => {
-      setRetryCount((prev) => prev + 1);
-    }, 24000);
-
-    return () => clearInterval(watchdogInterval);
-  }, [useMjpegStream, streamMode, isVisible]);
-
   // Connect stream
   const connectStream = () => {
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
@@ -342,16 +330,16 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     }
 
     setConnectionState('LOADING');
-    // Allow up to 5.5s for initial connection. If no video/image frames received, mark OFFLINE
+    // Allow up to 10s for initial connection. If no stream received after 10s, mark OFFLINE
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
-          console.log(`[Stream Player] Tempo limite de conexão esgotado para ${camera.name}. Sinal marcado como OFFLINE.`);
+          console.log(`[Stream Player] Tempo limite de conexão para ${camera.name}. Marcando OFFLINE.`);
           return 'OFFLINE';
         }
         return curr;
       });
-    }, 5500);
+    }, 10000);
   };
 
   const handleVideoError = () => {
@@ -364,26 +352,27 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       connectStream();
       return;
     }
-    if (useMjpegStream) {
-      if (retryCount < 1) {
-        setTimeout(() => {
-          setRetryCount((prev) => prev + 1);
-        }, 1200);
-        return;
-      }
+    consecutiveErrorsRef.current += 1;
+    if (useMjpegStream && consecutiveErrorsRef.current <= 2) {
+      setTimeout(() => {
+        setRetryCount((prev) => prev + 1);
+      }, 1500);
+      return;
     }
     setConnectionState('OFFLINE');
   };
 
   const handleVideoCanPlay = () => {
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+    consecutiveErrorsRef.current = 0;
     setConnectionState('ONLINE');
   };
 
   const handleRetryConnection = () => {
     setUseMjpegStream(isRtspCameraSource(camera));
     setConnectionState('LOADING');
-    setRetryCount(0);
+    consecutiveErrorsRef.current = 0;
+    setRetryCount((prev) => prev + 1);
     connectStream();
     if (videoRef.current) {
       videoRef.current.load();
@@ -547,7 +536,11 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               src={mjpegUrl}
               alt={camera.name}
               crossOrigin="anonymous"
-              onLoad={() => setConnectionState('ONLINE')}
+              onLoad={() => {
+                if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+                consecutiveErrorsRef.current = 0;
+                setConnectionState('ONLINE');
+              }}
               onError={handleVideoError}
               className={`w-full h-full ${isFullscreen ? 'object-contain max-h-screen' : 'object-cover'} transition duration-300 ${
                 connectionState === 'ONLINE' ? 'opacity-100' : 'opacity-80'

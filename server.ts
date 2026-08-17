@@ -5170,15 +5170,15 @@ async function startServer() {
     if (streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-stimeout', '4000000',
-        '-analyzeduration', '500000',
-        '-probesize', '500000'
+        '-stimeout', '10000000',
+        '-analyzeduration', '1000000',
+        '-probesize', '1000000'
       );
     } else if (streamSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '4000000',
-        '-analyzeduration', '500000',
-        '-probesize', '500000'
+        '-rw_timeout', '10000000',
+        '-analyzeduration', '1000000',
+        '-probesize', '1000000'
       );
     }
 
@@ -5193,15 +5193,14 @@ async function startServer() {
       'pipe:1'
     );
 
-    // Watchdog timer: If no data is received within 4.5 seconds, mark offline with 503
+    // Watchdog timer: If no data is received within 8.5 seconds, return 503 without mutating global camera status
     connectTimeoutTimer = setTimeout(() => {
       if (!headersSent && isClientConnected && !res.headersSent) {
         headersSent = true;
-        if (cam) cam.status = 'OFFLINE';
         res.status(503).json({ error: 'Câmera off-line ou sinal de vídeo indisponível', id: cam?.id });
       }
       cleanup();
-    }, 4500);
+    }, 8500);
 
     try {
       currentProc = spawn('ffmpeg', ffmpegArgs);
@@ -5214,7 +5213,6 @@ async function startServer() {
 
         if (!headersSent && isClientConnected && !res.headersSent) {
           headersSent = true;
-          if (cam) cam.status = 'ONLINE';
           res.writeHead(200, {
             'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
             'Cache-Control': 'no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0',
@@ -5239,7 +5237,6 @@ async function startServer() {
       currentProc.on('close', (code) => {
         if (!headersSent && isClientConnected && !res.headersSent) {
           headersSent = true;
-          if (cam) cam.status = 'OFFLINE';
           res.status(503).json({ error: 'Câmera off-line ou fluxo encerrado', code });
         }
         cleanup();
@@ -5248,7 +5245,6 @@ async function startServer() {
       currentProc.on('error', (err) => {
         if (!headersSent && isClientConnected && !res.headersSent) {
           headersSent = true;
-          if (cam) cam.status = 'OFFLINE';
           res.status(503).json({ error: 'Falha ao iniciar processo de vídeo', details: err.message });
         }
         cleanup();
@@ -5256,7 +5252,6 @@ async function startServer() {
     } catch (e: any) {
       if (!headersSent && isClientConnected && !res.headersSent) {
         headersSent = true;
-        if (cam) cam.status = 'OFFLINE';
         res.status(503).json({ error: 'Exceção ao conectar à câmera', details: e?.message });
       }
       cleanup();
