@@ -527,13 +527,19 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
 
   ffmpegArgs.push(
     '-i', streamSource,
-    '-map', '0:v:0?'
+    '-map', '0:v:0?',
+    '-map', '0:a:0?'
   );
 
   if (isSubStream) {
     if ((hasNativeHardwareSubStream && !streamSource.startsWith('rtsp://')) || streamSource.startsWith('rtmp://')) {
       // Direct stream copy for native sub-stream or RTMP stream (instant start, 0% CPU, no buffering)
-      ffmpegArgs.push('-c:v', 'copy');
+      ffmpegArgs.push(
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-ar', '44100',
+        '-b:a', '128k'
+      );
     } else {
       // Fast browser-compatible H.264 normalization (SD 360p @ 30fps fluid for grid cards)
       ffmpegArgs.push(
@@ -549,6 +555,9 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         '-b:v', '500k',
         '-maxrate', '700k',
         '-bufsize', '700k',
+        '-c:a', 'aac',
+        '-ar', '44100',
+        '-b:a', '128k',
         '-max_muxing_queue_size', '2048'
       );
     }
@@ -565,15 +574,22 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         '-r', '30',
         '-g', '30',
         '-crf', '23',
+        '-c:a', 'aac',
+        '-ar', '44100',
+        '-b:a', '128k',
         '-max_muxing_queue_size', '2048'
       );
     } else {
-      ffmpegArgs.push('-c:v', 'copy');
+      ffmpegArgs.push(
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-ar', '44100',
+        '-b:a', '128k'
+      );
     }
   }
 
   ffmpegArgs.push(
-    '-an',
     '-f', 'hls',
     '-hls_time', '2',
     '-hls_list_size', '6',
@@ -3459,8 +3475,10 @@ async function startServer() {
       ffmpegArgs.push(
         '-i', effectiveInputSource,
         '-map', '0:v:0?',
+        '-map', '0:a:0?',
         '-c:v', 'copy',
-        '-an',
+        '-c:a', 'aac',
+        '-b:a', '128k',
         '-max_muxing_queue_size', '4096',
         '-movflags', '+frag_keyframe+empty_moov+default_base_moof+faststart',
         '-t', autoRecordingDurationSec.toString(),
@@ -3778,33 +3796,38 @@ async function startServer() {
     const width = (req.query.w || '1280').toString();
     const fps = (req.query.fps || '15').toString();
 
-    const ffmpegArgs: string[] = [
-      '-fflags', '+nobuffer+discardcorrupt+genpts',
-      '-flags', 'low_delay',
-      '-use_wallclock_as_timestamps', '1',
-    ];
+    const ffmpegArgs: string[] = [];
 
     if (targetUrl.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-stimeout', '10000000',
-        '-analyzeduration', '1000000',
-        '-probesize', '1000000'
+        '-stimeout', '8000000',
+        '-analyzeduration', '500000',
+        '-probesize', '500000',
+        '-fflags', '+nobuffer+discardcorrupt',
+        '-flags', 'low_delay'
       );
     } else if (targetUrl.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '10000000',
-        '-analyzeduration', '1000000',
-        '-probesize', '1000000'
+        '-rw_timeout', '8000000',
+        '-analyzeduration', '500000',
+        '-probesize', '500000',
+        '-fflags', '+nobuffer+discardcorrupt',
+        '-flags', 'low_delay'
+      );
+    } else {
+      ffmpegArgs.push(
+        '-fflags', '+nobuffer+discardcorrupt',
+        '-flags', 'low_delay'
       );
     }
 
     ffmpegArgs.push(
       '-i', targetUrl,
       '-vf', `scale=${width}:-1,format=yuvj420p`,
-      '-r', '25',
-      '-vsync', 'drop',
-      '-q:v', '3',
+      '-r', fps,
+      '-q:v', '4',
+      '-an',
       '-f', 'mpjpeg',
       '-boundary_tag', 'ffmpegboundary',
       'pipe:1'
@@ -5256,33 +5279,37 @@ async function startServer() {
     res.on('close', cleanup);
     res.on('error', cleanup);
 
-    const ffmpegArgs: string[] = [
-      '-fflags', '+nobuffer+discardcorrupt+genpts',
-      '-flags', 'low_delay',
-      '-use_wallclock_as_timestamps', '1',
-    ];
+    const ffmpegArgs: string[] = [];
 
     if (streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-rtsp_transport', 'tcp',
-        '-stimeout', '10000000',
-        '-analyzeduration', '1000000',
-        '-probesize', '1000000'
+        '-stimeout', '8000000',
+        '-analyzeduration', '500000',
+        '-probesize', '500000',
+        '-fflags', '+nobuffer+discardcorrupt',
+        '-flags', 'low_delay'
       );
     } else if (streamSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
-        '-rw_timeout', '10000000',
-        '-analyzeduration', '1000000',
-        '-probesize', '1000000'
+        '-rw_timeout', '8000000',
+        '-analyzeduration', '500000',
+        '-probesize', '500000',
+        '-fflags', '+nobuffer+discardcorrupt',
+        '-flags', 'low_delay'
+      );
+    } else {
+      ffmpegArgs.push(
+        '-fflags', '+nobuffer+discardcorrupt',
+        '-flags', 'low_delay'
       );
     }
 
     ffmpegArgs.push(
       '-i', streamSource,
       '-vf', 'scale=854:480:force_original_aspect_ratio=decrease,format=yuvj420p',
-      '-r', '25',
-      '-vsync', 'drop',
-      '-q:v', '3',
+      '-r', '20',
+      '-q:v', '4',
       '-an',
       '-f', 'mpjpeg',
       '-boundary_tag', boundary,

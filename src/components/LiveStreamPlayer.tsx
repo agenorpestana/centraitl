@@ -87,6 +87,18 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   // Default to MJPEG for RTSP cameras, and HLS for RTMP / Web streams
   const [useMjpegStream, setUseMjpegStream] = useState<boolean>(() => isRtspCameraSource(camera));
 
+  const [localMuted, setLocalMuted] = useState<boolean>(isMuted);
+
+  useEffect(() => {
+    setLocalMuted(isMuted);
+  }, [isMuted]);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.muted = localMuted;
+    }
+  }, [localMuted]);
+
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');
   const [videoUrl, setVideoUrl] = useState<string>(() => cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream)));
@@ -704,24 +716,40 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           </div>
         )}
 
-        {/* Bottom-right Discrete Native Fullscreen Trigger Button inside image */}
-        <button
-          onClick={toggleFullscreen}
-          className="absolute bottom-2.5 right-2.5 p-2 bg-slate-950/80 hover:bg-emerald-500 text-slate-200 hover:text-slate-950 rounded-xl border border-slate-700 transition z-20 shadow-lg flex items-center gap-1.5 text-xs font-bold"
-          title={isFullscreen ? 'Sair da Tela Cheia (ESC)' : 'Expandir para Tela Cheia Total'}
-        >
-          {isFullscreen ? (
-            <>
-              <Minimize2 className="w-4 h-4" />
-              <span className="hidden sm:inline">Sair Tela Cheia</span>
-            </>
-          ) : (
-            <>
-              <Maximize2 className="w-4 h-4 text-emerald-400" />
-              <span className="hidden sm:inline">Tela Cheia</span>
-            </>
+        {/* Bottom-right Discrete Controls inside image */}
+        <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5 z-20">
+          {!useMjpegStream && (
+            <button
+              onClick={() => setLocalMuted((prev) => !prev)}
+              className="p-2 bg-slate-950/80 hover:bg-slate-800 text-slate-200 rounded-xl border border-slate-700 transition shadow-lg flex items-center gap-1.5 text-xs font-bold"
+              title={localMuted ? 'Ativar Áudio (Desmutar)' : 'Silenciar Áudio'}
+            >
+              {localMuted ? (
+                <VolumeX className="w-4 h-4 text-slate-400" />
+              ) : (
+                <Volume2 className="w-4 h-4 text-emerald-400 animate-pulse" />
+              )}
+            </button>
           )}
-        </button>
+
+          <button
+            onClick={toggleFullscreen}
+            className="p-2 bg-slate-950/80 hover:bg-emerald-500 text-slate-200 hover:text-slate-950 rounded-xl border border-slate-700 transition shadow-lg flex items-center gap-1.5 text-xs font-bold"
+            title={isFullscreen ? 'Sair da Tela Cheia (ESC)' : 'Expandir para Tela Cheia Total'}
+          >
+            {isFullscreen ? (
+              <>
+                <Minimize2 className="w-4 h-4" />
+                <span className="hidden sm:inline">Sair Tela Cheia</span>
+              </>
+            ) : (
+              <>
+                <Maximize2 className="w-4 h-4 text-emerald-400" />
+                <span className="hidden sm:inline">Tela Cheia</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* 2. INFORMATION & CONTROLS CARDS (POSITIONS BELOW THE VIDEO IMAGE) */}
@@ -809,6 +837,31 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               </div>
 
               <div className="flex items-center space-x-2 shrink-0">
+                {!useMjpegStream && (
+                  <button
+                    type="button"
+                    onClick={() => setLocalMuted((prev) => !prev)}
+                    className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center space-x-1 border ${
+                      localMuted
+                        ? 'bg-slate-950 hover:bg-slate-800 text-slate-400 border-slate-800'
+                        : 'bg-emerald-950/80 hover:bg-emerald-900/80 text-emerald-400 border-emerald-500/40'
+                    }`}
+                    title={localMuted ? 'Ativar Áudio da Câmera' : 'Silenciar Áudio'}
+                  >
+                    {localMuted ? (
+                      <>
+                        <VolumeX className="w-3.5 h-3.5 text-slate-400" />
+                        <span className="hidden sm:inline">Sem Áudio</span>
+                      </>
+                    ) : (
+                      <>
+                        <Volume2 className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                        <span className="hidden sm:inline">Áudio Ativo</span>
+                      </>
+                    )}
+                  </button>
+                )}
+
                 <button
                   onClick={runPlayerDiag}
                   className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 rounded-xl text-xs font-bold transition flex items-center space-x-1"
