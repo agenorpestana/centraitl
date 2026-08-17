@@ -84,8 +84,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO'
   );
 
-  // Default to HLS for high performance hardware-accelerated playback
-  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(false);
+  // Default to MJPEG for RTSP cameras, and HLS for RTMP / Web streams
+  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(() => isRtspCameraSource(camera));
 
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');
@@ -143,6 +143,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   useEffect(() => {
     const initialUrl = cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream));
     setVideoUrl(initialUrl);
+    setUseMjpegStream(isRtspCameraSource(camera));
     setStreamMode(camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO');
     setTempUrlInput(cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || initialUrl));
     if (camera.status === 'OFFLINE') {
