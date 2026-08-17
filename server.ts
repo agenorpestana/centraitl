@@ -4100,25 +4100,43 @@ async function startServer() {
   });
 
   // Endpoint para Teste / Diagnóstico Individual de Conexão da Câmera (RTSP/RTMP)
-  app.post(['/api/cameras/test-connection', '/api/v1/cameras/test-connection'], async (req, res) => {
+  app.all(['/api/cameras/test-connection', '/api/v1/cameras/test-connection', '/api/cameras/:id/test-connection', '/api/cameras/:id/test'], async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
     try {
-      const { protocol, rtspUrl, rtmpUrl, streamKey, id, cameraId } = req.body;
-      const key = streamKey || id || cameraId || 'stream';
+      const body = req.body || {};
+      const query = req.query || {};
+      const params = req.params || {};
 
-      let cam = cameras.find((c) => (c.streamKey || c.id) === key || c.id === key || c.id === `cam-${key}` || c.id === `cam_${key}`);
+      const protocol = body.protocol || query.protocol;
+      const rtspUrl = body.rtspUrl || query.rtspUrl;
+      const rtmpUrl = body.rtmpUrl || query.rtmpUrl;
+      const streamKey = body.streamKey || query.streamKey;
+      const id = params.id || body.id || query.id || body.cameraId || query.cameraId || streamKey || 'stream';
+      const key = String(id);
+
+      let cam = cameras.find((c) => 
+        c.id === key || 
+        c.id === `cam-${key}` || 
+        c.id === `cam_${key}` || 
+        c.streamKey === key || 
+        (c.streamKey && c.streamKey.replace(/^cam[-_]/i, '') === key.replace(/^cam[-_]/i, '')) ||
+        (body.name && c.name === body.name)
+      );
+
       if (!cam) {
         cam = {
           id: key,
-          name: 'Teste de Câmera',
+          name: body.name || query.name || 'Câmera',
           protocol: protocol || (rtspUrl ? 'RTSP' : 'RTMP'),
           rtspUrl: rtspUrl || '',
           rtmpUrl: rtmpUrl || '',
           streamKey: key,
+          status: 'OFFLINE',
         } as Camera;
       } else {
         if (protocol) cam.protocol = protocol;
-        if (rtspUrl !== undefined) cam.rtspUrl = rtspUrl;
-        if (rtmpUrl !== undefined) cam.rtmpUrl = rtmpUrl;
+        if (rtspUrl !== undefined && rtspUrl.trim()) cam.rtspUrl = rtspUrl.trim();
+        if (rtmpUrl !== undefined && rtmpUrl.trim()) cam.rtmpUrl = rtmpUrl.trim();
       }
 
       const result = await checkSingleCameraHealth(cam);
@@ -4126,15 +4144,15 @@ async function startServer() {
       saveSqliteFile();
 
       const logs: string[] = [
-        `[${new Date().toLocaleTimeString()}] Diagnóstico executado para '${cam.name}' (${cam.protocol || 'RTSP'}).`,
-        `[${new Date().toLocaleTimeString()}] Resultado: ${result.status} (${result.latencyMs}ms).`,
-        `[${new Date().toLocaleTimeString()}] ${result.message}`,
+        `[${new Date().toLocaleTimeString('pt-BR')}] Diagnóstico executado para '${cam.name}' (${cam.protocol || 'RTSP'}).`,
+        `[${new Date().toLocaleTimeString('pt-BR')}] Resultado: ${result.status} (${result.latencyMs}ms).`,
+        `[${new Date().toLocaleTimeString('pt-BR')}] ${result.message}`,
       ];
       if (result.details) {
-        logs.push(`[${new Date().toLocaleTimeString()}] Detalhes: ${result.details}`);
+        logs.push(`[${new Date().toLocaleTimeString('pt-BR')}] Detalhes: ${result.details}`);
       }
 
-      return res.json({
+      return res.status(200).json({
         success: result.isOnline,
         status: result.isOnline ? 'ONLINE' : 'OFFLINE',
         message: result.message,
@@ -4145,10 +4163,13 @@ async function startServer() {
         logs,
       });
     } catch (e: any) {
-      return res.status(500).json({
+      console.error('[Test Connection Error]:', e);
+      return res.status(200).json({
         success: false,
         status: 'OFFLINE',
         message: 'Erro interno ao processar teste de conexão',
+        details: e.message || String(e),
+        logs: [`[${new Date().toLocaleTimeString('pt-BR')}] Erro: ${e.message || String(e)}`],
       });
     }
   });
@@ -5216,7 +5237,7 @@ async function startServer() {
           res.writeHead(200, {
             'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
             'Cache-Control': 'no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0',
-            'Connection': 'close',
+            'Connection': 'keep-alive',
             'Pragma': 'no-cache',
             'X-Accel-Buffering': 'no',
             'Access-Control-Allow-Origin': '*',

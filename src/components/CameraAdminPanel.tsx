@@ -216,10 +216,16 @@ export const CameraAdminPanel: React.FC<CameraAdminPanelProps> = ({
       };
       const res = await fetch('/api/cameras/test-connection', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        data = { success: res.ok, status: res.ok ? 'ONLINE' : 'OFFLINE', message: text.substring(0, 200) };
+      }
       setTestResult({ loading: false, data });
     } catch (e: any) {
       setTestResult({ loading: false, error: e.message || 'Erro ao conectar ao servidor para teste' });
