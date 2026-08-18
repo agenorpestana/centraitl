@@ -219,12 +219,15 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       try {
         data = JSON.parse(text);
       } catch (err) {
+        const cleanDetails = text.includes('<html') || text.includes('502')
+          ? 'O servidor intermediário ou conexão demorou a responder. Tente novamente.'
+          : text.substring(0, 200);
         data = {
           success: res.ok,
           status: res.ok ? 'ONLINE' : 'OFFLINE',
-          message: res.ok ? 'Diagnóstico concluído' : 'Falha na resposta do servidor',
-          details: text.substring(0, 300),
-          logs: [`[${new Date().toLocaleTimeString('pt-BR')}] Status HTTP: ${res.status}`],
+          message: res.ok ? 'Diagnóstico concluído' : 'Sem resposta em tempo hábil do sinal de vídeo',
+          details: cleanDetails,
+          logs: [`[${new Date().toLocaleTimeString('pt-BR')}] Status de rede: ${res.status}`],
         };
       }
 
@@ -458,17 +461,17 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           const HlsClass = (window as any).Hls;
           hlsInstance = new HlsClass({
             enableWorker: true,
-            lowLatencyMode: true,
-            backBufferLength: 4,
-            maxBufferLength: 4,
-            maxMaxBufferLength: 8,
-            liveSyncDurationCount: 1,
-            liveMaxLatencyDurationCount: 3,
-            manifestLoadingTimeOut: 8000,
+            lowLatencyMode: false,
+            backBufferLength: 10,
+            maxBufferLength: 12,
+            maxMaxBufferLength: 20,
+            liveSyncDurationCount: 3,
+            liveMaxLatencyDurationCount: 6,
+            manifestLoadingTimeOut: 10000,
             manifestLoadingMaxRetry: 6,
-            levelLoadingTimeOut: 8000,
+            levelLoadingTimeOut: 10000,
             levelLoadingMaxRetry: 6,
-            fragLoadingTimeOut: 10000,
+            fragLoadingTimeOut: 12000,
             fragLoadingMaxRetry: 6,
           });
           hlsInstance.loadSource(videoUrl);

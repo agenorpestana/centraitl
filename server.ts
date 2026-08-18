@@ -203,52 +203,88 @@ function markStreamActivity(identifier: string, protocol = 'RTSP') {
   if (!identifier) return;
   const now = Date.now();
   const raw = String(identifier).trim();
+  const rawLower = raw.toLowerCase();
   const clean = raw.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+  const cleanLower = clean.toLowerCase();
+
   activeStreamActivityMap.set(raw, { lastFrameAt: now, protocol });
+  activeStreamActivityMap.set(rawLower, { lastFrameAt: now, protocol });
   activeStreamActivityMap.set(clean, { lastFrameAt: now, protocol });
+  activeStreamActivityMap.set(cleanLower, { lastFrameAt: now, protocol });
   activeStreamActivityMap.set(`cam_${clean}`, { lastFrameAt: now, protocol });
   activeStreamActivityMap.set(`cam-${clean}`, { lastFrameAt: now, protocol });
+  activeStreamActivityMap.set(`cam_${cleanLower}`, { lastFrameAt: now, protocol });
+  activeStreamActivityMap.set(`cam-${cleanLower}`, { lastFrameAt: now, protocol });
 }
 
 function isCameraActivelyStreaming(camOrKey: any): { isOnline: boolean; protocol: string; ageMs: number } {
   if (!camOrKey) return { isOnline: false, protocol: 'RTSP', ageMs: Infinity };
   const key = typeof camOrKey === 'string' ? camOrKey : (camOrKey.streamKey || camOrKey.id || camOrKey.name || '');
-  const clean = String(key).replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+  const rawStr = String(key).trim();
+  const clean = rawStr.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
   const now = Date.now();
 
-  const keysToCheck = [
-    String(key),
+  const keysToCheck = new Set<string>([
+    rawStr,
+    rawStr.toLowerCase(),
     clean,
+    clean.toLowerCase(),
     `cam_${clean}`,
     `cam-${clean}`,
+    `cam_${clean.toLowerCase()}`,
+    `cam-${clean.toLowerCase()}`,
     `cam_${clean}_sub`,
     `cam-${clean}_sub`,
-  ];
-  if (typeof camOrKey === 'object' && camOrKey.id) {
-    keysToCheck.push(String(camOrKey.id));
-    const cleanId = String(camOrKey.id).replace(/^cam[-_]/i, '');
-    keysToCheck.push(cleanId);
-    keysToCheck.push(`cam_${cleanId}`);
-    keysToCheck.push(`cam-${cleanId}`);
-  }
-  if (typeof camOrKey === 'object' && camOrKey.name) {
-    keysToCheck.push(String(camOrKey.name));
+    `cam_${clean.toLowerCase()}_sub`,
+    `cam-${clean.toLowerCase()}_sub`,
+  ]);
+
+  if (typeof camOrKey === 'object') {
+    if (camOrKey.id) {
+      const idStr = String(camOrKey.id).trim();
+      const cleanId = idStr.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+      keysToCheck.add(idStr);
+      keysToCheck.add(idStr.toLowerCase());
+      keysToCheck.add(cleanId);
+      keysToCheck.add(cleanId.toLowerCase());
+      keysToCheck.add(`cam_${cleanId}`);
+      keysToCheck.add(`cam-${cleanId}`);
+      keysToCheck.add(`cam_${cleanId.toLowerCase()}`);
+      keysToCheck.add(`cam-${cleanId.toLowerCase()}`);
+    }
+    if (camOrKey.streamKey) {
+      const sk = String(camOrKey.streamKey).trim();
+      const cleanSk = sk.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+      keysToCheck.add(sk);
+      keysToCheck.add(sk.toLowerCase());
+      keysToCheck.add(cleanSk);
+      keysToCheck.add(cleanSk.toLowerCase());
+    }
+    if (camOrKey.name) {
+      keysToCheck.add(String(camOrKey.name).trim());
+      keysToCheck.add(String(camOrKey.name).trim().toLowerCase());
+    }
   }
 
-  // 1. Check MJPEG / Live stream memory activity (within last 12 seconds)
-  for (const k of keysToCheck) {
-    if (activeStreamActivityMap.has(k)) {
-      const act = activeStreamActivityMap.get(k)!;
-      const ageMs = now - act.lastFrameAt;
-      if (ageMs < 12000) {
-        return { isOnline: true, protocol: act.protocol || 'RTSP', ageMs };
+  // 1. Check MJPEG / Live stream memory activity (within last 15 seconds)
+  for (const [mapKey, act] of activeStreamActivityMap.entries()) {
+    const mapKeyLower = mapKey.toLowerCase();
+    for (const k of keysToCheck) {
+      const kLower = k.toLowerCase();
+      if (mapKeyLower === kLower || mapKeyLower.includes(kLower) || kLower.includes(mapKeyLower)) {
+        const ageMs = now - act.lastFrameAt;
+        if (ageMs < 15000) {
+          return { isOnline: true, protocol: act.protocol || 'RTSP', ageMs };
+        }
       }
     }
   }
 
-  // 2. Check RTMP/HLS file creation on disk (within last 15 seconds)
-  if (isCameraHlsActivelyStreaming(key)) {
-    return { isOnline: true, protocol: 'RTMP', ageMs: 1000 };
+  // 2. Check RTMP/HLS file or process active (within last 35 seconds)
+  for (const k of keysToCheck) {
+    if (isCameraHlsActivelyStreaming(k)) {
+      return { isOnline: true, protocol: 'RTMP', ageMs: 1000 };
+    }
   }
 
   return { isOnline: false, protocol: 'RTSP', ageMs: Infinity };
@@ -257,34 +293,46 @@ function isCameraActivelyStreaming(camOrKey: any): { isOnline: boolean; protocol
 function isCameraHlsActivelyStreaming(rawKey: string): boolean {
   if (!rawKey) return false;
 
-  const cleanBase = rawKey.replace(/[-_]sub$/, '');
-  const keyUnderscore = cleanBase.replace(/^cam-/, 'cam_');
-  const keyDash = cleanBase.replace(/^cam_/, 'cam-');
-  const cleanId = cleanBase.replace(/^cam[-_]/, '');
+  const rawStr = String(rawKey).trim();
+  const cleanBase = rawStr.replace(/[-_]sub$/i, '');
+  const cleanId = cleanBase.replace(/^cam[-_]/i, '');
+  const cleanLower = cleanId.toLowerCase();
 
   const keysToCheck = [
-    rawKey,
+    rawStr,
+    rawStr.toLowerCase(),
     cleanBase,
-    keyUnderscore,
-    keyDash,
+    cleanBase.toLowerCase(),
+    cleanId,
+    cleanLower,
     `cam_${cleanId}`,
     `cam-${cleanId}`,
+    `cam_${cleanLower}`,
+    `cam-${cleanLower}`,
     `cam_${cleanId}_sub`,
     `cam-${cleanId}_sub`,
+    `cam_${cleanLower}_sub`,
+    `cam-${cleanLower}_sub`,
   ];
 
   // 1. Check if an active FFmpeg process is running for this stream key
-  for (const k of keysToCheck) {
-    if (activeFfmpegProcesses.has(k)) {
-      const proc = activeFfmpegProcesses.get(k);
-      if (proc && proc.exitCode === null && !proc.killed) {
-        return true;
+  for (const [procKey, proc] of activeFfmpegProcesses.entries()) {
+    if (proc && proc.exitCode === null && !proc.killed) {
+      const procKeyLower = procKey.toLowerCase();
+      for (const k of keysToCheck) {
+        if (procKeyLower === k.toLowerCase() || procKeyLower.includes(k.toLowerCase())) {
+          return true;
+        }
       }
     }
-    if (activeAutoRecordingProcesses.has(k)) {
-      const proc = activeAutoRecordingProcesses.get(k);
-      if (proc && proc.exitCode === null && !proc.killed) {
-        return true;
+  }
+  for (const [procKey, proc] of activeAutoRecordingProcesses.entries()) {
+    if (proc && proc.exitCode === null && !proc.killed) {
+      const procKeyLower = procKey.toLowerCase();
+      for (const k of keysToCheck) {
+        if (procKeyLower === k.toLowerCase() || procKeyLower.includes(k.toLowerCase())) {
+          return true;
+        }
       }
     }
   }
@@ -294,66 +342,31 @@ function isCameraHlsActivelyStreaming(rawKey: string): boolean {
 
   const now = Date.now();
 
-  // 2. Check if .m3u8 playlist exists and has been modified in the last 30 seconds
+  // 2. Check if .m3u8 playlist exists and has been modified in the last 35 seconds
   for (const k of keysToCheck) {
     const playlistPath = path.join(hlsDir, `${k}.m3u8`);
     if (fs.existsSync(playlistPath)) {
       try {
         const stat = fs.statSync(playlistPath);
-        if (now - stat.mtimeMs < 30000 && stat.size > 20) {
+        if (now - stat.mtimeMs < 35000 && stat.size > 20) {
           return true;
         }
       } catch (e) {}
     }
   }
 
-  // 3. Check for recently created .ts chunks
-  const validPrefixes = Array.from(new Set([
-    `${rawKey}_`,
-    `${cleanBase}_`,
-    `${keyUnderscore}_`,
-    `${keyDash}_`,
-    `cam_${cleanId}_`,
-    `cam-${cleanId}_`,
-  ]));
-
-  const legacyPrefixes = Array.from(new Set([
-    rawKey,
-    cleanBase,
-    keyUnderscore,
-    keyDash,
-    `cam_${cleanId}`,
-    `cam-${cleanId}`,
-  ]));
-
+  // 3. Check for recently created .ts chunks or case-insensitive files in /tmp/hls
   try {
     const files = fs.readdirSync(hlsDir);
+    const searchTerms = [cleanLower, `cam_${cleanLower}`, `cam-${cleanLower}`, rawStr.toLowerCase()];
     for (const f of files) {
-      if (!f.endsWith('.ts')) continue;
-
-      const matchesPrefix = validPrefixes.some((p) => f.startsWith(p));
-      if (matchesPrefix) {
+      const fLower = f.toLowerCase();
+      const matches = searchTerms.some((term) => fLower.startsWith(term) || fLower.includes(term));
+      if (matches) {
         const full = path.join(hlsDir, f);
         try {
           const stat = fs.statSync(full);
-          if (now - stat.mtimeMs < 25000 && stat.size > 200) {
-            return true;
-          }
-        } catch (e) {}
-        continue;
-      }
-
-      const matchesLegacy = legacyPrefixes.some((lp) => {
-        const escaped = lp.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
-        const reg = new RegExp(`^${escaped}\\d+\\.ts$`);
-        return reg.test(f);
-      });
-
-      if (matchesLegacy) {
-        const full = path.join(hlsDir, f);
-        try {
-          const stat = fs.statSync(full);
-          if (now - stat.mtimeMs < 25000 && stat.size > 200) {
+          if (now - stat.mtimeMs < 35000 && stat.size > 100) {
             return true;
           }
         } catch (e) {}
@@ -500,19 +513,20 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   const ffmpegArgs: string[] = [];
   ffmpegArgs.push(
     '-fflags', '+nobuffer+discardcorrupt+genpts',
-    '-flags', 'low_delay'
+    '-flags', 'low_delay',
+    '-avoid_negative_ts', 'make_zero'
   );
 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
-      '-stimeout', '15000000',
+      '-stimeout', '10000000',
       '-analyzeduration', '500000',
       '-probesize', '500000'
     );
   } else if (streamSource.startsWith('rtmp://')) {
     ffmpegArgs.push(
-      '-rw_timeout', '15000000',
+      '-rw_timeout', '10000000',
       '-analyzeduration', '500000',
       '-probesize', '500000'
     );
@@ -534,7 +548,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     if (hasNativeHardwareSubStream && !streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push('-c:v', 'copy');
     } else {
-      // Fast browser-compatible H.264 normalization (SD 360p @ 30fps fluid for grid cards)
+      // Fluid SD 360p sub-stream without frame lag or slow motion
       ffmpegArgs.push(
         '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
         '-c:v', 'libx264',
@@ -543,8 +557,9 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         '-profile:v', 'baseline',
         '-level', '3.1',
         '-threads', '1',
-        '-r', '30',
-        '-g', '30',
+        '-vsync', '1',
+        '-r', '25',
+        '-g', '50',
         '-b:v', '450k',
         '-maxrate', '600k',
         '-bufsize', '600k',
@@ -552,7 +567,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
       );
     }
   } else {
-    // Full HD stream (1080p for fullscreen & high-res inspection)
+    // Full HD main stream: 100% natural real-time frame speed
     if (streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push(
         '-vf', 'format=yuv420p',
@@ -561,8 +576,9 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         '-tune', 'zerolatency',
         '-profile:v', 'main',
         '-threads', '2',
-        '-r', '30',
-        '-g', '30',
+        '-vsync', '1',
+        '-r', '25',
+        '-g', '50',
         '-crf', '23',
         '-max_muxing_queue_size', '2048'
       );
@@ -574,9 +590,10 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   ffmpegArgs.push(
     '-an',
     '-f', 'hls',
-    '-hls_time', '1',
-    '-hls_list_size', '4',
+    '-hls_time', '2',
+    '-hls_list_size', '8',
     '-hls_flags', 'delete_segments+omit_endlist',
+    '-hls_allow_cache', '0',
     '-hls_segment_filename', path.join(hlsDir, `${key}_%05d.ts`),
     '-y',
     hlsPath
@@ -3771,21 +3788,35 @@ async function startServer() {
       return res.status(404).send('URL da câmera indisponível ou não configurada');
     }
 
-    const width = (req.query.w || '1280').toString();
-    const fps = (req.query.fps || '15').toString();
+    const width = (req.query.w || '800').toString();
+    const fps = (req.query.fps || '20').toString();
 
-    const ffmpegArgs: string[] = [];
+    const ffmpegArgs: string[] = [
+      '-fflags', '+nobuffer+discardcorrupt+genpts',
+      '-flags', 'low_delay',
+      '-avoid_negative_ts', 'make_zero',
+      '-use_wallclock_as_timestamps', '1',
+    ];
 
     if (targetUrl.startsWith('rtsp://')) {
-      ffmpegArgs.push('-rtsp_transport', 'tcp');
+      ffmpegArgs.push(
+        '-rtsp_transport', 'tcp',
+        '-stimeout', '6000000',
+        '-analyzeduration', '500000',
+        '-probesize', '500000'
+      );
+    } else if (targetUrl.startsWith('rtmp://')) {
+      ffmpegArgs.push(
+        '-rw_timeout', '6000000',
+        '-analyzeduration', '500000',
+        '-probesize', '500000'
+      );
     }
 
     ffmpegArgs.push(
-      '-analyzeduration', '1000000',
-      '-probesize', '1000000',
       '-i', targetUrl,
       '-vf', `fps=${fps},scale=${width}:-1`,
-      '-q:v', '5',
+      '-q:v', '6',
       '-f', 'mpjpeg',
       '-boundary_tag', 'ffmpegboundary',
       'pipe:1'
@@ -3972,7 +4003,7 @@ async function startServer() {
     const activeCheck = isCameraActivelyStreaming(cam);
     if (activeCheck.isOnline) {
       cam.status = 'ONLINE';
-      const latencyMs = Math.max(8, Date.now() - startTime);
+      const latencyMs = Math.max(5, Date.now() - startTime);
       return {
         isOnline: true,
         status: 'ONLINE',
@@ -3990,7 +4021,7 @@ async function startServer() {
       const targetUrl = cam.videoStreamUrl || cam.fullRtmpUrl || '';
       if (targetUrl.startsWith('http')) {
         try {
-          const probe = await execWithOutput(`curl -s -o /dev/null -w "%{http_code}" -m 2 "${targetUrl}"`, 2500);
+          const probe = await execWithOutput(`curl -s -o /dev/null -w "%{http_code}" -m 2 "${targetUrl}"`, 2200);
           const code = parseInt((probe.stdout || '').trim(), 10);
           if (code >= 200 && code < 400) {
             cam.status = 'ONLINE';
@@ -4015,11 +4046,32 @@ async function startServer() {
     if (isRtsp) {
       const targetRtsp = getValidStreamSource(cam);
       if (targetRtsp && targetRtsp.startsWith('rtsp://')) {
-        // Validação direta via FFprobe / FFmpeg com timeout curto (2.5s)
+        // Fast TCP port reachability check before running ffprobe to prevent blocking
+        try {
+          const urlObj = new URL(targetRtsp.replace(/^rtsp:\/\//i, 'http://'));
+          const host = urlObj.hostname;
+          const port = parseInt(urlObj.port || '554', 10);
+          if (host && port) {
+            const isTcpOpen = await testTcpPortReachable(host, port, 1200);
+            if (!isTcpOpen) {
+              cam.status = 'OFFLINE';
+              const latencyMs = Date.now() - startTime;
+              return {
+                isOnline: false,
+                status: 'OFFLINE',
+                message: 'Off-line (Porta RTSP inacessível ou câmera desligada)',
+                details: `Não foi possível abrir conexão TCP no endereço ${host}:${port}`,
+                latencyMs,
+              };
+            }
+          }
+        } catch (urlErr) {}
+
+        // Validação direta via FFprobe com timeout curto (1.5s)
         try {
           const probeRes = await execWithOutput(
-            `ffprobe -v error -rtsp_transport tcp -stimeout 2500000 -analyzeduration 500000 -probesize 500000 -select_streams v:0 -show_entries stream=codec_name,width,height,avg_frame_rate -of json "${targetRtsp}"`,
-            3000
+            `ffprobe -v error -rtsp_transport tcp -stimeout 1500000 -analyzeduration 400000 -probesize 400000 -select_streams v:0 -show_entries stream=codec_name,width,height,avg_frame_rate -of json "${targetRtsp}"`,
+            2200
           );
           if (probeRes.stdout && !probeRes.error) {
             let parsed: any = {};
@@ -4053,7 +4105,7 @@ async function startServer() {
               isOnline: false,
               status: 'OFFLINE',
               message: 'Off-line (Sem pacotes RTSP recebidos no momento)',
-              details: probeRes.stderr ? probeRes.stderr.substring(0, 200) : 'Dispositivo não respondeu à solicitação de pacotes RTSP',
+              details: probeRes.stderr ? probeRes.stderr.substring(0, 180) : 'Dispositivo não respondeu à solicitação de pacotes RTSP',
               latencyMs,
             };
           }
@@ -4063,7 +4115,7 @@ async function startServer() {
           return {
             isOnline: false,
             status: 'OFFLINE',
-            message: 'Off-line (Falha ao inicializar fluxo RTSP)',
+            message: 'Off-line (Falha na requisição RTSP)',
             details: e.message || String(e),
             latencyMs,
           };
@@ -4083,11 +4135,10 @@ async function startServer() {
     // 3. Câmeras com Protocolo RTMP
     if (cam.protocol === 'RTMP' || cam.networkType === 'REMOTE' || cam.rtmpUrl || cam.fullRtmpUrl) {
       const rawKey = cam.streamKey || cam.id;
-      const cleanKey = rawKey.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
-      const hlsPath = `/tmp/hls/cam_${cleanKey}.m3u8`;
-      const isHlsStreaming = fs.existsSync(hlsPath) && (Date.now() - fs.statSync(hlsPath).mtimeMs < 15000);
+      const cleanKey = String(rawKey).replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+      const isStreaming = isCameraHlsActivelyStreaming(cleanKey) || isCameraHlsActivelyStreaming(`cam_${cleanKey}`);
 
-      if (isHlsStreaming) {
+      if (isStreaming) {
         cam.status = 'ONLINE';
         const latencyMs = Date.now() - startTime;
         return {
@@ -4108,7 +4159,7 @@ async function startServer() {
         isOnline: false,
         status: 'OFFLINE',
         message: 'Off-line (Aguardando Publicação RTMP)',
-        details: 'Aguardando publicação do codificador/câmera no servidor RTMP',
+        details: `Aguardando publicação do codificador/câmera no servidor RTMP (${cleanKey})`,
         latencyMs,
       };
     }
@@ -4166,25 +4217,37 @@ async function startServer() {
       const rtmpUrl = body.rtmpUrl || query.rtmpUrl;
       const streamKey = body.streamKey || query.streamKey;
       const id = params.id || body.id || query.id || body.cameraId || query.cameraId || streamKey || 'stream';
-      const key = String(id);
+      const rawKey = String(id).trim();
+      const rawKeyLower = rawKey.toLowerCase();
+      const cleanKey = rawKey.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+      const cleanKeyLower = cleanKey.toLowerCase();
 
-      let cam = cameras.find((c) => 
-        c.id === key || 
-        c.id === `cam-${key}` || 
-        c.id === `cam_${key}` || 
-        c.streamKey === key || 
-        (c.streamKey && c.streamKey.replace(/^cam[-_]/i, '') === key.replace(/^cam[-_]/i, '')) ||
-        (body.name && c.name === body.name)
-      );
+      let cam = cameras.find((c) => {
+        const cId = (c.id || '').toLowerCase();
+        const cCleanId = cId.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+        const cKey = (c.streamKey || '').toLowerCase();
+        const cCleanKey = cKey.replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
+        const cName = (c.name || '').toLowerCase();
+
+        return (
+          cId === rawKeyLower ||
+          cCleanId === cleanKeyLower ||
+          cKey === rawKeyLower ||
+          cCleanKey === cleanKeyLower ||
+          (body.name && cName === String(body.name).toLowerCase()) ||
+          cId.includes(cleanKeyLower) ||
+          cleanKeyLower.includes(cCleanId)
+        );
+      });
 
       if (!cam) {
         cam = {
-          id: key,
-          name: body.name || query.name || 'Câmera',
+          id: rawKey,
+          name: body.name || query.name || rawKey,
           protocol: protocol || (rtspUrl ? 'RTSP' : 'RTMP'),
           rtspUrl: rtspUrl || '',
           rtmpUrl: rtmpUrl || '',
-          streamKey: key,
+          streamKey: rawKey,
           status: 'OFFLINE',
         } as Camera;
       } else {
@@ -4193,12 +4256,33 @@ async function startServer() {
         if (rtmpUrl !== undefined && rtmpUrl.trim()) cam.rtmpUrl = rtmpUrl.trim();
       }
 
-      const result = await checkSingleCameraHealth(cam);
+      // Safe timeout wrapper (max 3000ms) to ensure HTTP 200 response is always sent without 502 Bad Gateway
+      const resultPromise = checkSingleCameraHealth(cam);
+      const timeoutPromise = new Promise<{
+        isOnline: boolean;
+        status: 'ONLINE' | 'OFFLINE';
+        message: string;
+        details: string;
+        latencyMs: number;
+      }>((resolve) => {
+        setTimeout(() => {
+          const isActivelyUp = isCameraActivelyStreaming(cam).isOnline;
+          resolve({
+            isOnline: isActivelyUp,
+            status: isActivelyUp ? 'ONLINE' : 'OFFLINE',
+            message: isActivelyUp ? 'On-line (Fluxo Ativo Detectado)' : 'Tempo limite excedido na resposta da câmera',
+            details: 'A validação direta de pacotes atingiu o tempo limite seguro de resposta.',
+            latencyMs: 3000,
+          });
+        }, 2800);
+      });
+
+      const result = await Promise.race([resultPromise, timeoutPromise]);
       saveToLocalFile();
       saveSqliteFile();
 
       const logs: string[] = [
-        `[${new Date().toLocaleTimeString('pt-BR')}] Diagnóstico executado para '${cam.name}' (${cam.protocol || 'RTSP'}).`,
+        `[${new Date().toLocaleTimeString('pt-BR')}] Diagnóstico executado para '${cam.name}' (${cam.protocol || 'RTSP/RTMP'}).`,
         `[${new Date().toLocaleTimeString('pt-BR')}] Resultado: ${result.status} (${result.latencyMs}ms).`,
         `[${new Date().toLocaleTimeString('pt-BR')}] ${result.message}`,
       ];
@@ -4213,7 +4297,7 @@ async function startServer() {
         details: result.details,
         latencyMs: result.latencyMs,
         protocol: cam.protocol,
-        streamKey: key,
+        streamKey: rawKey,
         logs,
       });
     } catch (e: any) {
@@ -4221,7 +4305,7 @@ async function startServer() {
       return res.status(200).json({
         success: false,
         status: 'OFFLINE',
-        message: 'Erro interno ao processar teste de conexão',
+        message: 'Falha ao processar teste de conexão',
         details: e.message || String(e),
         logs: [`[${new Date().toLocaleTimeString('pt-BR')}] Erro: ${e.message || String(e)}`],
       });
