@@ -534,7 +534,7 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     if (hasNativeHardwareSubStream && !streamSource.startsWith('rtsp://')) {
       ffmpegArgs.push('-c:v', 'copy');
     } else {
-      // Fast browser-compatible H.264 normalization (SD 360p @ 30fps fluid for grid cards)
+      // Standardized universal H.264 baseline 30fps stream (SD 360p) for Android and Web
       ffmpegArgs.push(
         '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
         '-c:v', 'libx264',
@@ -542,28 +542,37 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         '-tune', 'zerolatency',
         '-profile:v', 'baseline',
         '-level', '3.1',
+        '-pix_fmt', 'yuv420p',
         '-threads', '1',
         '-r', '30',
         '-g', '30',
-        '-b:v', '450k',
-        '-maxrate', '600k',
-        '-bufsize', '600k',
+        '-keyint_min', '30',
+        '-sc_threshold', '0',
+        '-b:v', '500k',
+        '-maxrate', '700k',
+        '-bufsize', '700k',
         '-max_muxing_queue_size', '2048'
       );
     }
   } else {
-    // Full HD stream (1080p for fullscreen & high-res inspection)
-    if (streamSource.startsWith('rtsp://')) {
+    // Full HD stream for Android native player, ExoPlayer and Web fullscreen
+    if (streamSource.startsWith('rtsp://') || !streamSource.startsWith('rtmp://')) {
       ffmpegArgs.push(
         '-vf', 'format=yuv420p',
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-profile:v', 'main',
+        '-level', '4.1',
+        '-pix_fmt', 'yuv420p',
         '-threads', '2',
         '-r', '30',
         '-g', '30',
-        '-crf', '23',
+        '-keyint_min', '30',
+        '-sc_threshold', '0',
+        '-b:v', '2000k',
+        '-maxrate', '2500k',
+        '-bufsize', '3000k',
         '-max_muxing_queue_size', '2048'
       );
     } else {
@@ -575,8 +584,9 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     '-an',
     '-f', 'hls',
     '-hls_time', '1',
-    '-hls_list_size', '4',
-    '-hls_flags', 'delete_segments+omit_endlist',
+    '-hls_list_size', '5',
+    '-hls_flags', 'delete_segments+omit_endlist+split_by_time',
+    '-hls_segment_type', 'mpegts',
     '-hls_segment_filename', path.join(hlsDir, `${key}_%05d.ts`),
     '-y',
     hlsPath
@@ -1027,6 +1037,35 @@ async function startServer() {
           (c.streamKey && c.streamKey.includes(aId))
         );
       });
+    });
+  }
+
+  function enrichCamerasWithStreams(camList: Camera[], req?: any): Camera[] {
+    let origin = '';
+    if (req) {
+      const host = (req.get ? req.get('host') : req.headers?.host) || 'localhost:3000';
+      const proto = (req.headers && req.headers['x-forwarded-proto']) || req.protocol || 'http';
+      origin = `${proto}://${host}`;
+    }
+
+    return camList.map((c) => {
+      const cleanKey = (c.streamKey || c.id || 'stream').replace(/^cam[-_]/i, '');
+      const hlsPath = `/live/cam_${cleanKey}.m3u8`;
+      const subHlsPath = `/live/cam_${cleanKey}_sub.m3u8`;
+      const fullHls = origin ? `${origin}${hlsPath}` : hlsPath;
+      const fullSubHls = origin ? `${origin}${subHlsPath}` : subHlsPath;
+      const mjpegPath = `/api/cameras/${c.id}/stream`;
+      const snapPath = `/api/cameras/${c.id}/snapshot`;
+
+      return {
+        ...c,
+        videoStreamUrl: fullHls,
+        fullRtmpUrl: c.fullRtmpUrl || fullHls,
+        hlsUrl: fullHls,
+        subHlsUrl: fullSubHls,
+        mjpegUrl: origin ? `${origin}${mjpegPath}` : mjpegPath,
+        snapshotUrl: origin ? `${origin}${snapPath}` : snapPath,
+      };
     });
   }
 
@@ -4855,7 +4894,8 @@ async function startServer() {
   app.get(['/api/cameras', '/api/v1/cameras'], (req, res) => {
     const reqUser = getUserFromReq(req);
     const filtered = filterCamerasForUser(reqUser, cameras);
-    res.json(filtered);
+    const enriched = enrichCamerasWithStreams(filtered, req);
+    res.json(enriched);
   });
 
   app.post('/api/cameras', async (req, res) => {
@@ -6151,11 +6191,12 @@ async function startServer() {
   const getActiveStreamsHandler = (req: any, res: any) => {
     const reqUser = getUserFromReq(req);
     const filteredCams = filterCamerasForUser(reqUser, cameras);
-    const activeStreamsList: StreamInfo[] = filteredCams.map((c) => ({
+    const enriched = enrichCamerasWithStreams(filteredCams, req);
+    const activeStreamsList: StreamInfo[] = enriched.map((c) => ({
       cameraId: c.id,
       cameraName: c.name,
       rtspUrl: c.rtspUrl || '',
-      hlsUrl: c.fullRtmpUrl || c.rtspUrl || '',
+      hlsUrl: c.hlsUrl || c.videoStreamUrl || '',
       webrtcUrl: `webrtc://${c.streamKey || c.id}`,
       status: c.status === 'ONLINE' ? 'ONLINE' : 'OFFLINE',
       bitrateKbps: 2500,
@@ -6214,7 +6255,8 @@ async function startServer() {
   app.get('/api/v1/admin/cameras', (req, res) => {
     const reqUser = getUserFromReq(req);
     const filteredCams = filterCamerasForUser(reqUser, cameras);
-    res.json({ success: true, count: filteredCams.length, cameras: filteredCams });
+    const enriched = enrichCamerasWithStreams(filteredCams, req);
+    res.json({ success: true, count: enriched.length, cameras: enriched });
   });
 
   app.post('/api/v1/admin/cameras', (req, res) => {
@@ -6337,8 +6379,10 @@ async function startServer() {
       twoWayAudioEnabled: Boolean(c.twoWayAudioEnabled),
       streamKey: c.streamKey || (c.id.startsWith('cam-') ? `cam_${c.id.replace('cam-', '')}` : c.id),
       rtspUrl: c.rtspUrl || `rtsp://${host}:554/live/${c.id}`,
-      hlsUrl: c.fullRtmpUrl || `${origin}/live/${c.streamKey || c.id}.m3u8`,
-      mjpegUrl: `${origin}/api/stream?id=${c.id}`,
+      hlsUrl: `${origin}/live/cam_${(c.streamKey || c.id || 'stream').replace(/^cam[-_]/i, '')}.m3u8`,
+      subHlsUrl: `${origin}/live/cam_${(c.streamKey || c.id || 'stream').replace(/^cam[-_]/i, '')}_sub.m3u8`,
+      videoStreamUrl: `${origin}/live/cam_${(c.streamKey || c.id || 'stream').replace(/^cam[-_]/i, '')}.m3u8`,
+      mjpegUrl: `${origin}/api/cameras/${c.id}/stream`,
       snapshotUrl: `${origin}/api/cameras/${c.id}/snapshot`,
     }));
 

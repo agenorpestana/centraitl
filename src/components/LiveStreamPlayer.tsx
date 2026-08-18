@@ -84,8 +84,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO'
   );
 
-  // Default to MJPEG for RTSP cameras, and HLS for RTMP / Web streams
-  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(() => isRtspCameraSource(camera));
+  // Default to standard unified HLS stream for all cameras (RTSP, RTMP, HTTP, ONVIF)
+  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(false);
 
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');
@@ -153,7 +153,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   useEffect(() => {
     const initialUrl = cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream));
     setVideoUrl(initialUrl);
-    setUseMjpegStream(isRtspCameraSource(camera));
+    setUseMjpegStream(false);
     setStreamMode(camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO');
     setTempUrlInput(cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || initialUrl));
     if (camera.status === 'OFFLINE') {
@@ -398,10 +398,10 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       loadingTimerRef.current = null;
     }
 
-    // If HLS fails on RTSP stream, try instant MJPEG stream fallback
-    if (!useMjpegStream && camera.protocol === 'RTSP') {
-      console.log(`[Stream Fallback] Tentando fluxo direto MJPEG para câmera RTSP '${camera.name}'...`);
-      setUseMjpegStream(true);
+    // If HLS sub-stream fails, fallback to main stream before giving up
+    if (!useMjpegStream && videoUrl.includes('_sub.m3u8')) {
+      console.log(`[Stream Fallback] Tentando fluxo principal para '${camera.name}'...`);
+      setVideoUrl(videoUrl.replace('_sub.m3u8', '.m3u8'));
       setConnectionState('LOADING');
       connectStream();
       return;
@@ -427,7 +427,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   };
 
   const handleRetryConnection = () => {
-    setUseMjpegStream(isRtspCameraSource(camera));
+    setUseMjpegStream(false);
     setConnectionState('LOADING');
     consecutiveErrorsRef.current = 0;
     setRetryCount((prev) => prev + 1);

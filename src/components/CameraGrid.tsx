@@ -397,7 +397,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
                           : 'bg-emerald-950/90 text-emerald-300 border border-emerald-800'
                       }`}
                     >
-                      {camera.protocol === 'RTSP' ? 'RTSP • MJPEG' : `${camera.protocol || 'RTMP'} • HLS`}
+                      {`${camera.protocol || 'RTMP'} • HLS`}
                     </span>
                   </div>
 

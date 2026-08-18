@@ -166,6 +166,10 @@ export interface Camera {
   createdAt?: string;
   thumbnailUrl?: string;
   videoStreamUrl?: string;
+  hlsUrl?: string;
+  subHlsUrl?: string;
+  mjpegUrl?: string;
+  snapshotUrl?: string;
   isLiveWebcam?: boolean;
   isDemo?: boolean;
 }
