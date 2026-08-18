@@ -362,13 +362,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       loadingTimerRef.current = null;
     }
 
-    if (camera.status === 'OFFLINE') {
-      setConnectionState('OFFLINE');
-      return;
-    }
-
     setConnectionState('LOADING');
-    // Allow up to 12s for initial connection. If no active stream frames received, mark OFFLINE
+    // Allow up to 15s for initial connection. If no active stream frames received, mark OFFLINE
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
@@ -385,7 +380,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
         }
         return curr;
       });
-    }, 12000);
+    }, 15000);
   };
 
   const handleVideoError = () => {
@@ -462,17 +457,17 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           hlsInstance = new HlsClass({
             enableWorker: true,
             lowLatencyMode: false,
-            backBufferLength: 10,
-            maxBufferLength: 12,
-            maxMaxBufferLength: 20,
+            backBufferLength: 20,
+            maxBufferLength: 20,
+            maxMaxBufferLength: 40,
             liveSyncDurationCount: 3,
-            liveMaxLatencyDurationCount: 6,
-            manifestLoadingTimeOut: 10000,
-            manifestLoadingMaxRetry: 6,
-            levelLoadingTimeOut: 10000,
-            levelLoadingMaxRetry: 6,
-            fragLoadingTimeOut: 12000,
-            fragLoadingMaxRetry: 6,
+            liveMaxLatencyDurationCount: 7,
+            manifestLoadingTimeOut: 12000,
+            manifestLoadingMaxRetry: 8,
+            levelLoadingTimeOut: 12000,
+            levelLoadingMaxRetry: 8,
+            fragLoadingTimeOut: 15000,
+            fragLoadingMaxRetry: 8,
           });
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);
@@ -487,6 +482,10 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             setConnectionState('ONLINE');
           });
           hlsInstance.on(HlsClass.Events.ERROR, (_: any, data: any) => {
+            if (data.details === 'bufferStalledError' || data.details === 'bufferNudgeOnStall') {
+              videoElement.play().catch(() => {});
+              return;
+            }
             if (data.fatal) {
               if (videoUrl.includes('_sub.m3u8')) {
                 console.log(`[HLS Sub-stream Fallback] Alternando para fluxo principal para ${camera.name}...`);
