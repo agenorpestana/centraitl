@@ -114,15 +114,25 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
   const rawStreamUrl = camera.rtspUrl || camera.rtmpUrl || camera.fullRtmpUrl || videoUrl || '';
   const mjpegUrl = `/api/cameras/${camera.id}/stream?key=cam_${cleanKey}&url=${encodeURIComponent(rawStreamUrl)}&t=${retryCount}`;
+  const consecutiveErrorsRef = useRef<number>(0);
 
-  // When using MJPEG stream, mark online quickly since multipart stream does not fire onload
+  // Active frame verification for MJPEG: dynamically check if <img> has valid rendered dimensions
   useEffect(() => {
-    if (useMjpegStream && isVisible && streamMode === 'VIDEO') {
-      const timer = setTimeout(() => {
+    if (!useMjpegStream || streamMode !== 'VIDEO' || !isVisible) return;
+
+    const interval = setInterval(() => {
+      const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
+      if (imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+        if (loadingTimerRef.current) {
+          clearTimeout(loadingTimerRef.current);
+          loadingTimerRef.current = null;
+        }
+        consecutiveErrorsRef.current = 0;
         setConnectionState('ONLINE');
-      }, 350);
-      return () => clearTimeout(timer);
-    }
+      }
+    }, 500);
+
+    return () => clearInterval(interval);
   }, [useMjpegStream, isVisible, streamMode, retryCount]);
 
   const displayStreamUrl = React.useMemo(() => {
@@ -191,25 +201,56 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const runPlayerDiag = async () => {
     setPlayerDiag({ loading: true });
     try {
-      const res = await fetch('/api/cameras/test-connection', {
+      const res = await fetch(`/api/cameras/${camera.id}/test-connection`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({
+          id: camera.id,
+          name: camera.name,
           protocol: camera.protocol || (camera.rtspUrl ? 'RTSP' : 'RTMP'),
-          rtspUrl: camera.protocol === 'RTSP' ? camera.rtspUrl : '',
-          rtmpUrl: camera.rtmpUrl || camera.fullRtmpUrl,
+          rtspUrl: camera.rtspUrl || '',
+          rtmpUrl: camera.rtmpUrl || camera.fullRtmpUrl || '',
           streamKey: camera.streamKey || camera.id,
         }),
       });
-      const data = await res.json();
+
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        data = {
+          success: res.ok,
+          status: res.ok ? 'ONLINE' : 'OFFLINE',
+          message: res.ok ? 'Diagnóstico concluído' : 'Falha na resposta do servidor',
+          details: text.substring(0, 300),
+          logs: [`[${new Date().toLocaleTimeString('pt-BR')}] Status HTTP: ${res.status}`],
+        };
+      }
+
       setPlayerDiag({ loading: false, data });
-      if (data && data.success === false) {
-        setConnectionState('OFFLINE');
-      } else if (data && data.success === true) {
+      if (data && (data.success === true || data.status === 'ONLINE')) {
+        consecutiveErrorsRef.current = 0;
         setConnectionState('ONLINE');
+      } else {
+        const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
+        if (useMjpegStream && imgEl && imgEl.naturalWidth > 0) {
+          setConnectionState('ONLINE');
+        } else {
+          setConnectionState('OFFLINE');
+        }
       }
     } catch (e: any) {
-      setPlayerDiag({ loading: false, error: e.message || 'Erro ao realizar diagnóstico' });
+      setPlayerDiag({
+        loading: false,
+        error: e.message || 'Erro ao realizar diagnóstico',
+        data: {
+          success: false,
+          status: 'OFFLINE',
+          message: 'Erro na requisição de diagnóstico',
+          details: e.message,
+        },
+      });
       setConnectionState('OFFLINE');
     }
   };
@@ -311,21 +352,12 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     setVideoUrl(cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream)));
   }, [camera.id, camera.videoStreamUrl, camera.streamKey, useSubStream]);
 
-  // Proactive keep-alive watchdog for MJPEG stream to prevent browser 30s socket freeze and black screen
-  useEffect(() => {
-    if (!useMjpegStream || streamMode !== 'VIDEO' || !isVisible) return;
-
-    // Proactively refresh stream timestamp every 24 seconds to renew HTTP socket before proxy/browser timeout
-    const watchdogInterval = setInterval(() => {
-      setRetryCount((prev) => prev + 1);
-    }, 24000);
-
-    return () => clearInterval(watchdogInterval);
-  }, [useMjpegStream, streamMode, isVisible]);
-
   // Connect stream
   const connectStream = () => {
-    if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+    if (loadingTimerRef.current) {
+      clearTimeout(loadingTimerRef.current);
+      loadingTimerRef.current = null;
+    }
 
     if (camera.status === 'OFFLINE') {
       setConnectionState('OFFLINE');
@@ -333,13 +365,20 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     }
 
     setConnectionState('LOADING');
-    // Allow up to 12s for initial connection
+    // Allow up to 12s for initial connection. If no active stream frames received, mark OFFLINE
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
-          console.log(`[Stream Player] Tempo limite de carregamento para ${camera.name}. Reconectando...`);
-          setRetryCount((prev) => prev + 1);
-          return 'LOADING';
+          const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
+          if (imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+            return 'ONLINE';
+          }
+          const vidEl = videoRef.current;
+          if (vidEl && vidEl.readyState >= 2 && !vidEl.paused) {
+            return 'ONLINE';
+          }
+          console.log(`[Stream Player] Tempo limite de conexão para ${camera.name}. Marcando OFFLINE.`);
+          return 'OFFLINE';
         }
         return curr;
       });
@@ -347,32 +386,50 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   };
 
   const handleVideoError = () => {
-    if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+    // If image is actually rendering valid dimensions, ignore transient error event
+    const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
+    if (useMjpegStream && imgEl && imgEl.naturalWidth > 0) {
+      setConnectionState('ONLINE');
+      return;
+    }
+
+    if (loadingTimerRef.current) {
+      clearTimeout(loadingTimerRef.current);
+      loadingTimerRef.current = null;
+    }
+
     // If HLS fails on RTSP stream, try instant MJPEG stream fallback
     if (!useMjpegStream && camera.protocol === 'RTSP') {
       console.log(`[Stream Fallback] Tentando fluxo direto MJPEG para câmera RTSP '${camera.name}'...`);
       setUseMjpegStream(true);
       setConnectionState('LOADING');
+      connectStream();
       return;
     }
-    if (useMjpegStream) {
-      // Auto-retry MJPEG stream immediately if disconnected
+
+    consecutiveErrorsRef.current += 1;
+    if (useMjpegStream && consecutiveErrorsRef.current <= 2) {
       setTimeout(() => {
         setRetryCount((prev) => prev + 1);
-      }, 1000);
+      }, 1500);
       return;
     }
     setConnectionState('OFFLINE');
   };
 
   const handleVideoCanPlay = () => {
-    if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+    if (loadingTimerRef.current) {
+      clearTimeout(loadingTimerRef.current);
+      loadingTimerRef.current = null;
+    }
+    consecutiveErrorsRef.current = 0;
     setConnectionState('ONLINE');
   };
 
   const handleRetryConnection = () => {
     setUseMjpegStream(isRtspCameraSource(camera));
     setConnectionState('LOADING');
+    consecutiveErrorsRef.current = 0;
     setRetryCount((prev) => prev + 1);
     connectStream();
     if (videoRef.current) {
@@ -420,6 +477,11 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
             setConnectionState('ONLINE');
             videoElement.play().catch(() => {});
+          });
+          hlsInstance.on(HlsClass.Events.FRAG_LOADED, () => {
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+            consecutiveErrorsRef.current = 0;
+            setConnectionState('ONLINE');
           });
           hlsInstance.on(HlsClass.Events.ERROR, (_: any, data: any) => {
             if (data.fatal) {
@@ -537,7 +599,11 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               src={mjpegUrl}
               alt={camera.name}
               crossOrigin="anonymous"
-              onLoad={() => setConnectionState('ONLINE')}
+              onLoad={() => {
+                if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+                consecutiveErrorsRef.current = 0;
+                setConnectionState('ONLINE');
+              }}
               onError={handleVideoError}
               className={`w-full h-full ${isFullscreen ? 'object-contain max-h-screen' : 'object-cover'} transition duration-300 ${
                 connectionState === 'ONLINE' ? 'opacity-100' : 'opacity-80'
@@ -552,6 +618,13 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               muted={isMuted}
               crossOrigin="anonymous"
               onCanPlay={handleVideoCanPlay}
+              onPlaying={handleVideoCanPlay}
+              onLoadedData={handleVideoCanPlay}
+              onTimeUpdate={() => {
+                if (connectionState !== 'ONLINE') {
+                  handleVideoCanPlay();
+                }
+              }}
               onError={handleVideoError}
               className={`w-full h-full ${isFullscreen ? 'object-contain max-h-screen' : 'object-cover'} transition duration-300 ${
                 connectionState === 'ONLINE' ? 'opacity-100' : 'opacity-0'
@@ -837,6 +910,9 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
                       {playerDiag.data?.success ? 'SINAL CONECTADO COM SUCESSO' : 'SINAL NÃO DETECTADO'}
                     </h4>
                     <p className="text-slate-300 text-[11px]">{playerDiag.data?.message}</p>
+                    {playerDiag.data?.details && (
+                      <p className="text-slate-400 text-[10px] mt-1 font-mono">{playerDiag.data.details}</p>
+                    )}
                   </div>
                 </div>
 
