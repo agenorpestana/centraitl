@@ -219,15 +219,12 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       try {
         data = JSON.parse(text);
       } catch (err) {
-        const cleanDetails = text.includes('<html') || text.includes('502')
-          ? 'O servidor intermediário ou conexão demorou a responder. Tente novamente.'
-          : text.substring(0, 200);
         data = {
           success: res.ok,
           status: res.ok ? 'ONLINE' : 'OFFLINE',
-          message: res.ok ? 'Diagnóstico concluído' : 'Sem resposta em tempo hábil do sinal de vídeo',
-          details: cleanDetails,
-          logs: [`[${new Date().toLocaleTimeString('pt-BR')}] Status de rede: ${res.status}`],
+          message: res.ok ? 'Diagnóstico concluído' : 'Falha na resposta do servidor',
+          details: text.substring(0, 300),
+          logs: [`[${new Date().toLocaleTimeString('pt-BR')}] Status HTTP: ${res.status}`],
         };
       }
 
@@ -362,8 +359,13 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       loadingTimerRef.current = null;
     }
 
+    if (camera.status === 'OFFLINE') {
+      setConnectionState('OFFLINE');
+      return;
+    }
+
     setConnectionState('LOADING');
-    // Allow up to 15s for initial connection. If no active stream frames received, mark OFFLINE
+    // Allow up to 12s for initial connection. If no active stream frames received, mark OFFLINE
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
@@ -380,7 +382,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
         }
         return curr;
       });
-    }, 15000);
+    }, 12000);
   };
 
   const handleVideoError = () => {
@@ -456,18 +458,18 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           const HlsClass = (window as any).Hls;
           hlsInstance = new HlsClass({
             enableWorker: true,
-            lowLatencyMode: false,
-            backBufferLength: 20,
-            maxBufferLength: 20,
-            maxMaxBufferLength: 40,
-            liveSyncDurationCount: 3,
-            liveMaxLatencyDurationCount: 7,
-            manifestLoadingTimeOut: 12000,
-            manifestLoadingMaxRetry: 8,
-            levelLoadingTimeOut: 12000,
-            levelLoadingMaxRetry: 8,
-            fragLoadingTimeOut: 15000,
-            fragLoadingMaxRetry: 8,
+            lowLatencyMode: true,
+            backBufferLength: 4,
+            maxBufferLength: 4,
+            maxMaxBufferLength: 8,
+            liveSyncDurationCount: 1,
+            liveMaxLatencyDurationCount: 3,
+            manifestLoadingTimeOut: 8000,
+            manifestLoadingMaxRetry: 6,
+            levelLoadingTimeOut: 8000,
+            levelLoadingMaxRetry: 6,
+            fragLoadingTimeOut: 10000,
+            fragLoadingMaxRetry: 6,
           });
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);
@@ -482,10 +484,6 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             setConnectionState('ONLINE');
           });
           hlsInstance.on(HlsClass.Events.ERROR, (_: any, data: any) => {
-            if (data.details === 'bufferStalledError' || data.details === 'bufferNudgeOnStall') {
-              videoElement.play().catch(() => {});
-              return;
-            }
             if (data.fatal) {
               if (videoUrl.includes('_sub.m3u8')) {
                 console.log(`[HLS Sub-stream Fallback] Alternando para fluxo principal para ${camera.name}...`);
