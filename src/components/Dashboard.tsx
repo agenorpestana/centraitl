@@ -286,26 +286,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const handleRunSingleTest = async (cam: Camera) => {
     setTestingCamId(cam.id);
     try {
-      const res = await fetch(`/api/cameras/${cam.id}/test-connection`, {
+      const res = await fetch('/api/cameras/test-connection', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           protocol: cam.protocol || (cam.rtspUrl ? 'RTSP' : 'RTMP'),
           rtspUrl: cam.protocol === 'RTSP' ? cam.rtspUrl : '',
           rtmpUrl: cam.rtmpUrl || cam.fullRtmpUrl,
           streamKey: cam.streamKey || cam.id,
           id: cam.id,
-          name: cam.name,
         }),
       });
-      const text = await res.text();
-      let data: any = null;
-      try {
-        data = JSON.parse(text);
-      } catch (err) {
-        data = { success: res.ok, message: text.substring(0, 100) };
-      }
-      const isOnline = data?.success === true;
+      const data = await res.json();
+      const isOnline = data.success === true;
       
       const newResult = {
         success: isOnline,

@@ -55,6 +55,7 @@
       "createdAt": "2026-07-28"
     }
   ],
+  "alerts": [],
   "recordings": [],
   "users": [
     {
@@ -84,127 +85,26 @@
       "createdAt": "2026-01-01"
     }
   ],
-  "companies": [
+  "logs": [
     {
-      "id": "empresa-seguranca-sul",
-      "name": "Sul Segurança & Monitoramento",
-      "cnpj": "12.345.678/0001-90",
-      "email": "contato@sulsecurance.com.br",
-      "phone": "+55 73 9988-7766",
-      "maxCameras": 12,
-      "assignedCameraIds": [
-        "cam-01",
-        "cam-02",
-        "cam-03",
-        "cam-04"
-      ],
-      "logoUrl": "https://images.unsplash.com/photo-1563986768609-322da13575f3?w=300&h=100&auto=format&fit=crop&q=80",
-      "colors": {
-        "light": {
-          "background": "#F0F9FF",
-          "card": "#FFFFFF",
-          "text": "#0C4A6E",
-          "textSecondary": "#0284C7",
-          "inputLabel": "#0369A1",
-          "buttonOutlineText": "#0284C7",
-          "primary": "#0284C7",
-          "border": "#BAE6FD",
-          "success": "#10B981",
-          "error": "#EF4444"
-        },
-        "dark": {
-          "background": "#082F49",
-          "card": "#0C4A6E",
-          "text": "#F0F9FF",
-          "textSecondary": "#7DD3FC",
-          "inputLabel": "#38BDF8",
-          "buttonOutlineText": "#F0F9FF",
-          "primary": "#38BDF8",
-          "border": "#0369A1",
-          "success": "#34D399",
-          "error": "#F87171"
-        }
-      },
-      "status": "ACTIVE",
-      "createdAt": "2026-01-15",
-      "adminUserId": "user-company-admin-01",
-      "customDomain": "monitoramento.sulsecurance.com.br"
+      "id": "log-1785240285257",
+      "userName": "ITL Admin",
+      "action": "Nova câmera adicionada (RTSP): Câmera Entrada Norte",
+      "category": "SYSTEM",
+      "details": "URL: http://localhost/live/cam_285218.m3u8",
+      "ipAddress": "127.0.0.1",
+      "timestamp": "2026-07-28 12:04:45"
     },
     {
-      "id": "empresa-condominio-alpha",
-      "name": "Alpha Proteção Patrimonial",
-      "cnpj": "98.765.432/0001-10",
-      "email": "admin@alphaprotecao.com.br",
-      "phone": "+55 73 9911-2233",
-      "maxCameras": 8,
-      "assignedCameraIds": [
-        "cam-05",
-        "cam-06"
-      ],
-      "logoUrl": "https://images.unsplash.com/photo-1572021335469-31706a17aaef?w=300&h=100&auto=format&fit=crop&q=80",
-      "colors": {
-        "light": {
-          "background": "#FAF5FF",
-          "card": "#FFFFFF",
-          "text": "#581C87",
-          "textSecondary": "#7E22CE",
-          "inputLabel": "#6B21A8",
-          "buttonOutlineText": "#7E22CE",
-          "primary": "#8B5CF6",
-          "border": "#E9D5FF",
-          "success": "#10B981",
-          "error": "#EF4444"
-        },
-        "dark": {
-          "background": "#1E1035",
-          "card": "#2E1065",
-          "text": "#FAF5FF",
-          "textSecondary": "#C084FC",
-          "inputLabel": "#A855F7",
-          "buttonOutlineText": "#FAF5FF",
-          "primary": "#A855F7",
-          "border": "#4C1D95",
-          "success": "#34D399",
-          "error": "#F87171"
-        }
-      },
-      "status": "ACTIVE",
-      "createdAt": "2026-02-01",
-      "adminUserId": "user-company-admin-02",
-      "customDomain": "camerasaovivo.alphaprotecao.com.br"
+      "id": "log-101",
+      "userName": "Super Admin Unity",
+      "action": "Banco de dados configurado para Produção",
+      "category": "AUTH",
+      "details": "Apenas Super Admin cadastrado na instalação limpa",
+      "ipAddress": "127.0.0.1",
+      "timestamp": "2026-07-23 00:00:00"
     }
   ],
-  "whitelabelConfig": {
-    "id": "itl-default",
-    "name": "CENTRAL ITL",
-    "logoUrl": "https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=300&h=100&auto=format&fit=crop&q=80",
-    "colors": {
-      "light": {
-        "background": "#F8FAFC",
-        "card": "#FFFFFF",
-        "text": "#141E26",
-        "textSecondary": "#64748B",
-        "inputLabel": "#475569",
-        "buttonOutlineText": "#141E26",
-        "primary": "#D93B58",
-        "border": "#CBD5E1",
-        "success": "#00E59B",
-        "error": "#FF3333"
-      },
-      "dark": {
-        "background": "#141E26",
-        "card": "#1F2C38",
-        "text": "#F2F2F2",
-        "textSecondary": "#A4B4C4",
-        "inputLabel": "#94A3B8",
-        "buttonOutlineText": "#F2F2F2",
-        "primary": "#D93B58",
-        "border": "#2A3B4C",
-        "success": "#00E59B",
-        "error": "#FF3333"
-      }
-    }
-  },
   "backupConfig": {
     "schedule": "WEEKLY_SUNDAY_0200",
     "destination": "LOCAL_VPS",
@@ -232,66 +132,5 @@
       "HIGH",
       "MEDIUM"
     ]
-  },
-  "plans": [
-    {
-      "id": "plan-basic-49",
-      "name": "Plano Residencial Essencial",
-      "monthlyPrice": 49.9,
-      "camerasIncluded": 2,
-      "cloudRetentionDays": 7,
-      "description": "Acesso ao vivo e gravação em nuvem por 7 dias para até 2 câmeras.",
-      "popular": true
-    },
-    {
-      "id": "plan-pro-89",
-      "name": "Plano Comercial Pro",
-      "monthlyPrice": 89.9,
-      "camerasIncluded": 5,
-      "cloudRetentionDays": 15,
-      "description": "Monitoramento 24h, alerta inteligente de IA e gravação de 15 dias."
-    },
-    {
-      "id": "plan-vizinhanca-149",
-      "name": "Plano Vizinhança Protegida ITL",
-      "monthlyPrice": 149.9,
-      "camerasIncluded": 10,
-      "cloudRetentionDays": 30,
-      "description": "Ideal para condomínios e bairros com gravação HD de 30 dias na nuvem."
-    }
-  ],
-  "invoices": [],
-  "mpConfig": {
-    "accessToken": "APP_USR-7829103847192837-072716-a1b2c3d4e5f6g7h8i9j0-123456789",
-    "publicKey": "APP_USR-839201928374-PUB-2026",
-    "webhookSecret": "whsec_itl_mercadopago_2026_key",
-    "isSandbox": true,
-    "autoApproveSimulated": true
-  },
-  "architectureConfig": {
-    "primaryTopology": "CENTRAL_GPU",
-    "centralMediaMtxUrl": "rtsp://datacenter-isp.internal:8554",
-    "ffmpegPreset": "gpu_nvenc",
-    "gstreamerEnabled": true,
-    "onvifAutoDiscovery": true,
-    "redisQueueUrl": "redis://datacenter-isp.internal:6379/0",
-    "postgresVectorUrl": "postgresql://admin:secret@datacenter-isp.internal:5432/vms_pgvector",
-    "minioStorageUrl": "https://s3-storage.datacenter-isp.internal",
-    "edgeNodesCount": 4,
-    "edgeSyncIntervalSec": 10,
-    "offlineCacheEnabled": true
-  },
-  "dbConfig": {
-    "dbHost": "127.0.0.1",
-    "dbPort": 5432,
-    "dbName": "itl_cameras",
-    "dbUser": "itl_user",
-    "dbPassword": "itl123.789"
-  },
-  "deletedCameraIds": [],
-  "deletedRecordingIds": [],
-  "deletedUserIds": [],
-  "deletedPlanIds": [],
-  "deletedInvoiceIds": [],
-  "deletedCompanyIds": []
+  }
 }

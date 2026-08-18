@@ -84,20 +84,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO'
   );
 
-  // Default to MJPEG for RTSP cameras (instant start on cards) and HLS for RTMP / Web streams
+  // Default to MJPEG for RTSP cameras, and HLS for RTMP / Web streams
   const [useMjpegStream, setUseMjpegStream] = useState<boolean>(() => isRtspCameraSource(camera));
-
-  const [localMuted, setLocalMuted] = useState<boolean>(isMuted);
-
-  useEffect(() => {
-    setLocalMuted(isMuted);
-  }, [isMuted]);
-
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.muted = localMuted;
-    }
-  }, [localMuted]);
 
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');
@@ -126,25 +114,15 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
   const rawStreamUrl = camera.rtspUrl || camera.rtmpUrl || camera.fullRtmpUrl || videoUrl || '';
   const mjpegUrl = `/api/cameras/${camera.id}/stream?key=cam_${cleanKey}&url=${encodeURIComponent(rawStreamUrl)}&t=${retryCount}`;
-  const consecutiveErrorsRef = useRef<number>(0);
 
-  // Active frame verification for MJPEG: dynamically check if <img> has valid rendered dimensions
+  // When using MJPEG stream, mark online quickly since multipart stream does not fire onload
   useEffect(() => {
-    if (!useMjpegStream || streamMode !== 'VIDEO' || !isVisible) return;
-
-    const interval = setInterval(() => {
-      const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
-      if (imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
-        if (loadingTimerRef.current) {
-          clearTimeout(loadingTimerRef.current);
-          loadingTimerRef.current = null;
-        }
-        consecutiveErrorsRef.current = 0;
+    if (useMjpegStream && isVisible && streamMode === 'VIDEO') {
+      const timer = setTimeout(() => {
         setConnectionState('ONLINE');
-      }
-    }, 500);
-
-    return () => clearInterval(interval);
+      }, 350);
+      return () => clearTimeout(timer);
+    }
   }, [useMjpegStream, isVisible, streamMode, retryCount]);
 
   const displayStreamUrl = React.useMemo(() => {
@@ -213,56 +191,25 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const runPlayerDiag = async () => {
     setPlayerDiag({ loading: true });
     try {
-      const res = await fetch(`/api/cameras/${camera.id}/test-connection`, {
+      const res = await fetch('/api/cameras/test-connection', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: camera.id,
-          name: camera.name,
           protocol: camera.protocol || (camera.rtspUrl ? 'RTSP' : 'RTMP'),
-          rtspUrl: camera.rtspUrl || '',
-          rtmpUrl: camera.rtmpUrl || camera.fullRtmpUrl || '',
+          rtspUrl: camera.protocol === 'RTSP' ? camera.rtspUrl : '',
+          rtmpUrl: camera.rtmpUrl || camera.fullRtmpUrl,
           streamKey: camera.streamKey || camera.id,
         }),
       });
-
-      const text = await res.text();
-      let data: any = null;
-      try {
-        data = JSON.parse(text);
-      } catch (err) {
-        data = {
-          success: res.ok,
-          status: res.ok ? 'ONLINE' : 'OFFLINE',
-          message: res.ok ? 'Diagnóstico concluído' : 'Falha na resposta do servidor',
-          details: text.substring(0, 300),
-          logs: [`[${new Date().toLocaleTimeString('pt-BR')}] Status HTTP: ${res.status}`],
-        };
-      }
-
+      const data = await res.json();
       setPlayerDiag({ loading: false, data });
-      if (data && (data.success === true || data.status === 'ONLINE')) {
-        consecutiveErrorsRef.current = 0;
+      if (data && data.success === false) {
+        setConnectionState('OFFLINE');
+      } else if (data && data.success === true) {
         setConnectionState('ONLINE');
-      } else {
-        const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
-        if (useMjpegStream && imgEl && imgEl.naturalWidth > 0) {
-          setConnectionState('ONLINE');
-        } else {
-          setConnectionState('OFFLINE');
-        }
       }
     } catch (e: any) {
-      setPlayerDiag({
-        loading: false,
-        error: e.message || 'Erro ao realizar diagnóstico',
-        data: {
-          success: false,
-          status: 'OFFLINE',
-          message: 'Erro na requisição de diagnóstico',
-          details: e.message,
-        },
-      });
+      setPlayerDiag({ loading: false, error: e.message || 'Erro ao realizar diagnóstico' });
       setConnectionState('OFFLINE');
     }
   };
@@ -364,12 +311,21 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     setVideoUrl(cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream)));
   }, [camera.id, camera.videoStreamUrl, camera.streamKey, useSubStream]);
 
+  // Proactive keep-alive watchdog for MJPEG stream to prevent browser 30s socket freeze and black screen
+  useEffect(() => {
+    if (!useMjpegStream || streamMode !== 'VIDEO' || !isVisible) return;
+
+    // Proactively refresh stream timestamp every 24 seconds to renew HTTP socket before proxy/browser timeout
+    const watchdogInterval = setInterval(() => {
+      setRetryCount((prev) => prev + 1);
+    }, 24000);
+
+    return () => clearInterval(watchdogInterval);
+  }, [useMjpegStream, streamMode, isVisible]);
+
   // Connect stream
   const connectStream = () => {
-    if (loadingTimerRef.current) {
-      clearTimeout(loadingTimerRef.current);
-      loadingTimerRef.current = null;
-    }
+    if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
 
     if (camera.status === 'OFFLINE') {
       setConnectionState('OFFLINE');
@@ -377,20 +333,13 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     }
 
     setConnectionState('LOADING');
-    // Allow up to 12s for initial connection. If no active stream frames received, mark OFFLINE
+    // Allow up to 12s for initial connection
     loadingTimerRef.current = setTimeout(() => {
       setConnectionState((curr) => {
         if (curr === 'LOADING') {
-          const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
-          if (imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
-            return 'ONLINE';
-          }
-          const vidEl = videoRef.current;
-          if (vidEl && vidEl.readyState >= 2 && !vidEl.paused) {
-            return 'ONLINE';
-          }
-          console.log(`[Stream Player] Tempo limite de conexão para ${camera.name}. Marcando OFFLINE.`);
-          return 'OFFLINE';
+          console.log(`[Stream Player] Tempo limite de carregamento para ${camera.name}. Reconectando...`);
+          setRetryCount((prev) => prev + 1);
+          return 'LOADING';
         }
         return curr;
       });
@@ -398,41 +347,32 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   };
 
   const handleVideoError = () => {
-    // If image is actually rendering valid dimensions, ignore transient error event
-    const imgEl = containerRef.current?.querySelector('img') as HTMLImageElement | null;
-    if (useMjpegStream && imgEl && imgEl.naturalWidth > 0) {
-      setConnectionState('ONLINE');
+    if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+    // If HLS fails on RTSP stream, try instant MJPEG stream fallback
+    if (!useMjpegStream && camera.protocol === 'RTSP') {
+      console.log(`[Stream Fallback] Tentando fluxo direto MJPEG para câmera RTSP '${camera.name}'...`);
+      setUseMjpegStream(true);
+      setConnectionState('LOADING');
       return;
     }
-
-    if (loadingTimerRef.current) {
-      clearTimeout(loadingTimerRef.current);
-      loadingTimerRef.current = null;
-    }
-
-    consecutiveErrorsRef.current += 1;
-    if (consecutiveErrorsRef.current <= 3) {
+    if (useMjpegStream) {
+      // Auto-retry MJPEG stream immediately if disconnected
       setTimeout(() => {
         setRetryCount((prev) => prev + 1);
-      }, 1500);
+      }, 1000);
       return;
     }
     setConnectionState('OFFLINE');
   };
 
   const handleVideoCanPlay = () => {
-    if (loadingTimerRef.current) {
-      clearTimeout(loadingTimerRef.current);
-      loadingTimerRef.current = null;
-    }
-    consecutiveErrorsRef.current = 0;
+    if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
     setConnectionState('ONLINE');
   };
 
   const handleRetryConnection = () => {
     setUseMjpegStream(isRtspCameraSource(camera));
     setConnectionState('LOADING');
-    consecutiveErrorsRef.current = 0;
     setRetryCount((prev) => prev + 1);
     connectStream();
     if (videoRef.current) {
@@ -461,35 +401,25 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           const HlsClass = (window as any).Hls;
           hlsInstance = new HlsClass({
             enableWorker: true,
-            lowLatencyMode: false,
-            backBufferLength: 10,
-            maxBufferLength: 15,
-            maxMaxBufferLength: 30,
-            liveSyncDurationCount: 3,
-            liveMaxLatencyDurationCount: 8,
-            startFragPrefetch: true,
-            nudgeOffset: 0.2,
-            nudgeMaxRetry: 10,
-            manifestLoadingTimeOut: 10000,
-            manifestLoadingMaxRetry: 8,
-            levelLoadingTimeOut: 10000,
-            levelLoadingMaxRetry: 8,
-            fragLoadingTimeOut: 12000,
-            fragLoadingMaxRetry: 8,
+            lowLatencyMode: true,
+            backBufferLength: 4,
+            maxBufferLength: 4,
+            maxMaxBufferLength: 8,
+            liveSyncDurationCount: 1,
+            liveMaxLatencyDurationCount: 3,
+            manifestLoadingTimeOut: 8000,
+            manifestLoadingMaxRetry: 6,
+            levelLoadingTimeOut: 8000,
+            levelLoadingMaxRetry: 6,
+            fragLoadingTimeOut: 10000,
+            fragLoadingMaxRetry: 6,
           });
-          videoElement.muted = isMuted;
-          videoElement.playsInline = true;
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);
           hlsInstance.on(HlsClass.Events.MANIFEST_PARSED, () => {
             if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
             setConnectionState('ONLINE');
             videoElement.play().catch(() => {});
-          });
-          hlsInstance.on(HlsClass.Events.FRAG_LOADED, () => {
-            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
-            consecutiveErrorsRef.current = 0;
-            setConnectionState('ONLINE');
           });
           hlsInstance.on(HlsClass.Events.ERROR, (_: any, data: any) => {
             if (data.fatal) {
@@ -510,8 +440,6 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             }
           });
         } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-          videoElement.muted = isMuted;
-          videoElement.playsInline = true;
           videoElement.src = videoUrl;
           videoElement.play().then(() => {
             if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
@@ -609,11 +537,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               src={mjpegUrl}
               alt={camera.name}
               crossOrigin="anonymous"
-              onLoad={() => {
-                if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
-                consecutiveErrorsRef.current = 0;
-                setConnectionState('ONLINE');
-              }}
+              onLoad={() => setConnectionState('ONLINE')}
               onError={handleVideoError}
               className={`w-full h-full ${isFullscreen ? 'object-contain max-h-screen' : 'object-cover'} transition duration-300 ${
                 connectionState === 'ONLINE' ? 'opacity-100' : 'opacity-80'
@@ -628,13 +552,6 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               muted={isMuted}
               crossOrigin="anonymous"
               onCanPlay={handleVideoCanPlay}
-              onPlaying={handleVideoCanPlay}
-              onLoadedData={handleVideoCanPlay}
-              onTimeUpdate={() => {
-                if (connectionState !== 'ONLINE') {
-                  handleVideoCanPlay();
-                }
-              }}
               onError={handleVideoError}
               className={`w-full h-full ${isFullscreen ? 'object-contain max-h-screen' : 'object-cover'} transition duration-300 ${
                 connectionState === 'ONLINE' ? 'opacity-100' : 'opacity-0'
@@ -707,40 +624,24 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           </div>
         )}
 
-        {/* Bottom-right Discrete Controls inside image */}
-        <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5 z-20">
-          {!useMjpegStream && (
-            <button
-              onClick={() => setLocalMuted((prev) => !prev)}
-              className="p-2 bg-slate-950/80 hover:bg-slate-800 text-slate-200 rounded-xl border border-slate-700 transition shadow-lg flex items-center gap-1.5 text-xs font-bold"
-              title={localMuted ? 'Ativar Áudio (Desmutar)' : 'Silenciar Áudio'}
-            >
-              {localMuted ? (
-                <VolumeX className="w-4 h-4 text-slate-400" />
-              ) : (
-                <Volume2 className="w-4 h-4 text-emerald-400 animate-pulse" />
-              )}
-            </button>
+        {/* Bottom-right Discrete Native Fullscreen Trigger Button inside image */}
+        <button
+          onClick={toggleFullscreen}
+          className="absolute bottom-2.5 right-2.5 p-2 bg-slate-950/80 hover:bg-emerald-500 text-slate-200 hover:text-slate-950 rounded-xl border border-slate-700 transition z-20 shadow-lg flex items-center gap-1.5 text-xs font-bold"
+          title={isFullscreen ? 'Sair da Tela Cheia (ESC)' : 'Expandir para Tela Cheia Total'}
+        >
+          {isFullscreen ? (
+            <>
+              <Minimize2 className="w-4 h-4" />
+              <span className="hidden sm:inline">Sair Tela Cheia</span>
+            </>
+          ) : (
+            <>
+              <Maximize2 className="w-4 h-4 text-emerald-400" />
+              <span className="hidden sm:inline">Tela Cheia</span>
+            </>
           )}
-
-          <button
-            onClick={toggleFullscreen}
-            className="p-2 bg-slate-950/80 hover:bg-emerald-500 text-slate-200 hover:text-slate-950 rounded-xl border border-slate-700 transition shadow-lg flex items-center gap-1.5 text-xs font-bold"
-            title={isFullscreen ? 'Sair da Tela Cheia (ESC)' : 'Expandir para Tela Cheia Total'}
-          >
-            {isFullscreen ? (
-              <>
-                <Minimize2 className="w-4 h-4" />
-                <span className="hidden sm:inline">Sair Tela Cheia</span>
-              </>
-            ) : (
-              <>
-                <Maximize2 className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">Tela Cheia</span>
-              </>
-            )}
-          </button>
-        </div>
+        </button>
       </div>
 
       {/* 2. INFORMATION & CONTROLS CARDS (POSITIONS BELOW THE VIDEO IMAGE) */}
@@ -828,31 +729,6 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               </div>
 
               <div className="flex items-center space-x-2 shrink-0">
-                {!useMjpegStream && (
-                  <button
-                    type="button"
-                    onClick={() => setLocalMuted((prev) => !prev)}
-                    className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center space-x-1 border ${
-                      localMuted
-                        ? 'bg-slate-950 hover:bg-slate-800 text-slate-400 border-slate-800'
-                        : 'bg-emerald-950/80 hover:bg-emerald-900/80 text-emerald-400 border-emerald-500/40'
-                    }`}
-                    title={localMuted ? 'Ativar Áudio da Câmera' : 'Silenciar Áudio'}
-                  >
-                    {localMuted ? (
-                      <>
-                        <VolumeX className="w-3.5 h-3.5 text-slate-400" />
-                        <span className="hidden sm:inline">Sem Áudio</span>
-                      </>
-                    ) : (
-                      <>
-                        <Volume2 className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                        <span className="hidden sm:inline">Áudio Ativo</span>
-                      </>
-                    )}
-                  </button>
-                )}
-
                 <button
                   onClick={runPlayerDiag}
                   className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-emerald-400 border border-slate-800 rounded-xl text-xs font-bold transition flex items-center space-x-1"
@@ -961,9 +837,6 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
                       {playerDiag.data?.success ? 'SINAL CONECTADO COM SUCESSO' : 'SINAL NÃO DETECTADO'}
                     </h4>
                     <p className="text-slate-300 text-[11px]">{playerDiag.data?.message}</p>
-                    {playerDiag.data?.details && (
-                      <p className="text-slate-400 text-[10px] mt-1 font-mono">{playerDiag.data.details}</p>
-                    )}
                   </div>
                 </div>
 
