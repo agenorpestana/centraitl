@@ -369,35 +369,34 @@ function getValidStreamSource(cam: any, isSubStream = false): string {
   const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
   const defaultKey = `cam_${cleanKey}`;
 
-  // Prioritize RTSP when camera is LOCAL (intranet/LAN) or has protocol RTSP or has an rtspUrl
-  const isLocalOrRtsp = cam.protocol === 'RTSP' || cam.networkType === 'LOCAL' || (cam.rtspUrl && cam.rtspUrl.trim().length > 0 && cam.protocol !== 'RTMP');
-
-  if (isLocalOrRtsp && cam.rtspUrl && cam.rtspUrl.trim()) {
-    let mainUrl = cam.rtspUrl.trim();
-    if (!mainUrl.startsWith('rtsp://') && !mainUrl.startsWith('http://') && !mainUrl.startsWith('https://')) {
-      mainUrl = `rtsp://${mainUrl}`;
+  // 1. If camera has an explicit RTSP URL or protocol is RTSP:
+  if (cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.trim().length > 0)) {
+    if (isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim().length > 0) {
+      let sub = cam.subStreamUrl.trim();
+      return sub.startsWith('rtsp://') || sub.startsWith('http://') || sub.startsWith('https://') ? sub : `rtsp://${sub}`;
     }
-
-    if (isSubStream) {
-      if (cam.subStreamUrl && cam.subStreamUrl.trim()) {
-        const sub = cam.subStreamUrl.trim();
-        return sub.startsWith('rtsp://') ? sub : `rtsp://${sub}`;
-      }
-      if (mainUrl.includes('subtype=0')) return mainUrl.replace('subtype=0', 'subtype=1');
-      if (mainUrl.includes('onvif1')) return mainUrl.replace('onvif1', 'onvif2');
-      if (mainUrl.includes('channel=1&stream=0')) return mainUrl.replace('channel=1&stream=0', 'channel=1&stream=1');
+    if (cam.rtspUrl && cam.rtspUrl.trim().length > 0) {
+      let mainUrl = cam.rtspUrl.trim();
+      return mainUrl.startsWith('rtsp://') || mainUrl.startsWith('http://') || mainUrl.startsWith('https://') ? mainUrl : `rtsp://${mainUrl}`;
     }
-    return mainUrl;
   }
 
-  if (isSubStream && cam.subStreamUrl && cam.subStreamUrl.trim()) {
-    const sub = cam.subStreamUrl.trim();
-    return sub.startsWith('rtsp://') ? sub : `rtsp://${sub}`;
+  // 2. If camera has a direct external HTTP/HTTPS stream URL (avoid self-referencing loops)
+  if (cam.videoStreamUrl && typeof cam.videoStreamUrl === 'string' && cam.videoStreamUrl.trim()) {
+    const vUrl = cam.videoStreamUrl.trim();
+    if (
+      (vUrl.startsWith('http://') || vUrl.startsWith('https://') || vUrl.startsWith('rtsp://')) &&
+      !vUrl.includes('/live/cam_') &&
+      !vUrl.includes(':3000/live/')
+    ) {
+      return vUrl;
+    }
   }
 
   // Helper to ensure RTMP URL contains the stream key
   const formatRtmpCandidate = (candidateStr: string): string => {
-    let str = candidateStr.trim();
+    let str = (candidateStr || '').trim();
+    if (!str) return '';
     if (str.includes('localhost:1935') || str.includes('127.0.0.1:1935') || str.includes('aerocam.itlfibra.com:1935')) {
       str = str.replace(/localhost:1935|127\.0\.0\.1:1935|aerocam\.itlfibra\.com:1935/g, 'monitoramento.unityautomacoes.com.br:1935');
     }
@@ -407,25 +406,23 @@ function getValidStreamSource(cam: any, isSubStream = false): string {
       if (pathSegments.length <= 2 || str.endsWith('/live') || str.endsWith('/live/')) {
         str = `${str.replace(/\/$/, '')}/${defaultKey}`;
       }
+      return str;
     }
-    return str;
+    return '';
   };
 
-  // Prioritize RTMP if camera protocol is RTMP or has RTMP URL fields
-  if (cam.protocol === 'RTMP' || cam.networkType === 'REMOTE' || cam.rtmpUrl || cam.fullRtmpUrl || cam.rtmpServerUrl) {
+  // 3. RTMP candidate check:
+  if (cam.protocol === 'RTMP' || cam.rtmpUrl || cam.fullRtmpUrl || cam.rtmpServerUrl) {
     const rtmpCandidates = [cam.rtmpUrl, cam.fullRtmpUrl, cam.rtmpServerUrl].filter(Boolean);
     for (const candidate of rtmpCandidates) {
       const formatted = formatRtmpCandidate(candidate);
-      if (formatted.startsWith('rtmp://')) {
+      if (formatted && formatted.startsWith('rtmp://')) {
         return formatted;
       }
     }
   }
 
-  if (cam.videoStreamUrl && cam.videoStreamUrl.trim()) {
-    return cam.videoStreamUrl.trim();
-  }
-
+  // 4. Default fallback:
   if (cam.rtspUrl && cam.rtspUrl.trim()) {
     const rtsp = cam.rtspUrl.trim();
     return rtsp.startsWith('rtsp://') ? rtsp : `rtsp://${rtsp}`;
