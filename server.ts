@@ -3726,16 +3726,16 @@ async function startServer() {
     });
   });
 
-  // Endpoint de Stream Direto MJPEG / HTTP Stream (Zero Latência - modo aerocam)
-  app.get(['/api/stream', '/stream', '/api/cameras/:id/stream'], (req, res) => {
-    const key = (req.params?.id || req.query.key || req.query.camId || req.query.streamKey || '').toString();
-    const cleanKey = key.replace(/^cam-/, '').replace(/^cam_/, '');
+  // Endpoint de Stream Direto MJPEG / HTTP Stream (Zero Latência - modo instantâneo para RTSP e cards)
+  app.get(['/api/stream', '/stream', '/api/cameras/:id/stream', '/api/cameras/:id/mjpeg', '/api/cameras/:id/live-feed'], (req, res) => {
+    const rawParamId = (req.params?.id || req.query.key || req.query.camId || req.query.id || req.query.streamKey || '').toString();
+    const cleanKey = rawParamId.replace(/^cam-/, '').replace(/^cam_/, '');
 
     const reqUser = getUserFromReq(req);
     if (reqUser && reqUser.role !== 'ADMIN' && reqUser.allowedCameraIds && !reqUser.allowedCameraIds.includes('ALL')) {
       const isAllowed = reqUser.allowedCameraIds.some((aId) => {
         const cleanAId = aId.replace(/^cam-/, '').replace(/^cam_/, '');
-        return aId === key || cleanAId === cleanKey || key.includes(aId);
+        return aId === rawParamId || cleanAId === cleanKey || rawParamId.includes(aId);
       });
       if (!isAllowed) {
         return res.status(403).send('Acesso negado: Câmera não autorizada para o seu usuário.');
@@ -3746,11 +3746,13 @@ async function startServer() {
 
     const matchedCam = cameras.find(
       (c) =>
-        (c.streamKey || c.id) === key ||
-        c.id === key ||
+        (c.streamKey || c.id) === rawParamId ||
+        c.id === rawParamId ||
         c.id === `cam-${cleanKey}` ||
+        c.id === `cam_${cleanKey}` ||
         c.streamKey === `cam_${cleanKey}` ||
-        (c.id && c.id.replace(/^cam-/, '') === cleanKey)
+        (c.id && c.id.replace(/^cam-/, '') === cleanKey) ||
+        (c.streamKey && c.streamKey.replace(/^cam[-_]/i, '') === cleanKey)
     );
 
     let targetUrl = '';
@@ -3760,7 +3762,7 @@ async function startServer() {
     } else if (queryUrl && queryUrl.startsWith('http') && !queryUrl.includes('/live/') && !queryUrl.endsWith('.m3u8')) {
       targetUrl = queryUrl;
     } else if (matchedCam) {
-      targetUrl = getValidStreamSource(matchedCam);
+      targetUrl = getValidStreamSource(matchedCam, true);
     }
 
     if (!targetUrl && cleanKey) {
@@ -3775,8 +3777,8 @@ async function startServer() {
       return res.status(404).send('URL da câmera indisponível ou não configurada');
     }
 
-    const width = (req.query.w || '1280').toString();
-    const fps = (req.query.fps || '15').toString();
+    const width = (req.query.w || '854').toString();
+    const fps = (req.query.fps || '20').toString();
 
     const ffmpegArgs: string[] = [];
 
@@ -3806,7 +3808,7 @@ async function startServer() {
 
     ffmpegArgs.push(
       '-i', targetUrl,
-      '-vf', `scale=${width}:-1,format=yuvj420p`,
+      '-vf', `scale=${width}:-2,format=yuvj420p`,
       '-r', fps,
       '-q:v', '4',
       '-an',
@@ -3816,6 +3818,34 @@ async function startServer() {
     );
 
     let proc: ReturnType<typeof spawn> | null = null;
+    let isClientConnected = true;
+    let hasReceivedData = false;
+    let headersWritten = false;
+    let timeoutTimer: NodeJS.Timeout | null = null;
+
+    const killProc = () => {
+      isClientConnected = false;
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      if (proc) {
+        try {
+          proc.stdout?.unpipe(res);
+          proc.kill('SIGKILL');
+        } catch (e) {}
+        proc = null;
+      }
+      try {
+        if (!res.writableEnded) res.end();
+      } catch (e) {}
+    };
+
+    req.on('close', killProc);
+    req.on('end', killProc);
+    res.on('close', killProc);
+    res.on('error', killProc);
+
     try {
       proc = spawn('ffmpeg', ffmpegArgs);
     } catch (e: any) {
@@ -3824,66 +3854,64 @@ async function startServer() {
       return;
     }
 
-    let hasReceivedData = false;
-    let headersWritten = false;
-
     const writeHeaders = () => {
-      if (!headersWritten && !res.headersSent) {
+      if (!headersWritten && !res.headersSent && isClientConnected) {
         headersWritten = true;
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Headers', '*');
-        res.setHeader('Content-Type', 'multipart/x-mixed-replace; boundary=ffmpegboundary');
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Connection', 'close');
+        res.writeHead(200, {
+          'Content-Type': 'multipart/x-mixed-replace; boundary=ffmpegboundary',
+          'Cache-Control': 'no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0',
+          'Connection': 'close',
+          'Pragma': 'no-cache',
+          'X-Accel-Buffering': 'no',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': '*',
+        });
       }
     };
 
-    const timeoutTimer = setTimeout(() => {
-      if (!hasReceivedData) {
+    timeoutTimer = setTimeout(() => {
+      if (!hasReceivedData && isClientConnected) {
         killProc();
         if (!res.headersSent && !headersWritten) {
           res.status(504).send('Timeout ao conectar à câmera (Off-line)');
-        } else {
-          try { res.end(); } catch (e) {}
         }
       }
-    }, 6000);
+    }, 8500);
 
     proc.stdout.on('data', (chunk) => {
+      if (!isClientConnected || res.writableEnded) {
+        killProc();
+        return;
+      }
       hasReceivedData = true;
-      clearTimeout(timeoutTimer);
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
       writeHeaders();
-      markStreamActivity(key, targetUrl.startsWith('rtsp://') ? 'RTSP' : (targetUrl.startsWith('rtmp://') ? 'RTMP' : 'HTTP'));
+      markStreamActivity(rawParamId, targetUrl.startsWith('rtsp://') ? 'RTSP' : (targetUrl.startsWith('rtmp://') ? 'RTMP' : 'HTTP'));
       if (matchedCam) {
         markStreamActivity(matchedCam.id, targetUrl.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
         markStreamActivity(matchedCam.name, targetUrl.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
         matchedCam.status = 'ONLINE';
       }
-      res.write(chunk);
-    });
-
-    proc.on('exit', () => {
-      clearTimeout(timeoutTimer);
-      if (!hasReceivedData && !res.headersSent && !headersWritten) {
-        res.status(502).send('Sinal de vídeo indisponível (Câmera Off-line)');
-      } else {
-        try { res.end(); } catch (e) {}
+      try {
+        res.write(chunk);
+      } catch (e) {
+        killProc();
       }
     });
 
-    const killProc = () => {
-      clearTimeout(timeoutTimer);
-      try {
-        proc.stdout.unpipe(res);
-        proc.kill('SIGKILL');
-      } catch (e) {}
-    };
+    proc.stderr?.on('data', () => {});
 
-    req.on('close', killProc);
-    req.on('end', killProc);
-    res.on('close', killProc);
-    res.on('error', killProc);
+    proc.on('exit', () => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (!hasReceivedData && !res.headersSent && !headersWritten && isClientConnected) {
+        res.status(502).send('Sinal de vídeo indisponível (Câmera Off-line)');
+      } else {
+        try { if (!res.writableEnded) res.end(); } catch (e) {}
+      }
+    });
   });
 
   // Handler para reprodução de vídeo e transmissões HLS
@@ -5197,178 +5225,6 @@ async function startServer() {
     res.setHeader('Content-Type', 'image/svg+xml');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     return res.send(svg);
-  });
-
-  // Real-time direct MJPEG stream endpoint for cameras (Instantaneous low-latency stream for RTSP / RTMP / HLS fallback)
-  app.get(['/api/cameras/:id/stream', '/api/cameras/:id/mjpeg', '/api/cameras/:id/live-feed'], async (req, res) => {
-    const { id } = req.params;
-    const cleanId = id.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const rawId = id.replace(/^cam[-_]/i, '');
-
-    const reqUser = getUserFromReq(req);
-    if (reqUser && reqUser.role !== 'ADMIN' && reqUser.allowedCameraIds && !reqUser.allowedCameraIds.includes('ALL')) {
-      const isAllowed = reqUser.allowedCameraIds.some((aId) => {
-        const cleanAId = aId.replace(/^cam-/, '').replace(/^cam_/, '');
-        return aId === id || cleanAId === rawId || id.includes(aId);
-      });
-      if (!isAllowed) {
-        return res.status(403).json({ error: 'Acesso não autorizado para esta câmera' });
-      }
-    }
-
-    const cam = cameras.find(
-      (c) =>
-        c.id === id ||
-        c.streamKey === id ||
-        c.id === `cam-${id}` ||
-        c.id === `cam_${id}` ||
-        (c.streamKey && c.streamKey.replace(/^cam[-_]/i, '') === rawId)
-    );
-
-    let streamSource = '';
-    if (req.query.url && typeof req.query.url === 'string') {
-      streamSource = req.query.url;
-    } else if (cam) {
-      streamSource = getValidStreamSource(cam, true);
-    }
-
-    if (!streamSource) {
-      return res.status(404).send('Nenhuma fonte de fluxo de vídeo encontrada para esta câmera');
-    }
-
-    const boundary = 'ffserver_mjpeg_stream';
-    let headersSent = false;
-    let isClientConnected = true;
-    let currentProc: ReturnType<typeof spawn> | null = null;
-    let connectTimeoutTimer: NodeJS.Timeout | null = null;
-
-    const cleanup = () => {
-      isClientConnected = false;
-      if (connectTimeoutTimer) {
-        clearTimeout(connectTimeoutTimer);
-        connectTimeoutTimer = null;
-      }
-      if (currentProc) {
-        try { currentProc.kill('SIGKILL'); } catch (e) {}
-        currentProc = null;
-      }
-      try {
-        if (!res.writableEnded) res.end();
-      } catch (e) {}
-    };
-
-    req.on('close', cleanup);
-    res.on('close', cleanup);
-    res.on('error', cleanup);
-
-    const ffmpegArgs: string[] = [];
-
-    if (streamSource.startsWith('rtsp://')) {
-      ffmpegArgs.push(
-        '-rtsp_transport', 'tcp',
-        '-stimeout', '8000000',
-        '-analyzeduration', '500000',
-        '-probesize', '500000',
-        '-fflags', '+nobuffer+discardcorrupt',
-        '-flags', 'low_delay'
-      );
-    } else if (streamSource.startsWith('rtmp://')) {
-      ffmpegArgs.push(
-        '-rw_timeout', '8000000',
-        '-analyzeduration', '500000',
-        '-probesize', '500000',
-        '-fflags', '+nobuffer+discardcorrupt',
-        '-flags', 'low_delay'
-      );
-    } else {
-      ffmpegArgs.push(
-        '-fflags', '+nobuffer+discardcorrupt',
-        '-flags', 'low_delay'
-      );
-    }
-
-    ffmpegArgs.push(
-      '-i', streamSource,
-      '-vf', 'scale=854:480:force_original_aspect_ratio=decrease,format=yuvj420p',
-      '-r', '20',
-      '-q:v', '4',
-      '-an',
-      '-f', 'mpjpeg',
-      '-boundary_tag', boundary,
-      'pipe:1'
-    );
-
-    // Watchdog timer: If no data is received within 8.5 seconds, return 503 without mutating global camera status
-    connectTimeoutTimer = setTimeout(() => {
-      if (!headersSent && isClientConnected && !res.headersSent) {
-        headersSent = true;
-        res.status(503).json({ error: 'Câmera off-line ou sinal de vídeo indisponível', id: cam?.id });
-      }
-      cleanup();
-    }, 8500);
-
-    try {
-      currentProc = spawn('ffmpeg', ffmpegArgs);
-
-      currentProc.stdout?.on('data', (chunk) => {
-        if (connectTimeoutTimer) {
-          clearTimeout(connectTimeoutTimer);
-          connectTimeoutTimer = null;
-        }
-
-        if (!headersSent && isClientConnected && !res.headersSent) {
-          headersSent = true;
-          res.writeHead(200, {
-            'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
-            'Cache-Control': 'no-cache, no-store, must-revalidate, pre-check=0, post-check=0, max-age=0',
-            'Connection': 'keep-alive',
-            'Pragma': 'no-cache',
-            'X-Accel-Buffering': 'no',
-            'Access-Control-Allow-Origin': '*',
-          });
-        }
-
-        markStreamActivity(id, streamSource.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
-        markStreamActivity(cleanId, streamSource.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
-        if (cam) {
-          markStreamActivity(cam.id, streamSource.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
-          markStreamActivity(cam.name, streamSource.startsWith('rtsp://') ? 'RTSP' : 'RTMP');
-          cam.status = 'ONLINE';
-        }
-
-        if (isClientConnected && !res.writableEnded) {
-          try {
-            res.write(chunk);
-          } catch (e) {
-            cleanup();
-          }
-        }
-      });
-
-      currentProc.stderr?.on('data', () => {});
-
-      currentProc.on('close', (code) => {
-        if (!headersSent && isClientConnected && !res.headersSent) {
-          headersSent = true;
-          res.status(503).json({ error: 'Câmera off-line ou fluxo encerrado', code });
-        }
-        cleanup();
-      });
-
-      currentProc.on('error', (err) => {
-        if (!headersSent && isClientConnected && !res.headersSent) {
-          headersSent = true;
-          res.status(503).json({ error: 'Falha ao iniciar processo de vídeo', details: err.message });
-        }
-        cleanup();
-      });
-    } catch (e: any) {
-      if (!headersSent && isClientConnected && !res.headersSent) {
-        headersSent = true;
-        res.status(503).json({ error: 'Exceção ao conectar à câmera', details: e?.message });
-      }
-      cleanup();
-    }
   });
 
   // Background 30-minute auto frame extraction for active streaming cameras (staggered sequentially)

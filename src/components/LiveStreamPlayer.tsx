@@ -84,8 +84,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO'
   );
 
-  // Default to HLS high-performance stream for all cameras (supports audio, zero latency, and hardware decode)
-  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(false);
+  // Default to MJPEG for RTSP cameras (instant start on cards) and HLS for RTMP / Web streams
+  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(() => isRtspCameraSource(camera));
 
   const [localMuted, setLocalMuted] = useState<boolean>(isMuted);
 
@@ -165,7 +165,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   useEffect(() => {
     const initialUrl = cleanDoubleUrl(getInitialVideoUrl(camera, useSubStream));
     setVideoUrl(initialUrl);
-    setUseMjpegStream(false);
+    setUseMjpegStream(isRtspCameraSource(camera));
     setStreamMode(camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO');
     setTempUrlInput(cleanDoubleUrl(camera.fullRtmpUrl || camera.rtmpUrl || camera.rtspUrl || initialUrl));
     if (camera.status === 'OFFLINE') {
@@ -430,7 +430,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   };
 
   const handleRetryConnection = () => {
-    setUseMjpegStream(false);
+    setUseMjpegStream(isRtspCameraSource(camera));
     setConnectionState('LOADING');
     consecutiveErrorsRef.current = 0;
     setRetryCount((prev) => prev + 1);
