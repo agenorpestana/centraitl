@@ -24,6 +24,7 @@ import { DatabaseDiagnosticsPanel } from './components/DatabaseDiagnosticsPanel'
 import { ApiDocumentationPanel } from './components/ApiDocumentationPanel';
 import { WhiteLabelAdminPanel } from './components/WhiteLabelAdminPanel';
 import { CompanyClientManager } from './components/CompanyClientManager';
+import { DvrAgentManager } from './components/DvrAgentManager';
 
 import {
   Camera,
@@ -915,6 +916,10 @@ export default function App() {
               isVaultUnlocked={e2eeSettings.isVaultUnlocked}
               onUnlockVault={() => setIsE2EEModalOpen(true)}
             />
+          )}
+
+          {activeTab === 'dvr-agents' && (
+            <DvrAgentManager currentUser={activeUser} />
           )}
 
           {activeTab === 'camera-admin' && (

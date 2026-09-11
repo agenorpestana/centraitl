@@ -56,6 +56,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'company-clients', label: 'Meus Clientes & Câmeras', icon: Briefcase, companyAdminOnly: true },
     { id: 'architecture-config', label: 'Arquitetura Fibra & Topology', icon: Network },
     { id: 'cloud-recordings', label: 'Gravações na Nuvem', icon: Film },
+    { id: 'dvr-agents', label: 'DVR Agent Desktop', icon: Server },
     { id: 'camera-admin', label: 'Adicionar / RTSP', icon: PlusCircle },
     { id: 'user-management', label: 'Acesso Multiusuário', icon: Users, adminOnly: true },
     { id: 'api-docs', label: 'Documentação API REST', icon: Code },

@@ -1,0 +1,52 @@
+{
+  "name": "itl-dvr-agent",
+  "version": "1.0.0",
+  "description": "ITL DVR Agent Desktop Windows - Central de Monitoramento e Gravação Contínua Local",
+  "main": "dist/main/index.js",
+  "author": "ITL Monitoramento",
+  "license": "MIT",
+  "scripts": {
+    "build:main": "tsc -p tsconfig.json",
+    "build": "npm run build:main",
+    "start": "electron .",
+    "package:win": "electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "br.com.unityautomacoes.itldvr",
+    "productName": "ITL DVR Agent",
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "ITL-DVR-Agent-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ITL DVR Agent",
+      "deleteAppDataOnUninstall": false
+    },
+    "files": [
+      "dist/**/*",
+      "src/renderer/**/*",
+      "package.json"
+    ]
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "electron": "^34.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "~5.8.2"
+  }
+}

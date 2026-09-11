@@ -711,7 +711,11 @@ import {
   StreamInfo,
   Company,
   WhiteLabelConfig,
+  DvrAgent,
+  DvrAgentHeartbeat,
+  DvrAgentCameraStatus,
 } from './src/types';
+import { maskSensitiveUrl } from './src/media/ffmpeg-pipeline';
 
 const LOCAL_STORE_FILE = path.join(process.cwd(), 'itl_database_store.json');
 
@@ -936,6 +940,8 @@ async function startServer() {
   let invoices: Invoice[] = [];
   let mpConfig: MercadoPagoConfig = { ...INITIAL_MP_CONFIG };
   let architectureConfig: ArchitectureConfig = { ...INITIAL_ARCHITECTURE_CONFIG };
+  let dvrAgents: DvrAgent[] = [];
+  const DVR_AGENT_ENABLED = process.env.DVR_AGENT_ENABLED !== 'false';
 
   const deletedCompanyIds = new Set<string>();
 
@@ -1163,6 +1169,7 @@ async function startServer() {
         invoices: invoices.filter((i) => i.id && !deletedInvoiceIds.has(i.id)),
         mpConfig,
         architectureConfig,
+        dvrAgents,
         dbConfig,
         deletedCameraIds: Array.from(deletedCameraIds),
         deletedRecordingIds: Array.from(deletedRecordingIds),
@@ -1251,6 +1258,9 @@ async function startServer() {
         }
         if (parsed.mpConfig && parsed.mpConfig.accessToken) mpConfig = parsed.mpConfig;
         if (parsed.architectureConfig) architectureConfig = parsed.architectureConfig;
+        if (parsed.dvrAgents && Array.isArray(parsed.dvrAgents)) {
+          dvrAgents = parsed.dvrAgents;
+        }
         console.log(`[ITL Storage] ${cameras.length} câmeras, ${companies.length} empresas e ${users.length} usuários carregados do arquivo local.`);
         return true;
       }
@@ -6476,7 +6486,216 @@ async function startServer() {
 
 
 
-  // Vite middleware for development
+  // ----------------------------------------------------
+  // DVR AGENT DESKTOP & LOCAL EDGE DVR INTEGRATION API (v1)
+  // ----------------------------------------------------
+  app.get('/api/v1/dvr-agents/status', (req, res) => {
+    res.json({
+      enabled: DVR_AGENT_ENABLED,
+      version: '1.0.0',
+      activeAgentsCount: dvrAgents.filter((a) => a.status === 'ONLINE').length,
+      totalRegisteredAgents: dvrAgents.length,
+    });
+  });
+
+  app.post('/api/v1/dvr-agents/register', (req, res) => {
+    if (!DVR_AGENT_ENABLED) {
+      return res.status(503).json({ success: false, error: 'Módulo DVR Agent desabilitado no servidor.' });
+    }
+
+    const { email, password, name, deviceId, hostname, os: clientOs, retentionDays, storageLimitGB } = req.body || {};
+
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email e senha são obrigatórios para registrar o DVR Agent.' });
+    }
+    if (!deviceId) {
+      return res.status(400).json({ success: false, error: 'DeviceId de hardware é obrigatório.' });
+    }
+
+    const user = users.find((u) => u.email.toLowerCase() === String(email).toLowerCase());
+    if (!user || !verifyUserPassword(password, user.passwordHash || user.password)) {
+      return res.status(401).json({ success: false, error: 'Credenciais inválidas de usuário.' });
+    }
+
+    // Generate revocable device token
+    const rawDeviceToken = `itldvr_${crypto.randomBytes(32).toString('hex')}`;
+    const tokenHash = hashPasswordPBKDF2(rawDeviceToken);
+
+    // Check if device already registered, update or create new
+    let agent = dvrAgents.find((a) => a.deviceId === deviceId);
+    const nowIso = new Date().toISOString();
+
+    if (agent) {
+      agent.name = name || agent.name;
+      agent.hostname = hostname || agent.hostname;
+      agent.os = clientOs || agent.os;
+      agent.tokenHash = tokenHash;
+      agent.status = 'ONLINE';
+      agent.lastSeen = nowIso;
+      agent.retentionDays = Number(retentionDays) || agent.retentionDays || 7;
+      agent.storageLimitGB = Number(storageLimitGB) || agent.storageLimitGB || 100;
+      if (user.companyId) agent.companyId = user.companyId;
+    } else {
+      agent = {
+        id: `dvr-agent-${Date.now().toString().slice(-6)}`,
+        deviceId,
+        name: name || `DVR ${hostname || 'Cliente'}`,
+        companyId: user.companyId,
+        hostname: hostname || 'Windows-Host',
+        os: clientOs || 'Windows x64',
+        version: '1.0.0',
+        status: 'ONLINE',
+        lastSeen: nowIso,
+        diskTotalGB: 500,
+        diskFreeGB: 250,
+        allocatedCameraIds: [],
+        activeRecordingsCount: 0,
+        retentionDays: Number(retentionDays) || 7,
+        storageLimitGB: Number(storageLimitGB) || 100,
+        tokenHash,
+        camerasStatus: [],
+        createdAt: nowIso,
+      };
+      dvrAgents.push(agent);
+    }
+
+    saveToLocalFile();
+    addLog(user.name, `Novo DVR Agent registrado: ${agent.name} (Dispositivo: ${deviceId})`, 'SYSTEM');
+
+    // Never return the token hash or user passwords
+    const sanitizedAgent = { ...agent };
+    delete sanitizedAgent.tokenHash;
+
+    res.status(201).json({
+      success: true,
+      agent: sanitizedAgent,
+      deviceToken: rawDeviceToken,
+    });
+  });
+
+  // Middleware helper to authenticate agent requests
+  function authenticateAgent(req: any, res: any, next: () => void) {
+    const authHeader = req.headers['authorization'] || '';
+    const deviceIdHeader = req.headers['x-device-id'] || '';
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+
+    if (!token) {
+      return res.status(401).json({ success: false, error: 'Token de autenticação do agente ausente.' });
+    }
+
+    const hashed = hashPasswordPBKDF2(token);
+    const agent = dvrAgents.find((a) => a.tokenHash === hashed);
+
+    if (!agent || agent.status === 'REVOKED') {
+      return res.status(401).json({ success: false, error: 'Token do agente inválido ou revogado.' });
+    }
+
+    if (deviceIdHeader && agent.deviceId !== deviceIdHeader) {
+      return res.status(403).json({ success: false, error: 'DeviceId não corresponde ao token cadastrado.' });
+    }
+
+    req.agent = agent;
+    next();
+  }
+
+  app.post('/api/v1/dvr-agents/:id/heartbeat', authenticateAgent, (req: any, res) => {
+    const agent: DvrAgent = req.agent;
+    const { diskTotalGB, diskFreeGB, camerasStatus, version } = req.body || {};
+
+    agent.lastSeen = new Date().toISOString();
+    agent.status = 'ONLINE';
+    if (typeof diskTotalGB === 'number') agent.diskTotalGB = diskTotalGB;
+    if (typeof diskFreeGB === 'number') agent.diskFreeGB = diskFreeGB;
+    if (version) agent.version = version;
+    if (Array.isArray(camerasStatus)) agent.camerasStatus = camerasStatus;
+
+    saveToLocalFile();
+    res.json({ success: true, acknowledgedAt: agent.lastSeen });
+  });
+
+  app.get('/api/v1/dvr-agents/:id/cameras', authenticateAgent, (req: any, res) => {
+    const agent: DvrAgent = req.agent;
+
+    // Strict multi-tenant isolation: Only return cameras belonging to the agent's company
+    let targetCameras = cameras.filter((c) => c.id && !deletedCameraIds.has(c.id));
+    if (agent.companyId) {
+      targetCameras = targetCameras.filter((c) => c.companyId === agent.companyId);
+    }
+
+    const formattedCameras = targetCameras.map((c) => ({
+      id: c.id,
+      name: c.name,
+      protocol: c.protocol || (c.rtmpUrl ? 'RTMP' : 'RTSP'),
+      rtspUrl: c.rtspUrl || '',
+      rtmpUrl: c.rtmpUrl || c.fullRtmpUrl || '',
+      subStreamUrl: c.subStreamUrl || '',
+      streamKey: c.streamKey || c.id,
+    }));
+
+    res.json({
+      success: true,
+      count: formattedCameras.length,
+      cameras: formattedCameras,
+    });
+  });
+
+  app.post('/api/v1/dvr-agents/:id/events', authenticateAgent, (req: any, res) => {
+    const agent: DvrAgent = req.agent;
+    const { events } = req.body || {};
+
+    if (Array.isArray(events) && events.length > 0) {
+      events.forEach((ev: any) => {
+        addLog(agent.name, `[DVR Evento Local] ${ev.type || 'Sincronização'}: ${JSON.stringify(ev.payload || {})}`, 'SYSTEM');
+      });
+    }
+
+    res.json({ success: true, processedCount: Array.isArray(events) ? events.length : 0 });
+  });
+
+  app.get('/api/v1/dvr-agents', (req, res) => {
+    const user = getUserFromReq(req);
+    let list = dvrAgents.map((a) => {
+      const sanitized = { ...a };
+      delete sanitized.tokenHash;
+      return sanitized;
+    });
+
+    if (user && user.role !== 'ADMIN' && user.companyId) {
+      list = list.filter((a) => a.companyId === user.companyId);
+    }
+
+    res.json({ success: true, count: list.length, agents: list });
+  });
+
+  app.post('/api/v1/dvr-agents/:id/revoke', (req, res) => {
+    const user = getUserFromReq(req);
+    if (!user || (user.role !== 'ADMIN' && user.role !== 'COMPANY_ADMIN')) {
+      return res.status(403).json({ success: false, error: 'Apenas administradores podem revogar agentes.' });
+    }
+
+    const agent = dvrAgents.find((a) => a.id === req.params.id);
+    if (!agent) {
+      return res.status(404).json({ success: false, error: 'Agente não encontrado.' });
+    }
+
+    agent.status = 'REVOKED';
+    agent.tokenHash = '';
+    saveToLocalFile();
+    addLog(user.name, `Acesso do DVR Agent revogado: ${agent.name}`, 'SECURITY');
+
+    res.json({ success: true, message: 'Agente revogado com sucesso.' });
+  });
+
+  app.delete('/api/v1/dvr-agents/:id', (req, res) => {
+    const user = getUserFromReq(req);
+    if (!user || user.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, error: 'Permissão negada.' });
+    }
+
+    dvrAgents = dvrAgents.filter((a) => a.id !== req.params.id);
+    saveToLocalFile();
+    res.json({ success: true, message: 'Agente excluído com sucesso.' });
+  });
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: {

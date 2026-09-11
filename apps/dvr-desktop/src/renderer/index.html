@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ITL DVR Agent - Modo DVR Local</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+    header { background-color: var(--card); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+    .logo-area { display: flex; align-items: center; gap: 12px; }
+    .badge { padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .badge-online { background-color: rgba(16, 185, 129, 0.2); color: var(--success); border: 1px solid var(--success); }
+    .badge-offline { background-color: rgba(239, 68, 68, 0.2); color: var(--danger); border: 1px solid var(--danger); }
+    main { flex: 1; padding: 24px; max-width: 1200px; margin: 0 auto; width: 100%; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-top: 16px; }
+    .card { background-color: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .card h3 { font-size: 15px; margin-bottom: 8px; color: var(--text); }
+    .metric { font-size: 24px; font-weight: 700; margin: 8px 0; color: #fff; }
+    .metric-sub { font-size: 12px; color: var(--text-muted); }
+    .camera-card { display: flex; flex-direction: column; gap: 8px; border-left: 4px solid var(--border); }
+    .camera-card.recording { border-left-color: var(--danger); }
+    .camera-card.streaming { border-left-color: var(--success); }
+    .camera-card.reconnecting { border-left-color: var(--warning); }
+    button { background-color: var(--primary); color: #fff; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: background-color 0.2s; }
+    button:hover { background-color: var(--primary-hover); }
+    button.secondary { background-color: transparent; border: 1px solid var(--border); color: var(--text); }
+    button.secondary:hover { background-color: rgba(255, 255, 255, 0.05); }
+    button.danger { background-color: var(--danger); }
+    input, select { width: 100%; padding: 8px 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 6px; color: #fff; margin-top: 4px; margin-bottom: 12px; }
+    .logs-box { background: #000; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; max-height: 180px; overflow-y: auto; color: #34d399; margin-top: 12px; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo-area">
+      <div style="font-weight: 700; font-size: 18px; letter-spacing: 0.5px;">ITL DVR AGENT</div>
+      <span id="agentStatusBadge" class="badge badge-offline">Desconectado</span>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button id="btnCopyDiag" class="secondary" title="Copiar diagnóstico limpo sem senhas">Copiar Diagnóstico</button>
+      <button id="btnLogout" class="danger hidden">Sair / Desconectar</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Painel de Login / Registro de Agente -->
+    <div id="authSection" class="card" style="max-width: 480px; margin: 40px auto;">
+      <h2 style="font-size: 18px; margin-bottom: 16px;">Vincular Agente DVR à Central</h2>
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 20px;">
+        Conecte este computador à Central ITL para gravar localmente as câmeras da sua rede sem depender do navegador.
+      </p>
+
+      <form id="authForm">
+        <label style="font-size: 13px;">URL do Servidor Central:</label>
+        <input type="text" id="serverUrl" value="https://monitoramento.unityautomacoes.com.br" required />
+
+        <label style="font-size: 13px;">Nome desta Instalação / DVR:</label>
+        <input type="text" id="agentName" placeholder="Ex: DVR Recepção Matriz" required />
+
+        <label style="font-size: 13px;">Email de Administrador / Cliente:</label>
+        <input type="email" id="email" placeholder="admin@itl.com.br" required />
+
+        <label style="font-size: 13px;">Senha:</label>
+        <input type="password" id="password" required />
+
+        <label style="font-size: 13px;">Pasta de Gravações no Disco:</label>
+        <input type="text" id="recordingsDir" placeholder="Padrão: Vídeos/ITL_Recordings" />
+
+        <div style="display: flex; gap: 12px;">
+          <div style="flex: 1;">
+            <label style="font-size: 13px;">Retenção (Dias):</label>
+            <input type="number" id="retentionDays" value="7" min="1" max="90" />
+          </div>
+          <div style="flex: 1;">
+            <label style="font-size: 13px;">Limite Disco (GB):</label>
+            <input type="number" id="storageLimitGB" value="100" min="10" />
+          </div>
+        </div>
+
+        <div id="authError" style="color: var(--danger); font-size: 13px; margin-bottom: 12px;" class="hidden"></div>
+
+        <button type="submit" id="btnSubmitAuth" style="width: 100%; margin-top: 8px;">Conectar e Iniciar DVR</button>
+      </form>
+    </div>
+
+    <!-- Painel Ativo do DVR -->
+    <div id="dashboardSection" class="hidden">
+      <div class="grid">
+        <div class="card">
+          <h3>Espaço em Disco</h3>
+          <div id="diskMetric" class="metric">-- GB</div>
+          <div id="diskSub" class="metric-sub">Livre para gravações contínuas</div>
+        </div>
+
+        <div class="card">
+          <h3>Câmeras Monitoradas</h3>
+          <div id="camCountMetric" class="metric">0 / 0</div>
+          <div class="metric-sub">Fluxos ativos na rede local</div>
+        </div>
+
+        <div class="card">
+          <h3>Gravação Contínua</h3>
+          <div id="recordingMetric" class="metric">0 Ativas</div>
+          <div class="metric-sub">Fatias de 5 min (MP4 finalizável)</div>
+        </div>
+
+        <div class="card">
+          <h3>Inicialização no Windows</h3>
+          <div style="margin-top: 12px; display: flex; align-items: center; gap: 8px;">
+            <input type="checkbox" id="chkStartOnBoot" style="width: auto; margin: 0;" />
+            <label for="chkStartOnBoot" style="font-size: 13px; cursor: pointer;">Iniciar com o Windows</label>
+          </div>
+          <div class="metric-sub" style="margin-top: 8px;">Executa em segundo plano na bandeja</div>
+        </div>
+      </div>
+
+      <h2 style="font-size: 18px; margin-top: 32px; margin-bottom: 12px;">Grade de Câmeras Locais</h2>
+      <div id="cameraGrid" class="grid">
+        <!-- Câmeras renderizadas dinamicamente -->
+      </div>
+
+      <h2 style="font-size: 18px; margin-top: 32px; margin-bottom: 8px;">Logs de Diagnóstico do Sistema</h2>
+      <div id="logsBox" class="logs-box">Carregando logs...</div>
+    </div>
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

@@ -261,3 +261,48 @@ export interface StreamInfo {
   codecs: string;
   ingestGateway: 'MediaMTX-Fiber' | 'FFmpeg-NVENC' | 'GStreamer-DeepStream' | 'ONVIF-Direct';
 }
+
+export type DvrAgentStatus = 'ONLINE' | 'OFFLINE' | 'DEGRADED' | 'REVOKED';
+
+export interface DvrAgentCameraStatus {
+  cameraId: string;
+  status: 'ONLINE' | 'OFFLINE' | 'RECONNECTING' | 'ERROR';
+  isRecording?: boolean;
+  bitrateKbps?: number;
+  resolution?: string;
+  fps?: number;
+  lastError?: string;
+}
+
+export interface DvrAgent {
+  id: string;
+  deviceId: string;
+  name: string;
+  companyId?: string;
+  hostname?: string;
+  ipAddress?: string;
+  os?: string;
+  version: string;
+  status: DvrAgentStatus;
+  lastSeen: string;
+  diskTotalGB: number;
+  diskFreeGB: number;
+  allocatedCameraIds: string[];
+  activeRecordingsCount: number;
+  retentionDays: number;
+  storageLimitGB: number;
+  tokenHash?: string;
+  camerasStatus?: DvrAgentCameraStatus[];
+  createdAt: string;
+}
+
+export interface DvrAgentHeartbeat {
+  agentId: string;
+  deviceId: string;
+  version: string;
+  diskTotalGB: number;
+  diskFreeGB: number;
+  cpuUsagePercent?: number;
+  memoryUsageMB?: number;
+  camerasStatus: DvrAgentCameraStatus[];
+}
