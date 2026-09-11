@@ -20,6 +20,6 @@ contextBridge.exposeInMainWorld('dvrApi', {
   getStartOnBoot: () => ipcRenderer.invoke('agent:get-start-on-boot'),
   copyCleanDiagnostics: () => ipcRenderer.invoke('agent:copy-clean-diagnostics'),
   onStatusChanged: (callback: (status: any) => void) => {
-    ipcRenderer.on('agent:status-update', (_, data) => callback(data));
+    ipcRenderer.on('agent:status-update', (_: any, data: any) => callback(data));
   },
 });

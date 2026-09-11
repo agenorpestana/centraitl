@@ -1,3 +1,5 @@
+export {};
+
 declare global {
   interface Window {
     dvrApi: {
@@ -50,6 +52,18 @@ async function checkStatus() {
       btnLogout.classList.add('hidden');
       agentStatusBadge.className = 'badge badge-offline';
       agentStatusBadge.textContent = 'NÃO CONFIGURADO';
+
+      // Pre-fill serverUrl and other details if present in pre-configuration
+      const serverUrlInput = document.getElementById('serverUrl') as HTMLInputElement;
+      if (serverUrlInput && status.serverUrl) {
+        serverUrlInput.value = status.serverUrl;
+      }
+      if (status.prefill?.agentName) {
+        const nameInput = document.getElementById('agentName') as HTMLInputElement;
+        if (nameInput && !nameInput.value) {
+          nameInput.value = status.prefill.agentName;
+        }
+      }
     }
   } catch (err) {
     console.error('Erro ao verificar status:', err);
@@ -66,9 +80,9 @@ async function loadDashboardData() {
     ]);
 
     diskMetric.textContent = `${diag.diskFreeGB} GB livres`;
-    const streamingCount = cameras.filter((c) => c.isStreaming).length;
+    const streamingCount = cameras.filter((c: any) => c.isStreaming).length;
     camCountMetric.textContent = `${streamingCount} / ${cameras.length}`;
-    const recCount = cameras.filter((c) => c.isRecording).length;
+    const recCount = cameras.filter((c: any) => c.isRecording).length;
     recordingMetric.textContent = `${recCount} Gravando`;
 
     renderCameras(cameras);

@@ -1,0 +1,8 @@
+{
+  "serverUrl": "https://monitoramento.unityautomacoes.com.br",
+  "systemName": "Central ITL de Câmeras & Monitoramento",
+  "generatedAt": "2026-09-11T14:23:15.307Z",
+  "defaultRetentionDays": 7,
+  "defaultStorageLimitGB": 100,
+  "autoStartOnBoot": true
+}

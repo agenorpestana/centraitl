@@ -601,6 +601,12 @@ server {
         client_max_body_size 200M;
     }
 
+    location /downloads {
+        alias $WEB_ROOT/downloads;
+        try_files \$uri \$uri/ =404;
+        add_header Cache-Control "no-cache";
+    }
+
     location / {
         try_files \$uri \$uri/ /index.html;
     }
@@ -613,6 +619,32 @@ ln -sf "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
 [ -f /etc/nginx/sites-enabled/default ] && rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl restart nginx
 
+# ==========================================
+# Geração Automática do Instalador DVR Desktop Windows
+# ==========================================
+if [ -d "$APP_DIR/apps/dvr-desktop" ]; then
+    echo -e "${YELLOW}Compilando e gerando Instalador DVR Desktop pré-configurado para https://${DOMAIN}...${NC}"
+    mkdir -p "$APP_DIR/public/downloads" "$APP_DIR/dist/downloads"
+    
+    cd "$APP_DIR/apps/dvr-desktop"
+    cat > dvr-config.json <<EOL
+{
+  "serverUrl": "https://${DOMAIN}",
+  "domain": "${DOMAIN}",
+  "systemName": "${SYSTEM_NAME}",
+  "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOL
+
+    npm install --production=false
+    npm run build
+    node scripts/package-bundle.js "https://${DOMAIN}" "$APP_DIR"
+    cd "$APP_DIR"
+
+    echo -e "${GREEN}✔ Instalador DVR Desktop gerado com sucesso!${NC}"
+    echo -e "${GREEN}✔ Disponível para download em: https://${DOMAIN}/downloads/itl-dvr-agent-windows.zip${NC}"
+fi
+
 # SSL certbot
 certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN --redirect
 
@@ -621,3 +653,6 @@ echo -e "Nome do Sistema: $SYSTEM_NAME"
 echo -e "URL de Acesso: https://$DOMAIN"
 echo -e "Porta do Backend: $APP_PORT"
 echo -e "Nome do Processo PM2: $PM2_NAME"
+if [ -f "$APP_DIR/public/downloads/itl-dvr-agent-windows.zip" ]; then
+    echo -e "Download do Instalador DVR: https://$DOMAIN/downloads/itl-dvr-agent-windows.zip"
+fi

@@ -130,7 +130,7 @@ export function clearAuthSession(): void {
 /**
  * Helper to generate an authenticated fetch header object
  */
-export function getAuthHeaders(): HeadersInit {
+export function getAuthHeaders(overrideUser?: User | null): HeadersInit {
   const token = getAuthToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -138,7 +138,7 @@ export function getAuthHeaders(): HeadersInit {
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
-  const user = getSecureSessionUser();
+  const user = overrideUser || getSecureSessionUser();
   if (user?.id) {
     headers['x-user-id'] = user.id;
   }

@@ -2,9 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { exec } from 'child_process';
-import { CameraStreamConfig } from '../../../../src/media/ffmpeg-pipeline';
-import { CameraWatchdog, CameraProcessStatus } from '../../../../src/media/camera-watchdog';
-import { pruneLocalRecordings } from '../../../../src/media/retention-cleaner';
+import { CameraStreamConfig } from '../media/ffmpeg-pipeline';
+import { CameraWatchdog, CameraProcessStatus } from '../media/camera-watchdog';
+import { pruneLocalRecordings } from '../media/retention-cleaner';
 import { AgentCredentials } from './security-vault';
 
 export interface AgentDiagnosticInfo {

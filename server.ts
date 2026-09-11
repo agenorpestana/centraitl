@@ -8,7 +8,7 @@ import crypto from 'crypto';
 import pg from 'pg';
 const { Pool } = pg;
 import initSqlJs from 'sql.js';
-import { spawn, exec, ChildProcess } from 'child_process';
+import { spawn, exec, execSync, ChildProcess } from 'child_process';
 
 function execAsync(cmd: string, timeoutMs = 15000): Promise<void> {
   return new Promise((resolve) => {
@@ -6619,7 +6619,7 @@ async function startServer() {
     // Strict multi-tenant isolation: Only return cameras belonging to the agent's company
     let targetCameras = cameras.filter((c) => c.id && !deletedCameraIds.has(c.id));
     if (agent.companyId) {
-      targetCameras = targetCameras.filter((c) => c.companyId === agent.companyId);
+      targetCameras = targetCameras.filter((c: any) => c.companyId === agent.companyId);
     }
 
     const formattedCameras = targetCameras.map((c) => ({
@@ -6681,7 +6681,7 @@ async function startServer() {
     agent.status = 'REVOKED';
     agent.tokenHash = '';
     saveToLocalFile();
-    addLog(user.name, `Acesso do DVR Agent revogado: ${agent.name}`, 'SECURITY');
+    addLog(user.name, `Acesso do DVR Agent revogado: ${agent.name}`, 'AUTH');
 
     res.json({ success: true, message: 'Agente revogado com sucesso.' });
   });
@@ -6695,6 +6695,92 @@ async function startServer() {
     dvrAgents = dvrAgents.filter((a) => a.id !== req.params.id);
     saveToLocalFile();
     res.json({ success: true, message: 'Agente excluído com sucesso.' });
+  });
+
+  // ----------------------------------------------------
+  // DVR AGENT INSTALLER PACKAGE & DOWNLOADS API
+  // ----------------------------------------------------
+  app.get('/api/v1/dvr-agents/installer/info', (req, res) => {
+    const defaultHost = req.get('host') || 'localhost:3000';
+    const serverUrl = `${req.protocol}://${defaultHost}`;
+    const downloadsDir = path.join(process.cwd(), 'public', 'downloads');
+    const infoPath = path.join(downloadsDir, 'installer-info.json');
+    const zipPath = path.join(downloadsDir, 'itl-dvr-agent-windows.zip');
+
+    let info: any = {
+      isAvailable: fs.existsSync(zipPath),
+      version: '1.0.0',
+      fileName: 'itl-dvr-agent-windows.zip',
+      downloadUrl: '/downloads/itl-dvr-agent-windows.zip',
+      serverUrl,
+      sizeBytes: fs.existsSync(zipPath) ? fs.statSync(zipPath).size : 0,
+      sizeFormatted: fs.existsSync(zipPath) ? `${(fs.statSync(zipPath).size / (1024 * 1024)).toFixed(2)} MB` : '0 MB',
+      generatedAt: new Date().toISOString(),
+    };
+
+    if (fs.existsSync(infoPath)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(infoPath, 'utf-8'));
+        info = { ...info, ...raw, isAvailable: fs.existsSync(zipPath) };
+      } catch (e) {}
+    }
+
+    res.json(info);
+  });
+
+  app.get('/api/v1/dvr-agents/installer/download-zip', (req, res) => {
+    const candidates = [
+      path.join(process.cwd(), 'public', 'downloads', 'itl-dvr-agent-windows.zip'),
+      path.join(process.cwd(), 'dist', 'downloads', 'itl-dvr-agent-windows.zip'),
+    ];
+    const found = candidates.find((p) => fs.existsSync(p));
+    if (found) {
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="itl-dvr-agent-windows.zip"');
+      return res.sendFile(found);
+    }
+
+    // Auto-generate if missing
+    try {
+      const serverUrl = `${req.protocol}://${req.get('host')}`;
+      execSync(`node apps/dvr-desktop/scripts/package-bundle.js "${serverUrl}" "."`, { stdio: 'inherit' });
+      if (fs.existsSync(candidates[0])) {
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', 'attachment; filename="itl-dvr-agent-windows.zip"');
+        return res.sendFile(candidates[0]);
+      }
+    } catch (e) {}
+
+    res.status(404).json({ error: 'Arquivo do instalador não encontrado no servidor.' });
+  });
+
+  app.get('/api/v1/dvr-agents/installer/download-config', (req, res) => {
+    const serverUrl = `${req.protocol}://${req.get('host')}`;
+    const config = {
+      serverUrl,
+      systemName: 'Central ITL de Câmeras & Segurança',
+      generatedAt: new Date().toISOString(),
+      defaultRetentionDays: 7,
+      defaultStorageLimitGB: 100,
+      autoStartOnBoot: true,
+    };
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename="dvr-config.json"');
+    res.send(JSON.stringify(config, null, 2));
+  });
+
+  app.post('/api/v1/dvr-agents/installer/generate', (req, res) => {
+    const user = getUserFromReq(req);
+    if (!user || user.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, error: 'Permissão negada.' });
+    }
+    const targetUrl = (req.body && req.body.serverUrl) || `${req.protocol}://${req.get('host')}`;
+    try {
+      execSync(`node apps/dvr-desktop/scripts/package-bundle.js "${targetUrl}" "."`, { stdio: 'inherit' });
+      res.json({ success: true, message: 'Pacote do Instalador DVR gerado com sucesso!', serverUrl: targetUrl });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: `Falha ao gerar pacote: ${err.message}` });
+    }
   });
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

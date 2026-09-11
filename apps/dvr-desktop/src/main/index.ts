@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Tray, Menu, clipboard } from 'electron';
 import path from 'path';
 import crypto from 'crypto';
 import os from 'os';
+import fs from 'fs';
 import { SecurityVault, AgentCredentials } from './security-vault';
 import { AgentCore } from './agent-core';
 import { RegisterAgentPayload } from './preload';
@@ -16,6 +17,29 @@ function generateDeviceId(): string {
   const host = os.hostname();
   const network = JSON.stringify(os.networkInterfaces());
   return crypto.createHash('sha256').update(`${host}_${network}`).digest('hex').substring(0, 16);
+}
+
+function readPreloadedConfig(): Record<string, any> {
+  const candidatePaths = [
+    path.join((process as any).resourcesPath || '', 'dvr-config.json'),
+    path.join(path.dirname(process.execPath), 'dvr-config.json'),
+    path.join(app.getAppPath(), 'dvr-config.json'),
+    path.join(app.getPath('userData'), 'dvr-config.json'),
+    path.join(process.cwd(), 'dvr-config.json'),
+    path.join(__dirname, '../../dvr-config.json'),
+  ];
+
+  for (const p of candidatePaths) {
+    try {
+      if (fs.existsSync(p)) {
+        const raw = fs.readFileSync(p, 'utf-8');
+        return JSON.parse(raw);
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return {};
 }
 
 function createWindow() {
@@ -34,14 +58,17 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+  const htmlPathInDist = path.join(__dirname, '../renderer/index.html');
+  const htmlPathInSrc = path.join(__dirname, '../../src/renderer/index.html');
+  const finalHtmlPath = fs.existsSync(htmlPathInDist) ? htmlPathInDist : htmlPathInSrc;
+  mainWindow.loadFile(finalHtmlPath);
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
   });
 
   // Minimize to tray instead of exiting
-  mainWindow.on('close', (event) => {
+  mainWindow.on('close', (event: any) => {
     if (!isQuitting) {
       event.preventDefault();
       mainWindow?.hide();
@@ -114,15 +141,17 @@ app.whenReady().then(async () => {
 function setupIpcHandlers() {
   ipcMain.handle('agent:get-status', async () => {
     const creds = vault.loadCredentials();
+    const prefill = readPreloadedConfig();
     return {
       isConfigured: Boolean(creds),
       agentId: creds?.agentId || null,
       deviceId: creds?.deviceId || generateDeviceId(),
-      serverUrl: creds?.serverUrl || 'https://monitoramento.unityautomacoes.com.br',
+      serverUrl: creds?.serverUrl || prefill.serverUrl || 'https://monitoramento.unityautomacoes.com.br',
       recordingsDirectory: creds?.recordingsDirectory || path.join(app.getPath('videos'), 'ITL_Recordings'),
-      retentionDays: creds?.retentionDays || 7,
-      storageLimitGB: creds?.storageLimitGB || 100,
+      retentionDays: creds?.retentionDays || prefill.retentionDays || 7,
+      storageLimitGB: creds?.storageLimitGB || prefill.storageLimitGB || 100,
       isRunning: Boolean(agentCore),
+      prefill,
     };
   });
 
@@ -150,7 +179,7 @@ function setupIpcHandlers() {
     return agentCore.getDiagnosticInfo();
   });
 
-  ipcMain.handle('agent:register', async (_, payload: RegisterAgentPayload) => {
+  ipcMain.handle('agent:register', async (_: any, payload: RegisterAgentPayload) => {
     try {
       const deviceId = generateDeviceId();
       const registerUrl = `${payload.serverUrl.replace(/\/$/, '')}/api/v1/dvr-agents/register`;
@@ -216,7 +245,7 @@ function setupIpcHandlers() {
     return { success: true };
   });
 
-  ipcMain.handle('agent:set-start-on-boot', (_, enabled: boolean) => {
+  ipcMain.handle('agent:set-start-on-boot', (_: any, enabled: boolean) => {
     app.setLoginItemSettings({
       openAtLogin: enabled,
       args: ['--hidden'],

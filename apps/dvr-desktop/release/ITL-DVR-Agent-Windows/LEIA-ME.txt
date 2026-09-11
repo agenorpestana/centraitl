@@ -1,0 +1,26 @@
+====================================================================
+               ITL DVR AGENT DESKTOP - GUIA DE INSTALACAO
+====================================================================
+
+Este pacote contem o agente de gravacao local do sistema ITL Monitoramento,
+pre-configurado para conectar diretamente ao seu servidor:
+https://monitoramento.unityautomacoes.com.br
+
+COMO USAR NO WINDOWS:
+--------------------------------------------------------------------
+1. Extraia todo o conteudo deste arquivo ZIP em uma pasta segura
+   (Recomendado: C:\ITL-DVR-Agent).
+
+2. Para iniciar manualmente:
+   - Dê um duplo clique em "iniciar-dvr.bat".
+
+3. Para que o DVR inicie automaticamente com o Windows:
+   - Execute "instalar-inicializacao-automatica.bat" como Administrador.
+
+4. Na primeira abertura:
+   - A URL da sua Central já virá preenchida (https://monitoramento.unityautomacoes.com.br).
+   - Insira o nome do DVR (ex: "DVR Recepcao") e suas credenciais de acesso.
+   - O agente comecara imediatamente a gravar as cameras na pasta configurada
+     (padrao: Videos\ITL_Recordings) e sincronizar o status com a Central!
+
+Gerado em: 2026-09-11T14:23:15.307Z
