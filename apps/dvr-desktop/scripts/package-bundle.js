@@ -7,7 +7,7 @@ console.log('=== Empacotador do Instalador ITL DVR Agent Desktop ===');
 
 const baseDesktopDir = path.resolve(__dirname, '..');
 const rootAppDir = process.argv[3] ? path.resolve(process.argv[3]) : path.resolve(baseDesktopDir, '../..');
-const serverUrl = process.argv[2] || 'https://monitoramento.unityautomacoes.com.br';
+const serverUrl = process.argv[2] || 'https://centralitl.unityautomacoes.com.br';
 
 console.log(`- Diretório DVR Desktop: ${baseDesktopDir}`);
 console.log(`- Diretório Raiz do Sistema: ${rootAppDir}`);
