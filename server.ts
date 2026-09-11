@@ -730,7 +730,7 @@ const cleanDoubleUrl = (url: string | undefined | null): string => {
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  const PORT = 3000;
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
@@ -1419,12 +1419,15 @@ async function startServer() {
         try {
           const fileBuffer = fs.readFileSync(SQLITE_DB_FILE);
           if (fileBuffer.length > 0) {
-            sqliteDb = new SQL.Database(fileBuffer);
+            const tempDb = new SQL.Database(fileBuffer);
+            tempDb.exec("SELECT 1;");
+            sqliteDb = tempDb;
             loadedSuccessfully = true;
             console.log('[SQLite ITL] Banco de dados SQL (itl_database.sqlite) CARREGADO com SUCESSO!');
           }
         } catch (fileErr: any) {
           console.warn('[SQLite ITL Warning] Arquivo itl_database.sqlite malformado/corrompido. Criando novo banco de dados SQL limpo:', fileErr.message);
+          try { fs.unlinkSync(SQLITE_DB_FILE); } catch (e) {}
           sqliteDb = new SQL.Database();
         }
       }
@@ -1659,6 +1662,10 @@ async function startServer() {
       console.log(`[SQLite ITL Engine] Tabelas do sistema sincronizadas no SQLite!`);
     } catch (err: any) {
       console.error('[SQLite ITL Error] Falha ao inicializar SQLite Engine:', err.message || err);
+      try {
+        const SQL = await initSqlJs();
+        sqliteDb = new SQL.Database();
+      } catch (e) {}
       loadFromLocalFile();
     }
   };

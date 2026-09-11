@@ -623,7 +623,7 @@ nginx -t && systemctl restart nginx
 # Geração Automática do Instalador DVR Desktop Windows
 # ==========================================
 if [ -d "$APP_DIR/apps/dvr-desktop" ]; then
-    echo -e "${YELLOW}Compilando e gerando Instalador DVR Desktop pré-configurado para https://${DOMAIN}...${NC}"
+    echo -e "${YELLOW}Compilando e gerando Visualizador DVR Desktop pré-configurado para https://${DOMAIN}...${NC}"
     mkdir -p "$APP_DIR/public/downloads" "$APP_DIR/dist/downloads"
     
     cd "$APP_DIR/apps/dvr-desktop"
@@ -632,6 +632,8 @@ if [ -d "$APP_DIR/apps/dvr-desktop" ]; then
   "serverUrl": "https://${DOMAIN}",
   "domain": "${DOMAIN}",
   "systemName": "${SYSTEM_NAME}",
+  "mode": "DVR_VIEWER",
+  "cloudRecording": true,
   "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOL
@@ -641,7 +643,7 @@ EOL
     node scripts/package-bundle.js "https://${DOMAIN}" "$APP_DIR"
     cd "$APP_DIR"
 
-    echo -e "${GREEN}✔ Instalador DVR Desktop gerado com sucesso!${NC}"
+    echo -e "${GREEN}✔ Visualizador DVR Desktop gerado com sucesso (Gravação em Nuvem)!${NC}"
     echo -e "${GREEN}✔ Disponível para download em: https://${DOMAIN}/downloads/itl-dvr-agent-windows.zip${NC}"
 fi
 

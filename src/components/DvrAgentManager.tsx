@@ -19,6 +19,9 @@ import {
   ExternalLink,
   Copy,
   Check,
+  Monitor,
+  Cloud,
+  Play,
 } from 'lucide-react';
 import { DvrAgent, User } from '../types';
 import { getAuthHeaders } from '../lib/security';
@@ -37,10 +40,12 @@ interface InstallerInfo {
   sizeFormatted: string;
   sha256?: string;
   generatedAt?: string;
+  mode?: string;
+  cloudRecording?: boolean;
 }
 
 export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser }) => {
-  const [subTab, setSubTab] = useState<'agents' | 'installer'>('installer');
+  const [subTab, setSubTab] = useState<'installer' | 'agents'>('installer');
   const [agents, setAgents] = useState<DvrAgent[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +57,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
   const [customServerUrl, setCustomServerUrl] = useState<string>('');
   const [generatingPackage, setGeneratingPackage] = useState<boolean>(false);
   const [generateMessage, setGenerateMessage] = useState<string | null>(null);
-  const [copiedStep, setCopiedStep] = useState<string | null>(null);
+  const [copiedCode, setCopiedCode] = useState<boolean>(false);
 
   const fetchAgents = async () => {
     setLoading(true);
@@ -65,7 +70,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
       const data = await res.json();
       setAgents(data.agents || []);
     } catch (err: any) {
-      setError(err.message || 'Erro ao carregar lista de DVR Agents');
+      setError(err.message || 'Erro ao carregar lista de dispositivos DVR');
     } finally {
       setLoading(false);
     }
@@ -96,7 +101,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
   }, []);
 
   const handleRevoke = async (agentId: string) => {
-    if (!window.confirm('Tem certeza de que deseja revogar o token deste agente DVR? O dispositivo não conseguirá mais enviar heartbeats nem sincronizar até ser re-autenticado.')) {
+    if (!window.confirm('Tem certeza de que deseja revogar o token deste visualizador DVR?')) {
       return;
     }
 
@@ -109,14 +114,14 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fetchAgents();
     } catch (err: any) {
-      alert(`Falha ao revogar agente: ${err.message}`);
+      alert(`Falha ao revogar visualizador: ${err.message}`);
     } finally {
       setRevokingId(null);
     }
   };
 
   const handleDelete = async (agentId: string) => {
-    if (!window.confirm('Excluir este agente da Central? As gravações existentes no computador do cliente NUNCA serão apagadas.')) {
+    if (!window.confirm('Excluir este dispositivo da Central?')) {
       return;
     }
 
@@ -128,7 +133,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fetchAgents();
     } catch (err: any) {
-      alert(`Falha ao excluir agente: ${err.message}`);
+      alert(`Falha ao excluir dispositivo: ${err.message}`);
     }
   };
 
@@ -155,10 +160,12 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
     }
   };
 
-  const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedStep(id);
-    setTimeout(() => setCopiedStep(null), 2000);
+  const buildCommands = `# 1. Navegue até o módulo desktop\ncd apps/dvr-desktop\n\n# 2. Instale as dependências\nnpm install\n\n# 3. Compile os fontes TypeScript\nnpm run build\n\n# 4. Gere o instalador executável Windows NSIS\nnpm run package:win`;
+
+  const copyBuildCommands = () => {
+    navigator.clipboard.writeText(buildCommands);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2500);
   };
 
   return (
@@ -168,14 +175,17 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
         <div>
           <div className="flex items-center gap-3">
             <div className="p-2.5 bg-blue-600/20 text-blue-400 rounded-lg border border-blue-500/30">
-              <Server className="w-6 h-6" />
+              <Monitor className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-xl font-bold text-white tracking-wide">
-                DVR Agent Desktop (Windows x64)
+              <h2 className="text-xl font-bold text-white tracking-wide flex items-center gap-2.5">
+                Visualizador DVR Nativo (Windows x64)
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 font-semibold inline-flex items-center gap-1">
+                  <Cloud className="w-3 h-3" /> Gravação em Nuvem 24h
+                </span>
               </h2>
               <p className="text-sm text-slate-400">
-                Gravação contínua local em MP4, normalização RTSP/RTMP e instalador pré-configurado com a URL do servidor
+                Visualizador de monitoramento de alta performance em formato DVR (grades 1x1, 2x2, 3x3, 4x4) sem limitações de conexão do navegador
               </p>
             </div>
           </div>
@@ -193,7 +203,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
             id="btn-subtab-installer"
           >
             <Download className="w-4 h-4" />
-            Instalador Pré-Configurado (.ZIP)
+            Download & Como Rodar (.ZIP / .BAT)
           </button>
           <button
             onClick={() => setSubTab('agents')}
@@ -205,12 +215,12 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
             id="btn-subtab-agents"
           >
             <Server className="w-4 h-4" />
-            Dispositivos Ativos ({agents.length})
+            Visualizadores Conectados ({agents.length})
           </button>
         </div>
       </div>
 
-      {/* ABA: INSTALADOR PRÉ-CONFIGURADO */}
+      {/* ABA: INSTALADOR & EXECUÇÃO DO VISUALIZADOR */}
       {subTab === 'installer' && (
         <div className="space-y-6">
           {/* Card Principal de Download */}
@@ -218,14 +228,14 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
             <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 pb-6 border-b border-slate-800">
               <div className="space-y-2 max-w-2xl">
                 <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/30 rounded-full text-xs font-semibold text-emerald-400">
-                  <CheckCircle className="w-3.5 h-3.5" /> Pronto para Download & Instalação
+                  <CheckCircle className="w-3.5 h-3.5" /> Pronto para Execução no Windows
                 </div>
                 <h3 className="text-2xl font-bold text-white tracking-tight">
-                  Pacote do Instalador DVR Windows
+                  Pacote do Visualizador DVR Nativo Windows
                 </h3>
                 <p className="text-sm text-slate-300 leading-relaxed">
-                  Gerado automaticamente durante o comando <code className="text-emerald-400 font-mono">./install.sh</code>.
-                  O pacote já contém todas as configurações do servidor, a URL de conexão e os scripts de inicialização automática.
+                  Pré-configurado com a URL da sua Central (<span className="text-blue-400 font-mono font-semibold">{installerInfo?.serverUrl || 'https://centralitl.unityautomacoes.com.br'}</span>).
+                  A gravação de todas as câmeras permanece ativa e segura na nuvem. O aplicativo desktop atua como um monitor DVR dedicado sem limites de abas ou conexões do navegador.
                 </p>
               </div>
 
@@ -237,7 +247,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
                   download="itl-dvr-agent-windows.zip"
                 >
                   <Archive className="w-5 h-5" />
-                  Baixar Pacote Completo (.ZIP)
+                  Baixar Pacote (.ZIP)
                 </a>
 
                 <a
@@ -247,7 +257,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
                   download="dvr-config.json"
                 >
                   <FileCode className="w-4 h-4 text-emerald-400" />
-                  Baixar dvr-config.json
+                  dvr-config.json
                 </a>
               </div>
             </div>
@@ -257,92 +267,128 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
               <div className="bg-slate-950/60 border border-slate-800/80 p-4 rounded-lg">
                 <div className="text-xs text-slate-400 font-medium">URL Conectada da Central</div>
                 <div className="text-sm font-mono text-blue-400 font-bold mt-1 break-all">
-                  {installerInfo?.serverUrl || window.location.origin}
+                  {installerInfo?.serverUrl || 'https://centralitl.unityautomacoes.com.br'}
                 </div>
-                <div className="text-xs text-slate-500 mt-1">Configurada no script install.sh</div>
+                <div className="text-xs text-slate-500 mt-1">Conexão pré-configurada</div>
               </div>
 
               <div className="bg-slate-950/60 border border-slate-800/80 p-4 rounded-lg">
-                <div className="text-xs text-slate-400 font-medium">Tamanho do Arquivo & Versão</div>
-                <div className="text-sm font-semibold text-slate-200 mt-1">
-                  {installerInfo?.sizeFormatted || '24 KB'} (v{installerInfo?.version || '1.0.0'})
+                <div className="text-xs text-slate-400 font-medium">Gravação & Armazenamento</div>
+                <div className="text-sm font-semibold text-emerald-400 mt-1 flex items-center gap-1.5">
+                  <Cloud className="w-4 h-4" /> 100% em Nuvem (Central ITL)
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  Gerado em: {installerInfo?.generatedAt ? new Date(installerInfo.generatedAt).toLocaleString() : 'Recente'}
-                </div>
+                <div className="text-xs text-slate-500 mt-1">Nenhum disco local é requerido</div>
               </div>
 
               <div className="bg-slate-950/60 border border-slate-800/80 p-4 rounded-lg">
-                <div className="text-xs text-slate-400 font-medium">Compatibilidade de Vídeo</div>
-                <div className="text-sm font-semibold text-emerald-400 mt-1 flex items-center gap-2">
-                  <CheckCircle className="w-4 h-4" /> RTSP H.264 & RTMP Nativo
+                <div className="text-xs text-slate-400 font-medium">Execução no Windows</div>
+                <div className="text-sm font-semibold text-slate-200 mt-1 flex items-center gap-2">
+                  <Play className="w-4 h-4 text-blue-400" /> iniciar-dvr.bat
                 </div>
-                <div className="text-xs text-slate-500 mt-1">Gravação direta em MP4 sem navegador</div>
+                <div className="text-xs text-slate-500 mt-1">Execução imediata com 1 clique</div>
               </div>
             </div>
           </div>
 
-          {/* Guia Passo a Passo de Instalação no Cliente Windows */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-            <h4 className="text-base font-bold text-white mb-4 flex items-center gap-2">
-              <Terminal className="w-5 h-5 text-blue-400" />
-              Como Instalar e Rodar no Computador Windows do Cliente
-            </h4>
-
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-lg relative space-y-2">
-                <div className="w-7 h-7 rounded-full bg-blue-600/20 text-blue-400 font-bold text-xs flex items-center justify-center border border-blue-500/30">
-                  1
+          {/* DUAS FORMAS DE USAR NO WINDOWS */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Opção 1: Execução Imediata via iniciar-dvr.bat */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-emerald-600/20 text-emerald-400 rounded-lg border border-emerald-500/30">
+                  <Play className="w-5 h-5" />
                 </div>
-                <h5 className="font-semibold text-slate-200 text-sm">Baixar o Arquivo</h5>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Clique no botão acima para baixar o arquivo compactado <code className="text-blue-300 font-mono">itl-dvr-agent-windows.zip</code>.
-                </p>
+                <div>
+                  <h4 className="text-base font-bold text-white">
+                    Opção 1: Execução Direta (iniciar-dvr.bat)
+                  </h4>
+                  <p className="text-xs text-slate-400">
+                    Ideal para abrir o monitor DVR imediatamente no Windows sem precisar compilar
+                  </p>
+                </div>
               </div>
 
-              <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-lg relative space-y-2">
-                <div className="w-7 h-7 rounded-full bg-blue-600/20 text-blue-400 font-bold text-xs flex items-center justify-center border border-blue-500/30">
-                  2
+              <div className="space-y-3 pt-2">
+                <div className="flex items-start gap-3 text-xs text-slate-300">
+                  <div className="w-5 h-5 rounded-full bg-slate-800 text-blue-400 font-bold flex items-center justify-center shrink-0 mt-0.5">1</div>
+                  <span>Extraia o arquivo <code className="text-blue-300 font-mono">itl-dvr-agent-windows.zip</code> em qualquer pasta (ex: <code className="text-slate-400 font-mono">C:\ITL-DVR</code>).</span>
                 </div>
-                <h5 className="font-semibold text-slate-200 text-sm">Extrair no Windows</h5>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Descompacte a pasta em um local de sua preferência no computador, por exemplo: <code className="text-blue-300 font-mono">C:\ITL-DVR-Agent</code>.
-                </p>
+                <div className="flex items-start gap-3 text-xs text-slate-300">
+                  <div className="w-5 h-5 rounded-full bg-slate-800 text-blue-400 font-bold flex items-center justify-center shrink-0 mt-0.5">2</div>
+                  <span>Dê um duplo clique no arquivo <code className="text-emerald-300 font-bold font-mono">iniciar-dvr.bat</code>.</span>
+                </div>
+                <div className="flex items-start gap-3 text-xs text-slate-300">
+                  <div className="w-5 h-5 rounded-full bg-slate-800 text-blue-400 font-bold flex items-center justify-center shrink-0 mt-0.5">3</div>
+                  <span>A janela nativa do DVR se abrirá com a URL pré-preenchida. Faça login com seu usuário da Central e o mural de câmeras iniciará na hora!</span>
+                </div>
               </div>
 
-              <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-lg relative space-y-2">
-                <div className="w-7 h-7 rounded-full bg-blue-600/20 text-blue-400 font-bold text-xs flex items-center justify-center border border-blue-500/30">
-                  3
+              <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-lg text-xs text-slate-400 flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>Compatível com qualquer versão do Windows 10 e 11 x64.</span>
+              </div>
+            </div>
+
+            {/* Opção 2: Gerar o Instalador Executável .exe no Windows */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-blue-600/20 text-blue-400 rounded-lg border border-blue-500/30">
+                    <Terminal className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-base font-bold text-white">
+                      Opção 2: Gerar Instalador Executável (.exe)
+                    </h4>
+                    <p className="text-xs text-slate-400">
+                      Gera o instalador NSIS (.exe) oficial com atalho no Menu Iniciar e Desktop
+                    </p>
+                  </div>
                 </div>
-                <h5 className="font-semibold text-slate-200 text-sm">Executar o DVR</h5>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Dê duplo clique no script <code className="text-emerald-300 font-mono">iniciar-dvr.bat</code> ou <code className="text-blue-300 font-mono">instalar-inicializacao-automatica.bat</code>.
-                </p>
+
+                <button
+                  onClick={copyBuildCommands}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 rounded-lg border border-slate-700 transition"
+                  title="Copiar comandos"
+                >
+                  {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedCode ? 'Copiado!' : 'Copiar'}
+                </button>
               </div>
 
-              <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-lg relative space-y-2">
-                <div className="w-7 h-7 rounded-full bg-emerald-600/20 text-emerald-400 font-bold text-xs flex items-center justify-center border border-emerald-500/30">
-                  4
-                </div>
-                <h5 className="font-semibold text-slate-200 text-sm">Conexão Imediata</h5>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  A URL da Central já vem preenchida. Faça login com seu usuário do painel e o agente iniciará as gravações locais!
+              <div className="space-y-2">
+                <p className="text-xs text-slate-300">
+                  Dê um duplo clique em <code className="text-blue-300 font-bold font-mono">compilar-instalador-windows.bat</code> ou execute no terminal:
                 </p>
+                <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg font-mono text-xs text-slate-300 overflow-x-auto">
+                  <div className="text-slate-500"># 1. Navegue até o módulo desktop</div>
+                  <div className="text-blue-400">cd apps/dvr-desktop</div>
+                  <div className="text-slate-500 mt-2"># 2. Instale as dependências</div>
+                  <div className="text-blue-400">npm install</div>
+                  <div className="text-slate-500 mt-2"># 3. Compile os fontes TypeScript</div>
+                  <div className="text-blue-400">npm run build</div>
+                  <div className="text-slate-500 mt-2"># 4. Gere o instalador executável Windows NSIS</div>
+                  <div className="text-emerald-400 font-bold">npm run package:win</div>
+                </div>
+              </div>
+
+              <div className="p-3 bg-blue-950/20 border border-blue-800/40 rounded-lg text-xs text-blue-300">
+                O arquivo executável <code className="text-white font-mono">ITL-DVR-Agent-Setup-1.0.0.exe</code> será gerado na pasta <code className="text-white font-mono">release\</code>.
               </div>
             </div>
           </div>
 
-          {/* Painel do Administrador: Recompilar com Nova URL Personalizada */}
+          {/* Painel do Administrador: Reconfigurar URL da Central */}
           {currentUser.role === 'ADMIN' && (
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h4 className="text-base font-bold text-white flex items-center gap-2">
                     <ShieldCheck className="w-5 h-5 text-emerald-400" />
-                    Reconfigurar URL do Instalador (Gerador Dinâmico)
+                    Reconfigurar URL da Central no Pacote
                   </h4>
                   <p className="text-xs text-slate-400 mt-1">
-                    Se você alterar o domínio, IP fixo ou rota Nginx do servidor, digite a nova URL abaixo para recompilar o pacote zipado com a nova configuração.
+                    Caso mude o domínio, rota de proxy ou IP do servidor, digite a nova URL abaixo para recompilar o pacote com a URL atualizada.
                   </p>
                 </div>
               </div>
@@ -352,7 +398,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
                   type="text"
                   value={customServerUrl}
                   onChange={(e) => setCustomServerUrl(e.target.value)}
-                  placeholder="https://monitoramento.seudominio.com"
+                  placeholder="https://centralitl.unityautomacoes.com.br"
                   className="flex-1 px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white font-mono placeholder:text-slate-600 focus:outline-none focus:border-blue-500"
                   id="input-custom-server-url"
                 />
@@ -363,7 +409,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
                   id="btn-recompile-package"
                 >
                   <RefreshCw className={`w-4 h-4 ${generatingPackage ? 'animate-spin' : ''}`} />
-                  {generatingPackage ? 'Recompilando Pacote...' : 'Recompilar com Esta URL'}
+                  {generatingPackage ? 'Recompilando Pacote...' : 'Recompilar Pacote com Esta URL'}
                 </button>
               </div>
 
@@ -384,10 +430,10 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
       {/* ABA: DISPOSITIVOS & MONITORAMENTO */}
       {subTab === 'agents' && (
         <div className="space-y-6">
-          {/* Grid de Métricas Globais dos Agentes */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {/* Métricas dos Dispositivos */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-slate-900/80 border border-slate-800 p-4 rounded-xl">
-              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Agentes Operacionais</div>
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Visualizadores Ativos</div>
               <div className="text-2xl font-bold text-emerald-400 mt-1">
                 {agents.filter((a) => a.status === 'ONLINE').length} / {agents.length}
               </div>
@@ -395,36 +441,28 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
             </div>
 
             <div className="bg-slate-900/80 border border-slate-800 p-4 rounded-xl">
-              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Espaço em Disco Somado</div>
-              <div className="text-2xl font-bold text-blue-400 mt-1">
-                {agents.reduce((acc, a) => acc + (a.diskFreeGB || 0), 0)} GB
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Gravação Contínua</div>
+              <div className="text-2xl font-bold text-blue-400 mt-1 flex items-center gap-2">
+                <Cloud className="w-5 h-5" /> Ativa em Nuvem
               </div>
-              <div className="text-xs text-slate-500 mt-1">Livre para retenção nos computadores</div>
+              <div className="text-xs text-slate-500 mt-1">Central ITL de Câmeras</div>
             </div>
 
             <div className="bg-slate-900/80 border border-slate-800 p-4 rounded-xl">
-              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Câmeras Gerenciadas</div>
-              <div className="text-2xl font-bold text-purple-400 mt-1">
-                {agents.reduce((acc, a) => acc + (a.camerasStatus ? a.camerasStatus.length : 0), 0)}
-              </div>
-              <div className="text-xs text-slate-500 mt-1">Fluxos gravando em borda local</div>
-            </div>
-
-            <div className="bg-slate-900/80 border border-slate-800 p-4 rounded-xl">
-              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Segurança das Credenciais</div>
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Segurança das Sessões</div>
               <div className="text-2xl font-bold text-amber-400 mt-1 flex items-center gap-2">
                 <Lock className="w-5 h-5" /> Windows DPAPI
               </div>
-              <div className="text-xs text-slate-500 mt-1">Sem senhas em texto puro</div>
+              <div className="text-xs text-slate-500 mt-1">Cofre de credenciais seguro</div>
             </div>
           </div>
 
-          {/* Lista de Agentes Registrados */}
+          {/* Lista de Visualizadores */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
             <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950/40">
               <h3 className="font-semibold text-white text-base flex items-center gap-2">
-                <Server className="w-4 h-4 text-blue-400" />
-                Instalações Registradas de DVR Local
+                <Monitor className="w-4 h-4 text-blue-400" />
+                Visualizadores DVR Registrados
               </h3>
               <div className="flex items-center gap-3">
                 <button
@@ -436,7 +474,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
                   Atualizar
                 </button>
                 <span className="text-xs text-slate-400 font-mono">
-                  {agents.length} dispositivo(s) cadastrado(s)
+                  {agents.length} dispositivo(s)
                 </span>
               </div>
             </div>
@@ -450,17 +488,17 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
 
             {agents.length === 0 && !loading ? (
               <div className="p-12 text-center">
-                <Server className="w-12 h-12 text-slate-700 mx-auto mb-3" />
-                <h4 className="text-base font-medium text-slate-300">Nenhum Agente DVR Desktop conectado ainda</h4>
+                <Monitor className="w-12 h-12 text-slate-700 mx-auto mb-3" />
+                <h4 className="text-base font-medium text-slate-300">Nenhum Visualizador DVR conectado ainda</h4>
                 <p className="text-sm text-slate-500 max-w-md mx-auto mt-1 mb-4">
-                  Instale o ITL DVR Agent no computador Windows do cliente. Ele gravará as câmeras continuamente mesmo com o navegador fechado.
+                  Baixe o pacote ZIP e execute o <code className="text-blue-400 font-mono">iniciar-dvr.bat</code> no computador Windows para abrir o monitor nativo.
                 </p>
                 <button
                   onClick={() => setSubTab('installer')}
                   className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg shadow-lg shadow-blue-600/20"
                 >
                   <Download className="w-4 h-4" />
-                  Ir para Download do Instalador
+                  Ir para Download do Pacote
                 </button>
               </div>
             ) : (
@@ -496,35 +534,8 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
                         <span>Host: <strong className="text-slate-300">{agent.hostname || 'Windows'}</strong></span>
                         <span>OS: <strong className="text-slate-300">{agent.os || 'Windows x64'}</strong></span>
                         <span>DeviceId: <code className="bg-slate-800 px-1 py-0.5 rounded text-blue-300">{agent.deviceId}</code></span>
-                        <span>Último Contato: <strong className="text-slate-300">{agent.lastSeen ? new Date(agent.lastSeen).toLocaleTimeString() : 'N/A'}</strong></span>
+                        <span>Último Acesso: <strong className="text-slate-300">{agent.lastSeen ? new Date(agent.lastSeen).toLocaleTimeString() : 'N/A'}</strong></span>
                       </div>
-
-                      {/* Informações de Disco e Retenção */}
-                      <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400 pt-1">
-                        <span className="flex items-center gap-1">
-                          <HardDrive className="w-3.5 h-3.5 text-blue-400" />
-                          Disco: <strong className="text-slate-200">{agent.diskFreeGB} GB livres</strong> (Total {agent.diskTotalGB} GB)
-                        </span>
-                        <span>
-                          Retenção Máx: <strong className="text-slate-200">{agent.retentionDays} dias</strong> / <strong className="text-slate-200">{agent.storageLimitGB} GB (FIFO)</strong>
-                        </span>
-                      </div>
-
-                      {/* Câmeras ativas neste agente */}
-                      {agent.camerasStatus && agent.camerasStatus.length > 0 && (
-                        <div className="flex flex-wrap gap-2 pt-2">
-                          {agent.camerasStatus.map((c) => (
-                            <span
-                              key={c.cameraId}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-800 rounded text-xs text-slate-300 border border-slate-700"
-                            >
-                              <Video className="w-3 h-3 text-blue-400" />
-                              {c.cameraId} ({c.status})
-                              {c.isRecording && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>}
-                            </span>
-                          ))}
-                        </div>
-                      )}
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
@@ -536,7 +547,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
                           title="Revogar token deste dispositivo"
                         >
                           <Key className="w-3.5 h-3.5" />
-                          Revogar Acesso
+                          Revogar
                         </button>
                       )}
 
@@ -544,7 +555,7 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
                         <button
                           onClick={() => handleDelete(agent.id)}
                           className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-950/30 rounded-lg transition"
-                          title="Remover agente da Central"
+                          title="Remover dispositivo"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -554,39 +565,6 @@ export const DvrAgentManager: React.FC<DvrAgentManagerProps> = ({ currentUser })
                 ))}
               </div>
             )}
-          </div>
-
-          {/* Dicas e Práticas Operacionais */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl space-y-2">
-              <div className="flex items-center gap-2 text-emerald-400 font-semibold text-sm">
-                <CheckCircle className="w-4 h-4" />
-                Gravação Contínua Sem Navegador
-              </div>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                O DVR Agent roda como processo nativo do Windows em background. Mesmo se todas as janelas forem fechadas ou se houver oscilação de tela, as câmeras continuarão gravando ininterruptamente.
-              </p>
-            </div>
-
-            <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl space-y-2">
-              <div className="flex items-center gap-2 text-blue-400 font-semibold text-sm">
-                <ShieldCheck className="w-4 h-4" />
-                Cofre DPAPI & Sem Senhas em Texto Puro
-              </div>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Após o login inicial, as credenciais são criptografadas pelo Windows Credential Manager. A senha do usuário é descartada e o token de hardware é revogável a qualquer instante pelo painel.
-              </p>
-            </div>
-
-            <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl space-y-2">
-              <div className="flex items-center gap-2 text-purple-400 font-semibold text-sm">
-                <RefreshCw className="w-4 h-4" />
-                Watchdog com Backoff Exponencial
-              </div>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Processos FFmpeg isolados por câmera. Se um cabo de rede for desconectado ou a câmera reiniciar, as outras câmeras continuam gravando normalmente enquanto o agente tenta reconectar.
-              </p>
-            </div>
           </div>
         </div>
       )}

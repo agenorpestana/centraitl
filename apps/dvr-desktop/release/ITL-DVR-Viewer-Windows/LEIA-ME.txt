@@ -1,0 +1,36 @@
+====================================================================
+           CENTRAL ITL - VISUALIZADOR DVR NATIVO (WINDOWS)
+               Gravação Contínua em Nuvem 24 Horas
+====================================================================
+
+Servidor Central: https://centralitl.unityautomacoes.com.br
+Gerado em: 2026-09-11T15:39:05.186Z
+
+Este pacote contém o Visualizador DVR Nativo para Windows, permitindo
+monitorar todas as suas câmeras em formato de mural DVR (grades 1x1,
+2x2, 3x3 e 4x4) com máxima aceleração de hardware e sem as limitações
+de conexões simultâneas dos navegadores web.
+
+IMPORTANTE: Todas as gravações permanecem ativas e seguras em nuvem
+pela Central ITL. Nenhum espaço em disco local é consumido para gravação.
+
+--------------------------------------------------------------------
+COMO USAR NO WINDOWS:
+--------------------------------------------------------------------
+
+OPÇÃO 1: EXECUÇÃO DIRETA (INICIAR O VISUALIZADOR AGORA)
+  1. Dê um duplo clique em "iniciar-dvr.bat".
+  2. O visualizador nativo se abrirá conectando à Central ITL.
+  3. Insira seu e-mail e senha de acesso.
+
+OPÇÃO 2: GERAR O INSTALADOR EXECUTÁVEL (.EXE) NO WINDOWS
+  Se você preferir ter o instalador oficial Windows (.exe) com atalho
+  no Desktop e Menu Iniciar:
+  1. Dê um duplo clique em "compilar-instalador-windows.bat".
+  2. O script executará automaticamente os comandos:
+       npm install
+       npm run build
+       npm run package:win
+  3. O instalador final (.exe) será gerado na pasta "release\".
+
+Dúvidas ou suporte: Central ITL de Câmeras & Monitoramento

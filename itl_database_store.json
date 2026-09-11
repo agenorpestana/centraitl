@@ -281,6 +281,7 @@
     "edgeSyncIntervalSec": 10,
     "offlineCacheEnabled": true
   },
+  "dvrAgents": [],
   "dbConfig": {
     "dbHost": "127.0.0.1",
     "dbPort": 5432,
