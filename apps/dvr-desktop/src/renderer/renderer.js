@@ -175,11 +175,24 @@
     const cleanServer = currentServerUrl.replace(/\/$/, '');
     const rawKey = cam.streamKey || cam.id || 'stream';
     const cleanKey = String(rawKey).replace(/^cam[-_]/i, '');
-    const mainUrl = cleanServer + '/live/cam_' + cleanKey + '.m3u8';
-    const subUrl = cleanServer + '/live/cam_' + cleanKey + '_sub.m3u8';
+    
+    // Use camera videoStreamUrl if valid, otherwise build standard live m3u8
+    let mainUrl = cam.videoStreamUrl || cam.fullRtmpUrl || (cleanServer + '/live/cam_' + cleanKey + '.m3u8');
+    if (mainUrl.startsWith('/')) {
+      mainUrl = cleanServer + mainUrl;
+    }
+    if (mainUrl.includes('/live/') && !mainUrl.endsWith('.m3u8')) {
+      mainUrl = mainUrl.split('?')[0] + '.m3u8';
+    }
+
+    // Only use sub-stream if explicitly configured on the camera object
+    let subUrl = cam.subStreamUrl || cam.subHlsUrl || null;
+    if (subUrl && subUrl.startsWith('/')) {
+      subUrl = cleanServer + subUrl;
+    }
 
     return {
-      primary: isFocus ? mainUrl : subUrl,
+      primary: (!isFocus && subUrl) ? subUrl : mainUrl,
       fallback: mainUrl
     };
   }
@@ -199,6 +212,11 @@
     let isActive = true;
     let isFallback = false;
     let currentAttempt = 0;
+    let retryTimer = null;
+    let stallWatchdog = null;
+    let lastPlayTime = 0;
+    let lastProgressTime = Date.now();
+
     const isFocus = (currentLayout === '1x1');
     const urls = getCameraHlsUrls(cam, isFocus);
 
@@ -217,7 +235,46 @@
       if (offlineOverlay) offlineOverlay.classList.remove('hidden');
     }
 
+    function startWatchdog() {
+      if (stallWatchdog) clearInterval(stallWatchdog);
+      lastProgressTime = Date.now();
+      stallWatchdog = setInterval(function() {
+        if (!isActive || !video) return;
+        if (video.paused) {
+          video.play().catch(function() {});
+          return;
+        }
+        if (video.currentTime > 0) {
+          if (Math.abs(video.currentTime - lastPlayTime) > 0.05) {
+            lastPlayTime = video.currentTime;
+            lastProgressTime = Date.now();
+          } else if (Date.now() - lastProgressTime > 4500) {
+            // Video stalled on same frame for over 4.5s
+            lastProgressTime = Date.now();
+            if (video.buffered && video.buffered.length > 0) {
+              const end = video.buffered.end(video.buffered.length - 1);
+              if (end - video.currentTime > 0.4) {
+                video.currentTime = Math.max(0, end - 0.2);
+              } else if (hlsInstance) {
+                try { hlsInstance.startLoad(); } catch (e) {}
+              }
+            } else if (hlsInstance) {
+              try { hlsInstance.startLoad(); } catch (e) {}
+            }
+          }
+        }
+      }, 2000);
+    }
+
     function cleanupHls() {
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      if (stallWatchdog) {
+        clearInterval(stallWatchdog);
+        stallWatchdog = null;
+      }
       if (hlsInstance) {
         try {
           hlsInstance.destroy();
@@ -235,18 +292,24 @@
       if (HlsClass && HlsClass.isSupported()) {
         hlsInstance = new HlsClass({
           enableWorker: true,
-          lowLatencyMode: true,
-          backBufferLength: 4,
-          maxBufferLength: 6,
-          maxMaxBufferLength: 10,
-          liveSyncDurationCount: 1,
-          liveMaxLatencyDurationCount: 3,
-          manifestLoadingTimeOut: 10000,
-          manifestLoadingMaxRetry: 6,
-          levelLoadingTimeOut: 10000,
-          levelLoadingMaxRetry: 6,
-          fragLoadingTimeOut: 12000,
-          fragLoadingMaxRetry: 6,
+          lowLatencyMode: false, // Prevents aggressive chunk drops on multi-camera 16x grids
+          backBufferLength: 0,   // Conserves RAM across 16 decoders
+          maxBufferLength: 8,    // 8-second buffer accommodates transient network jitter
+          maxMaxBufferLength: 16,
+          liveSyncDurationCount: 3, // Stable distance of ~6s from live edge
+          liveMaxLatencyDurationCount: 6,
+          manifestLoadingTimeOut: 15000,
+          manifestLoadingMaxRetry: 10,
+          manifestLoadingRetryDelay: 1000,
+          levelLoadingTimeOut: 15000,
+          levelLoadingMaxRetry: 10,
+          levelLoadingRetryDelay: 1000,
+          fragLoadingTimeOut: 20000,
+          fragLoadingMaxRetry: 10,
+          fragLoadingRetryDelay: 1000,
+          nudgeOffset: 0.2,
+          nudgeMaxRetry: 10,
+          maxLoadingDelay: 4,
         });
 
         hlsInstance.loadSource(streamUrl);
@@ -254,45 +317,77 @@
 
         hlsInstance.on(HlsClass.Events.MANIFEST_PARSED, function() {
           showOnline();
+          currentAttempt = 0;
+          startWatchdog();
           video.play().catch(function() {});
         });
 
         hlsInstance.on(HlsClass.Events.FRAG_LOADED, function() {
           showOnline();
+          currentAttempt = 0;
+          lastProgressTime = Date.now();
         });
 
         hlsInstance.on(HlsClass.Events.ERROR, function(event, data) {
           if (!isActive) return;
+          console.warn('[DVR HLS Event]', cam.name, data.type, data.details, 'Fatal:', data.fatal);
+
           if (data && data.fatal) {
-            console.warn('[DVR HLS Fatal]', cam.name, data.type, data.details);
-
-            // If sub-stream failed, try main stream
-            if (!isFallback && streamUrl.includes('_sub.m3u8')) {
-              isFallback = true;
-              console.log('[DVR HLS] Tentando fluxo principal para:', cam.name);
-              startHls(urls.fallback);
-              return;
-            }
-
-            // Retry on network error up to 2 times
-            if (data.type === HlsClass.ErrorTypes.NETWORK_ERROR && currentAttempt < 2) {
-              currentAttempt++;
-              setTimeout(function() {
-                if (isActive && hlsInstance) {
-                  try { hlsInstance.startLoad(); } catch (e) { showOffline(); }
+            switch (data.type) {
+              case HlsClass.ErrorTypes.NETWORK_ERROR:
+                // If sub-stream failed, try main stream immediately
+                if (!isFallback && streamUrl.includes('_sub.m3u8')) {
+                  isFallback = true;
+                  console.log('[DVR HLS] Sub-fluxo indisponível, alternando para principal:', cam.name);
+                  startHls(urls.fallback);
+                  return;
                 }
-              }, 2000);
-              return;
-            }
+                currentAttempt++;
+                console.log('[DVR HLS] Tentando reconectar rede (' + currentAttempt + ') para:', cam.name);
+                // Continuous CCTV auto-reconnection with progressive backoff
+                const netDelay = Math.min(currentAttempt * 1500, 5000);
+                if (retryTimer) clearTimeout(retryTimer);
+                retryTimer = setTimeout(function() {
+                  if (isActive && hlsInstance) {
+                    try {
+                      hlsInstance.startLoad();
+                    } catch (e) {
+                      startHls(urls.fallback);
+                    }
+                  }
+                }, netDelay);
+                break;
 
-            // Unrecoverable: camera is offline (no RTMP/RTSP signal)
-            showOffline();
+              case HlsClass.ErrorTypes.MEDIA_ERROR:
+                console.log('[DVR HLS] Recuperando decodificação de mídia para:', cam.name);
+                try {
+                  hlsInstance.recoverMediaError();
+                } catch (e) {
+                  try {
+                    hlsInstance.swapAudioCodec();
+                    hlsInstance.recoverMediaError();
+                  } catch (e2) {
+                    startHls(urls.fallback);
+                  }
+                }
+                break;
+
+              default:
+                console.warn('[DVR HLS] Erro fatal irrecuperável (' + data.details + '), reiniciando:', cam.name);
+                if (retryTimer) clearTimeout(retryTimer);
+                retryTimer = setTimeout(function() {
+                  if (isActive) startHls(urls.fallback);
+                }, 3000);
+                break;
+            }
           }
         });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = streamUrl;
         video.onloadedmetadata = function() {
           showOnline();
+          currentAttempt = 0;
+          startWatchdog();
           video.play().catch(function() {});
         };
         video.onerror = function() {
@@ -301,7 +396,13 @@
             video.src = urls.fallback;
             return;
           }
-          showOffline();
+          currentAttempt++;
+          setTimeout(function() {
+            if (isActive) {
+              video.src = urls.fallback;
+              video.load();
+            }
+          }, 3000);
         };
       } else {
         showOffline();
@@ -309,11 +410,15 @@
     }
 
     // Connect video events
-    video.onplaying = function() { showOnline(); };
+    video.onplaying = function() {
+      showOnline();
+      currentAttempt = 0;
+      lastProgressTime = Date.now();
+    };
     video.oncanplay = function() { showOnline(); };
 
     // Stagger startup slightly so 16 cameras don't spike simultaneously
-    const startDelay = Math.min(index * 120, 2000);
+    const startDelay = Math.min(index * 150, 2500);
     const timer = setTimeout(function() {
       if (isActive) {
         startHls(urls.primary);
@@ -565,9 +670,33 @@
 
   let lastLoadedCameraIds = [];
 
+  // Deterministic camera sort so channel slots and order remain stable
+  function sortCameras(list) {
+    return (list || []).slice().sort(function(a, b) {
+      const nameA = a.name || a.id || '';
+      const nameB = b.name || b.id || '';
+      return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  }
+
+  // Update cell tags and labels without rebuilding active video elements
+  function updateCameraCellsMeta() {
+    if (!videoGrid) return;
+    currentCameras.forEach(function(cam) {
+      const cell = videoGrid.querySelector('.cam-cell[data-camera-id="' + cam.id + '"]');
+      if (!cell) return;
+      const titleEl = cell.querySelector('.osd-cam-title');
+      if (titleEl && cam.name) {
+        titleEl.textContent = cam.name.toUpperCase();
+      }
+    });
+  }
+
   // Load Cameras from Central ITL Server
   async function loadCameras(forceRender) {
-    if (camCountLabel) camCountLabel.textContent = 'Sincronizando câmeras...';
+    if (camCountLabel && (!videoGrid || !videoGrid.querySelector('.cam-cell'))) {
+      camCountLabel.textContent = 'Sincronizando câmeras...';
+    }
 
     try {
       let cameras = [];
@@ -591,7 +720,8 @@
         cameras = await resp.json();
       }
 
-      currentCameras = Array.isArray(cameras) ? cameras : [];
+      const sortedCams = sortCameras(Array.isArray(cameras) ? cameras : []);
+      currentCameras = sortedCams;
       const onlineCount = currentCameras.filter(function(c) { return c.status !== 'OFFLINE'; }).length;
       if (camCountLabel) {
         camCountLabel.textContent = onlineCount + ' / ' + currentCameras.length + ' Câmeras Online';
@@ -599,13 +729,18 @@
 
       const prevIds = (lastLoadedCameraIds || []).join(',');
       const newIds = currentCameras.map(function(c) { return c.id; }).join(',');
-      if (forceRender || prevIds !== newIds || !videoGrid.querySelector('.cam-cell')) {
+      const gridHasCells = !!videoGrid.querySelector('.cam-cell');
+
+      // Crucial stability fix: Never tear down running streams if cameras are already rendered
+      if (forceRender || !gridHasCells || prevIds !== newIds) {
         lastLoadedCameraIds = currentCameras.map(function(c) { return c.id; });
         renderCameraGrid();
+      } else {
+        updateCameraCellsMeta();
       }
     } catch (e) {
       console.error('Erro ao carregar câmeras:', e);
-      if (camCountLabel) {
+      if (camCountLabel && (!videoGrid || !videoGrid.querySelector('.cam-cell'))) {
         camCountLabel.textContent = 'Falha na conexão: ' + (e.message || 'Sem sinal');
       }
     }
@@ -903,12 +1038,12 @@
     }
   });
 
-  // Auto-refresh cameras every 30s
+  // Auto-refresh camera list metadata every 60s without disturbing active streams
   setInterval(function() {
     if (loginSection && loginSection.classList.contains('hidden')) {
-      loadCameras();
+      loadCameras(false);
     }
-  }, 30000);
+  }, 60000);
 
   // Run initial session check
   console.log('[ITL DVR] Iniciando sessão...');
