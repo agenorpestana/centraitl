@@ -509,6 +509,7 @@ fi
 
 cat > .env <<EOL
 PORT=${APP_PORT}
+APP_PORT=${APP_PORT}
 DB_HOST=localhost
 DB_PORT=5432
 DB_USER=${DB_USER}
@@ -538,9 +539,9 @@ pm2 delete "$PM2_NAME" 2>/dev/null || true
 pm2 delete "central-itl" 2>/dev/null || true
 
 if [[ "$PM2_SCRIPT" == *.ts ]]; then
-    PORT=$APP_PORT pm2 start "npx tsx $PM2_SCRIPT" --name "$PM2_NAME" --max-memory-restart 800M --restart-delay 4000 --update-env --env PORT="$APP_PORT"
+    PORT=$APP_PORT APP_PORT=$APP_PORT pm2 start "npx tsx $PM2_SCRIPT" --name "$PM2_NAME" --max-memory-restart 800M --restart-delay 4000 --update-env --env PORT="$APP_PORT" --env APP_PORT="$APP_PORT"
 else
-    PORT=$APP_PORT pm2 start "$PM2_SCRIPT" --name "$PM2_NAME" --max-memory-restart 800M --restart-delay 4000 --update-env --env PORT="$APP_PORT"
+    PORT=$APP_PORT APP_PORT=$APP_PORT pm2 start "$PM2_SCRIPT" --name "$PM2_NAME" --max-memory-restart 800M --restart-delay 4000 --update-env --env PORT="$APP_PORT" --env APP_PORT="$APP_PORT"
 fi
 
 pm2 save --force

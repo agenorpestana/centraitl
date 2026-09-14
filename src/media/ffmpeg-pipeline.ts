@@ -90,7 +90,8 @@ export function resolveStreamSource(cam: CameraStreamConfig, isSubStream = false
     if (
       (vUrl.startsWith('http://') || vUrl.startsWith('https://') || vUrl.startsWith('rtsp://')) &&
       !vUrl.includes('/live/cam_') &&
-      !vUrl.includes(':3000/live/')
+      !vUrl.match(/:\d+\/live\//) &&
+      !vUrl.includes('/live/')
     ) {
       return vUrl;
     }

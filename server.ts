@@ -1,4 +1,6 @@
 import express from 'express';
+import dotenv from 'dotenv';
+dotenv.config();
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -387,7 +389,8 @@ function getValidStreamSource(cam: any, isSubStream = false): string {
     if (
       (vUrl.startsWith('http://') || vUrl.startsWith('https://') || vUrl.startsWith('rtsp://')) &&
       !vUrl.includes('/live/cam_') &&
-      !vUrl.includes(':3000/live/')
+      !vUrl.match(/:\d+\/live\//) &&
+      !vUrl.includes('/live/')
     ) {
       return vUrl;
     }
@@ -730,7 +733,27 @@ const cleanDoubleUrl = (url: string | undefined | null): string => {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+
+  // Detect if running inside Google AI Studio sandboxed container environment
+  // In AI Studio Cloud Run, Nginx listens on port 8080 and reverse-proxies to 3000.
+  // On a real VPS/server (e.g. install.sh option 15 with port 3014), the app must bind
+  // to the configured PORT (e.g. 3014) or APP_PORT so Nginx can reach it.
+  const isAiStudioContainer = Boolean(
+    process.env.DEFAULT_APP_PORT === '3000' ||
+    process.env.CONTROL_PLANE_PORT ||
+    process.env.NGINX_PORT ||
+    process.env.K_SERVICE ||
+    process.env.APPLET_ID
+  );
+
+  let PORT = 3000;
+  if (!isAiStudioContainer) {
+    if (process.env.APP_PORT) {
+      PORT = parseInt(process.env.APP_PORT, 10);
+    } else if (process.env.PORT) {
+      PORT = parseInt(process.env.PORT, 10);
+    }
+  }
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
@@ -903,12 +926,26 @@ async function startServer() {
   let isPgActive = false;
   let isMysqlActive = false;
 
+  let parsedDbUrl: { host?: string; port?: number; user?: string; password?: string; database?: string } = {};
+  if (process.env.DATABASE_URL) {
+    try {
+      const u = new URL(process.env.DATABASE_URL);
+      parsedDbUrl = {
+        host: u.hostname || undefined,
+        port: u.port ? parseInt(u.port, 10) : undefined,
+        user: u.username ? decodeURIComponent(u.username) : undefined,
+        password: u.password !== undefined ? decodeURIComponent(u.password) : undefined,
+        database: u.pathname ? u.pathname.replace(/^\//, '') : undefined,
+      };
+    } catch (e) {}
+  }
+
   let dbConfig = {
-    dbHost: process.env.DB_HOST || '127.0.0.1',
-    dbPort: parseInt(process.env.DB_PORT || '5432', 10),
-    dbName: process.env.DB_NAME || 'itl_cameras',
-    dbUser: process.env.DB_USER || 'itl_user',
-    dbPassword: process.env.DB_PASSWORD !== undefined ? process.env.DB_PASSWORD : 'itl123.789',
+    dbHost: process.env.DB_HOST || parsedDbUrl.host || '127.0.0.1',
+    dbPort: parseInt(process.env.DB_PORT || (parsedDbUrl.port ? String(parsedDbUrl.port) : '5432'), 10),
+    dbName: process.env.DB_NAME || parsedDbUrl.database || 'itl_cameras',
+    dbUser: process.env.DB_USER || parsedDbUrl.user || 'itl_user',
+    dbPassword: process.env.DB_PASSWORD !== undefined ? process.env.DB_PASSWORD : (parsedDbUrl.password !== undefined ? parsedDbUrl.password : 'itl123.789'),
   };
 
   async function queryPg(sql: string, params: any[] = []): Promise<any[]> {
@@ -1191,7 +1228,15 @@ async function startServer() {
         const raw = fs.readFileSync(LOCAL_STORE_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
         if (parsed.dbConfig) {
-          dbConfig = { ...dbConfig, ...parsed.dbConfig };
+          dbConfig = {
+            ...dbConfig,
+            ...parsed.dbConfig,
+            ...(process.env.DB_HOST ? { dbHost: process.env.DB_HOST } : {}),
+            ...(process.env.DB_PORT ? { dbPort: parseInt(process.env.DB_PORT, 10) } : {}),
+            ...(process.env.DB_NAME ? { dbName: process.env.DB_NAME } : {}),
+            ...(process.env.DB_USER ? { dbUser: process.env.DB_USER } : {}),
+            ...(process.env.DB_PASSWORD !== undefined ? { dbPassword: process.env.DB_PASSWORD } : {}),
+          };
           if (dbConfig.dbHost) process.env.DB_HOST = dbConfig.dbHost;
           if (dbConfig.dbPort) process.env.DB_PORT = String(dbConfig.dbPort);
           if (dbConfig.dbName) process.env.DB_NAME = dbConfig.dbName;
@@ -2795,11 +2840,23 @@ async function startServer() {
       const targetName = dbConfig.dbName || process.env.DB_NAME || 'itl_cameras';
 
       // Fast-fail connection candidates list to prevent long timeouts
-      const candidates = [
-        { host: targetHost, user: targetUser, pass: targetPassword },
-        { host: '127.0.0.1', user: 'itl_user', pass: 'itl123.789' },
-        { host: '127.0.0.1', user: 'postgres', pass: 'postgres' },
-      ].filter((c, index, self) => 
+      const candidateHosts = [targetHost];
+      if (targetHost === 'localhost') candidateHosts.push('127.0.0.1');
+      if (targetHost === '127.0.0.1') candidateHosts.push('localhost');
+      if (fs.existsSync('/var/run/postgresql')) candidateHosts.push('/var/run/postgresql');
+
+      const rawCandidates: Array<{ host: string; user: string; pass: string }> = [];
+      for (const h of candidateHosts) {
+        rawCandidates.push({ host: h, user: targetUser, pass: targetPassword });
+      }
+      if (process.env.DB_USER && process.env.DB_PASSWORD) {
+        rawCandidates.push({ host: '127.0.0.1', user: process.env.DB_USER, pass: process.env.DB_PASSWORD });
+        rawCandidates.push({ host: 'localhost', user: process.env.DB_USER, pass: process.env.DB_PASSWORD });
+      }
+      rawCandidates.push({ host: '127.0.0.1', user: 'itl_user', pass: 'itl123.789' });
+      rawCandidates.push({ host: '127.0.0.1', user: 'postgres', pass: 'postgres' });
+
+      const candidates = rawCandidates.filter((c, index, self) => 
         self.findIndex((x) => x.host === c.host && x.user === c.user && x.pass === c.pass) === index
       );
 

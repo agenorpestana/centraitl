@@ -80,6 +80,9 @@
       "allowedCameraIds": [
         "ALL"
       ],
+      "chosenDueDay": 5,
+      "financialStatus": "OK",
+      "daysOverdue": 0,
       "lastActive": "Agora mesmo",
       "createdAt": "2026-01-01"
     }
