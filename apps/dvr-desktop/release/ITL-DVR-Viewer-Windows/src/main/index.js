@@ -1,24 +1,24 @@
 // Central ITL - Visualizador DVR Nativo (Main Process)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-import { app, BrowserWindow, ipcMain, Tray, Menu, dialog } from 'electron';
-import path from 'path';
-import fs from 'fs';
-import { SecurityVault, UserSession } from './security-vault';
+const { app, BrowserWindow, ipcMain, Tray, Menu } = require('electron');
+const path = require('path');
+const fs = require('fs');
+const { SecurityVault } = require('./security-vault');
 
 // Performance & GPU acceleration switches
 app.commandLine.appendSwitch('ignore-certificate-errors');
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
 
-let mainWindow: BrowserWindow | null = null;
-let tray: Tray | null = null;
-let vault: SecurityVault;
+let mainWindow = null;
+let tray = null;
+let vault = null;
 let isQuitting = false;
 
-function readPreloadedConfig(): Record<string, any> {
+function readPreloadedConfig() {
   const candidatePaths = [
-    path.join((process as any).resourcesPath || '', 'dvr-config.json'),
+    path.join(process.resourcesPath || '', 'dvr-config.json'),
     path.join(path.dirname(process.execPath), 'dvr-config.json'),
     path.join(app.getAppPath(), 'dvr-config.json'),
     path.join(app.getPath('userData'), 'dvr-config.json'),
@@ -45,7 +45,7 @@ function readPreloadedConfig(): Record<string, any> {
   };
 }
 
-function resolvePreloadPath(): string {
+function resolvePreloadPath() {
   const candidates = [
     path.join(__dirname, 'preload.js'),
     path.join(__dirname, '../main/preload.js'),
@@ -55,7 +55,7 @@ function resolvePreloadPath(): string {
   return candidates.find((p) => fs.existsSync(p)) || path.join(__dirname, 'preload.js');
 }
 
-function resolveHtmlPath(): string {
+function resolveHtmlPath() {
   const candidates = [
     path.join(__dirname, '../renderer/index.html'),
     path.join(__dirname, '../../src/renderer/index.html'),
@@ -81,7 +81,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      webSecurity: false, // Allows cross-origin video feeds without CORS restrictions
+      webSecurity: false,
     },
   });
 
@@ -89,27 +89,27 @@ function createWindow() {
   mainWindow.loadFile(finalHtmlPath);
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
+    if (mainWindow) mainWindow.show();
   });
 
-  // F11 Toggle Fullscreen & F12 DevTools shortcut
+  // F11 Fullscreen & F12 DevTools
   mainWindow.webContents.on('before-input-event', (_, input) => {
     if (input.key === 'F11' && input.type === 'keyDown') {
-      const isFull = mainWindow?.isFullScreen();
-      mainWindow?.setFullScreen(!isFull);
+      const isFull = mainWindow.isFullScreen();
+      mainWindow.setFullScreen(!isFull);
     }
-    if (input.key === 'Escape' && input.type === 'keyDown' && mainWindow?.isFullScreen()) {
-      mainWindow?.setFullScreen(false);
+    if (input.key === 'Escape' && input.type === 'keyDown' && mainWindow.isFullScreen()) {
+      mainWindow.setFullScreen(false);
     }
     if ((input.key === 'F12' || (input.control && input.shift && input.key.toLowerCase() === 'i')) && input.type === 'keyDown') {
-      mainWindow?.webContents.toggleDevTools();
+      mainWindow.webContents.toggleDevTools();
     }
   });
 
-  mainWindow.on('close', (event: any) => {
+  mainWindow.on('close', (event) => {
     if (!isQuitting) {
       event.preventDefault();
-      mainWindow?.hide();
+      if (mainWindow) mainWindow.hide();
     }
   });
 }
@@ -128,8 +128,10 @@ function setupTray() {
         {
           label: 'Abrir Visualizador DVR',
           click: () => {
-            mainWindow?.show();
-            mainWindow?.focus();
+            if (mainWindow) {
+              mainWindow.show();
+              mainWindow.focus();
+            }
           },
         },
         {
@@ -153,8 +155,10 @@ function setupTray() {
       tray.setToolTip('Central ITL - Visualizador DVR Nativo');
       tray.setContextMenu(contextMenu);
       tray.on('double-click', () => {
-        mainWindow?.show();
-        mainWindow?.focus();
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
       });
     }
   } catch (e) {
@@ -188,7 +192,7 @@ function setupIpcHandlers() {
   });
 
   // Auth: Login
-  ipcMain.handle('auth:login', async (_, payload: { serverUrl: string; email: string; password?: string }) => {
+  ipcMain.handle('auth:login', async (_, payload) => {
     try {
       const cleanUrl = (payload.serverUrl || '').trim().replace(/\/$/, '');
       const loginPayload = {
@@ -197,7 +201,7 @@ function setupIpcHandlers() {
         password: payload.password,
       };
 
-      let response: Response | null = null;
+      let response = null;
       let usedEndpoint = `${cleanUrl}/api/v1/auth/login`;
 
       try {
@@ -207,7 +211,6 @@ function setupIpcHandlers() {
           body: JSON.stringify(loginPayload),
         });
       } catch (err) {
-        // Retry with /api/auth/login
         usedEndpoint = `${cleanUrl}/api/auth/login`;
         response = await fetch(usedEndpoint, {
           method: 'POST',
@@ -217,7 +220,6 @@ function setupIpcHandlers() {
       }
 
       if (!response.ok && response.status === 404) {
-        // Fallback to /api/auth/login
         response = await fetch(`${cleanUrl}/api/auth/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -225,7 +227,7 @@ function setupIpcHandlers() {
         });
       }
 
-      const data: any = await response.json().catch(() => ({ success: false, error: `Resposta inválida da Central (${response?.status})` }));
+      const data = await response.json().catch(() => ({ success: false, error: `Resposta inválida da Central (${response?.status})` }));
       if (!response.ok || !data.success) {
         return {
           success: false,
@@ -233,7 +235,7 @@ function setupIpcHandlers() {
         };
       }
 
-      const session: UserSession = {
+      const session = {
         serverUrl: cleanUrl,
         token: data.token,
         user: {
@@ -248,7 +250,7 @@ function setupIpcHandlers() {
 
       vault.saveSession(session);
       return { success: true, user: session.user, token: session.token };
-    } catch (err: any) {
+    } catch (err) {
       return { success: false, error: `Não foi possível conectar à Central: ${err.message}` };
     }
   });
@@ -276,7 +278,6 @@ function setupIpcHandlers() {
       }).catch(() => null);
 
       if (!res || !res.ok) {
-        // Fallback to /api/cameras
         camerasEndpoint = `${cleanUrl}/api/cameras`;
         res = await fetch(camerasEndpoint, {
           headers: {
@@ -292,13 +293,13 @@ function setupIpcHandlers() {
 
       const cameras = await res.json();
       return { success: true, cameras: Array.isArray(cameras) ? cameras : [] };
-    } catch (err: any) {
+    } catch (err) {
       return { error: err.message, cameras: [] };
     }
   });
 
   // Cameras: PTZ
-  ipcMain.handle('cameras:ptz', async (_, cameraId: string, action: string) => {
+  ipcMain.handle('cameras:ptz', async (_, cameraId, action) => {
     const session = vault.loadSession();
     if (!session) return { success: false, error: 'Não autenticado' };
 
@@ -314,7 +315,7 @@ function setupIpcHandlers() {
         body: JSON.stringify({ action }),
       });
       return await res.json();
-    } catch (err: any) {
+    } catch (err) {
       return { success: false, error: err.message };
     }
   });
@@ -332,7 +333,7 @@ function setupIpcHandlers() {
   });
 
   // Save Snapshot Image
-  ipcMain.handle('system:save-snapshot', async (_, payload: { dataUrl: string; cameraName: string }) => {
+  ipcMain.handle('system:save-snapshot', async (_, payload) => {
     try {
       const base64Data = payload.dataUrl.replace(/^data:image\/\w+;base64,/, '');
       const buffer = Buffer.from(base64Data, 'base64');
@@ -349,13 +350,13 @@ function setupIpcHandlers() {
       const fullPath = path.join(targetDir, filename);
       fs.writeFileSync(fullPath, buffer);
       return { success: true, path: fullPath };
-    } catch (e: any) {
+    } catch (e) {
       return { success: false, error: e.message };
     }
   });
 
   // Start on Boot
-  ipcMain.handle('system:set-start-on-boot', (_, enabled: boolean) => {
+  ipcMain.handle('system:set-start-on-boot', (_, enabled) => {
     app.setLoginItemSettings({
       openAtLogin: enabled,
       args: ['--hidden'],
@@ -372,4 +373,3 @@ function setupIpcHandlers() {
 app.on('before-quit', () => {
   isQuitting = true;
 });
-

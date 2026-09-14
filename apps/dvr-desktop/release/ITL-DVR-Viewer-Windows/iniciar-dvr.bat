@@ -8,6 +8,12 @@ echo Modo: Visualizador de Cameras (Gravacao 100%% em Nuvem)
 echo.
 cd /d "%~dp0"
 
+REM Garantir que a pasta dist exista
+if not exist "dist\main\index.js" (
+  echo Sincronizando arquivos de inicializacao...
+  node scripts\build.js 2>nul
+)
+
 REM 1. Verificar se o executável descompactado já existe
 if exist "release\win-unpacked\ITL DVR Agent.exe" (
   echo Iniciando executavel nativo...
@@ -40,10 +46,21 @@ if %ERRORLEVEL% equ 0 (
   exit
 )
 
+REM 4. Fallback via npm start
+where npm >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+  echo Iniciando via npm start...
+  start "" npm start
+  exit
+)
+
 echo ========================================================
-echo [AVISO] Node.js ou Electron nao encontrado neste computador.
-echo Para gerar o instalador executavel (.exe) ou rodar o visualizador:
+echo [AVISO] Runtime Electron nativo nao encontrado neste computador.
+echo Para executar com aceleracao de hardware dedicada:
 echo   1. Certifique-se de ter o Node.js v20+ instalado (nodejs.org)
 echo   2. Execute o arquivo "compilar-instalador-windows.bat"
+echo.
+echo Ou abra a Central ITL diretamente no seu navegador:
+echo   https://centralitl.unityautomacoes.com.br
 echo ========================================================
 pause

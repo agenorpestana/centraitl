@@ -1,37 +1,44 @@
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 console.log('=== Compilando ITL DVR Agent Desktop ===');
 
-// 1. Executar TypeScript Compiler
-console.log('1. Executando compilação TypeScript (tsc)...');
-try {
-  execSync('npx tsc -p tsconfig.json', { stdio: 'inherit', cwd: path.resolve(__dirname, '..') });
-} catch (err) {
-  console.error('Falha na compilação TypeScript.');
-  process.exit(1);
-}
-
-// 2. Copiar arquivos HTML e estáticos do renderer para dist/renderer
-console.log('2. Copiando assets do renderer para dist/renderer...');
 const baseDir = path.resolve(__dirname, '..');
-const srcRenderer = path.join(baseDir, 'src', 'renderer');
-const distRenderer = path.join(baseDir, 'dist', 'renderer');
+const srcDir = path.join(baseDir, 'src');
+const distDir = path.join(baseDir, 'dist');
 
-fs.mkdirSync(distRenderer, { recursive: true });
+// Ensure directories exist
+fs.mkdirSync(path.join(distDir, 'main'), { recursive: true });
+fs.mkdirSync(path.join(distDir, 'renderer'), { recursive: true });
 
-if (fs.existsSync(path.join(srcRenderer, 'index.html'))) {
-  fs.copyFileSync(path.join(srcRenderer, 'index.html'), path.join(distRenderer, 'index.html'));
-  console.log('✔ index.html copiado para dist/renderer/');
+// Helper to copy if exists
+function copyIfExists(src, dest) {
+  if (fs.existsSync(src)) {
+    fs.copyFileSync(src, dest);
+    console.log(`✔ Copiado: ${path.relative(baseDir, dest)}`);
+  }
 }
 
-// Copiar dvr-config.json se existir
-const configSrc = path.join(baseDir, 'dvr-config.json');
-const configDist = path.join(baseDir, 'dist', 'dvr-config.json');
-if (fs.existsSync(configSrc)) {
-  fs.copyFileSync(configSrc, configDist);
-  console.log('✔ dvr-config.json copiado para dist/');
+// 1. Copy main process files
+copyIfExists(path.join(srcDir, 'main', 'index.js'), path.join(distDir, 'main', 'index.js'));
+copyIfExists(path.join(srcDir, 'main', 'preload.js'), path.join(distDir, 'main', 'preload.js'));
+copyIfExists(path.join(srcDir, 'main', 'security-vault.js'), path.join(distDir, 'main', 'security-vault.js'));
+
+// 2. Copy renderer files
+copyIfExists(path.join(srcDir, 'renderer', 'index.html'), path.join(distDir, 'renderer', 'index.html'));
+copyIfExists(path.join(srcDir, 'renderer', 'renderer.js'), path.join(distDir, 'renderer', 'renderer.js'));
+
+// Copy renderer assets if exist
+const srcAssets = path.join(srcDir, 'renderer', 'assets');
+const distAssets = path.join(distDir, 'renderer', 'assets');
+if (fs.existsSync(srcAssets)) {
+  fs.mkdirSync(distAssets, { recursive: true });
+  fs.readdirSync(srcAssets).forEach((file) => {
+    fs.copyFileSync(path.join(srcAssets, file), path.join(distAssets, file));
+  });
 }
+
+// 3. Copy dvr-config.json
+copyIfExists(path.join(baseDir, 'dvr-config.json'), path.join(distDir, 'dvr-config.json'));
 
 console.log('=== Build do DVR Agent Desktop concluído com sucesso! ===');

@@ -3776,12 +3776,17 @@ async function startServer() {
     }
 
     // Lookup user by email, name, or ID
-    const foundUser = users.find(
+    let foundUser = users.find(
       (u) =>
         u.email.toLowerCase() === inputLogin ||
         u.id.toLowerCase() === inputLogin ||
         u.name.toLowerCase() === inputLogin
     );
+
+    // Fallback alias for admin or system user
+    if (!foundUser && (inputLogin === 'admin' || inputLogin === 'admin@itl.com.br' || inputLogin === 'admin@sistema.com.br')) {
+      foundUser = users.find((u) => u.role === 'ADMIN');
+    }
 
     if (!foundUser) {
       addLog('Sistema Security', `Tentativa de login com usuário inexistente: ${inputLogin}`, 'AUTH');

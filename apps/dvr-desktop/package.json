@@ -13,7 +13,7 @@
   },
   "build": {
     "appId": "br.com.unityautomacoes.itldvr",
-    "productName": "ITL DVR Agent",
+    "productName": "Central ITL DVR",
     "directories": {
       "output": "release"
     },
@@ -33,12 +33,13 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "ITL DVR Agent",
+      "shortcutName": "Central ITL DVR",
       "deleteAppDataOnUninstall": false
     },
     "files": [
       "dist/**/*",
-      "src/renderer/**/*",
+      "src/**/*",
+      "dvr-config.json",
       "package.json"
     ]
   },

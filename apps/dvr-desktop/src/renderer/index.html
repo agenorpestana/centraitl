@@ -420,7 +420,7 @@
 
         <div id="loginError" class="login-error hidden"></div>
 
-        <form id="loginForm">
+        <form id="loginForm" onsubmit="event.preventDefault(); return false;">
           <div class="form-group">
             <label>URL do Servidor Central:</label>
             <input type="text" id="serverUrl" class="form-input" value="https://centralitl.unityautomacoes.com.br" required />
@@ -456,6 +456,15 @@
     </div>
   </main>
 
+  <script>
+    // Polyfill to prevent CommonJS "exports is not defined" error in Electron / browser renderer
+    if (typeof exports === 'undefined') {
+      window.exports = {};
+    }
+    if (typeof module === 'undefined') {
+      window.module = { exports: window.exports };
+    }
+  </script>
   <script src="renderer.js"></script>
 </body>
 </html>

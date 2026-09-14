@@ -1,7 +1,8 @@
-export {};
-
+// Central ITL - Visualizador DVR Nativo
 declare global {
   interface Window {
+    exports?: any;
+    module?: any;
     dvrApi: {
       getConfig: () => Promise<any>;
       getSession: () => Promise<any>;

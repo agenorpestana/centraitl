@@ -1,0 +1,83 @@
+[
+  {
+    "id": "log-1789425586595-704",
+    "userName": "Super Admin Unity",
+    "action": "Login efetuado com sucesso (ADMIN)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:46"
+  },
+  {
+    "id": "log-1789425584688-989",
+    "userName": "Super Admin Unity",
+    "action": "Login efetuado com sucesso (ADMIN)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:44"
+  },
+  {
+    "id": "log-1789425569867-448",
+    "userName": "Super Admin Unity",
+    "action": "Login efetuado com sucesso (ADMIN)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:29"
+  },
+  {
+    "id": "log-1789425556417-147",
+    "userName": "Sistema Security",
+    "action": "Tentativa de login com usuário inexistente: admin@sistema.com.br",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:16"
+  },
+  {
+    "id": "log-1789425553563-289",
+    "userName": "Sistema Security",
+    "action": "Tentativa de login com usuário inexistente: admin@sistema.com.br",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:13"
+  },
+  {
+    "id": "log-1789425546160-994",
+    "userName": "Sistema Security",
+    "action": "Tentativa de login com usuário inexistente: admin@sistema.com.br",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:06"
+  },
+  {
+    "id": "log-1789425532752-183",
+    "userName": "Sistema Security",
+    "action": "Tentativa de login com usuário inexistente: admin@itl.com.br",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:38:52"
+  },
+  {
+    "id": "log-1789425529843-680",
+    "userName": "Sistema Security",
+    "action": "Tentativa de login com usuário inexistente: test@itl.com.br",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:38:49"
+  },
+  {
+    "id": "log-101",
+    "userName": "Super Admin Unity",
+    "action": "Sistema Central ITL Inicializado",
+    "category": "SYSTEM",
+    "details": "Serviço de gerenciamento de transmissões e gravações ativado",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-07-29 05:00:00"
+  }
+]

@@ -1,3 +1,6 @@
+// Central ITL - Visualizador DVR Nativo (Main Process)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 import { app, BrowserWindow, ipcMain, Tray, Menu, dialog } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -42,7 +45,29 @@ function readPreloadedConfig(): Record<string, any> {
   };
 }
 
+function resolvePreloadPath(): string {
+  const candidates = [
+    path.join(__dirname, 'preload.js'),
+    path.join(__dirname, '../main/preload.js'),
+    path.join(app.getAppPath(), 'dist/main/preload.js'),
+    path.join(app.getAppPath(), 'src/main/preload.js'),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || path.join(__dirname, 'preload.js');
+}
+
+function resolveHtmlPath(): string {
+  const candidates = [
+    path.join(__dirname, '../renderer/index.html'),
+    path.join(__dirname, '../../src/renderer/index.html'),
+    path.join(app.getAppPath(), 'dist/renderer/index.html'),
+    path.join(app.getAppPath(), 'src/renderer/index.html'),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || path.join(__dirname, '../renderer/index.html');
+}
+
 function createWindow() {
+  const preloadScript = resolvePreloadPath();
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -52,24 +77,22 @@ function createWindow() {
     backgroundColor: '#090d16',
     show: false,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: preloadScript,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      webSecurity: false, // Allows cross-origin video feeds from central cameras without browser CORS restrictions
+      webSecurity: false, // Allows cross-origin video feeds without CORS restrictions
     },
   });
 
-  const htmlPathInDist = path.join(__dirname, '../renderer/index.html');
-  const htmlPathInSrc = path.join(__dirname, '../../src/renderer/index.html');
-  const finalHtmlPath = fs.existsSync(htmlPathInDist) ? htmlPathInDist : htmlPathInSrc;
+  const finalHtmlPath = resolveHtmlPath();
   mainWindow.loadFile(finalHtmlPath);
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
   });
 
-  // F11 Toggle Fullscreen
+  // F11 Toggle Fullscreen & F12 DevTools shortcut
   mainWindow.webContents.on('before-input-event', (_, input) => {
     if (input.key === 'F11' && input.type === 'keyDown') {
       const isFull = mainWindow?.isFullScreen();
@@ -77,6 +100,9 @@ function createWindow() {
     }
     if (input.key === 'Escape' && input.type === 'keyDown' && mainWindow?.isFullScreen()) {
       mainWindow?.setFullScreen(false);
+    }
+    if ((input.key === 'F12' || (input.control && input.shift && input.key.toLowerCase() === 'i')) && input.type === 'keyDown') {
+      mainWindow?.webContents.toggleDevTools();
     }
   });
 
@@ -90,8 +116,13 @@ function createWindow() {
 
 function setupTray() {
   try {
-    const iconPath = path.join(__dirname, '../renderer/assets/icon.png');
-    if (fs.existsSync(iconPath)) {
+    const iconCandidates = [
+      path.join(__dirname, '../renderer/assets/icon.png'),
+      path.join(app.getAppPath(), 'src/renderer/assets/icon.png'),
+      path.join(app.getAppPath(), 'dist/renderer/assets/icon.png'),
+    ];
+    const iconPath = iconCandidates.find((p) => fs.existsSync(p));
+    if (iconPath) {
       tray = new Tray(iconPath);
       const contextMenu = Menu.buildFromTemplate([
         {
@@ -133,9 +164,9 @@ function setupTray() {
 
 app.whenReady().then(() => {
   vault = new SecurityVault(app.getPath('userData'));
+  setupIpcHandlers();
   createWindow();
   setupTray();
-  setupIpcHandlers();
 });
 
 function setupIpcHandlers() {
@@ -159,21 +190,47 @@ function setupIpcHandlers() {
   // Auth: Login
   ipcMain.handle('auth:login', async (_, payload: { serverUrl: string; email: string; password?: string }) => {
     try {
-      const cleanUrl = payload.serverUrl.trim().replace(/\/$/, '');
-      const loginEndpoint = `${cleanUrl}/api/v1/auth/login`;
+      const cleanUrl = (payload.serverUrl || '').trim().replace(/\/$/, '');
+      const loginPayload = {
+        email: payload.email,
+        username: payload.email,
+        password: payload.password,
+      };
 
-      const response = await fetch(loginEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: payload.email,
-          password: payload.password,
-        }),
-      });
+      let response: Response | null = null;
+      let usedEndpoint = `${cleanUrl}/api/v1/auth/login`;
 
-      const data = await response.json();
+      try {
+        response = await fetch(usedEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(loginPayload),
+        });
+      } catch (err) {
+        // Retry with /api/auth/login
+        usedEndpoint = `${cleanUrl}/api/auth/login`;
+        response = await fetch(usedEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(loginPayload),
+        });
+      }
+
+      if (!response.ok && response.status === 404) {
+        // Fallback to /api/auth/login
+        response = await fetch(`${cleanUrl}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(loginPayload),
+        });
+      }
+
+      const data: any = await response.json().catch(() => ({ success: false, error: `Resposta inválida da Central (${response?.status})` }));
       if (!response.ok || !data.success) {
-        return { success: false, error: data.error || `Erro HTTP ${response.status}: Falha no login` };
+        return {
+          success: false,
+          error: data.error || `Erro HTTP ${response.status}: Credenciais inválidas ou acesso não autorizado`,
+        };
       }
 
       const session: UserSession = {
@@ -209,14 +266,25 @@ function setupIpcHandlers() {
 
     try {
       const cleanUrl = session.serverUrl.replace(/\/$/, '');
-      const camerasEndpoint = `${cleanUrl}/api/v1/cameras`;
+      let camerasEndpoint = `${cleanUrl}/api/v1/cameras`;
 
-      const res = await fetch(camerasEndpoint, {
+      let res = await fetch(camerasEndpoint, {
         headers: {
           'Authorization': `Bearer ${session.token}`,
           'x-user-id': session.user.id,
         },
-      });
+      }).catch(() => null);
+
+      if (!res || !res.ok) {
+        // Fallback to /api/cameras
+        camerasEndpoint = `${cleanUrl}/api/cameras`;
+        res = await fetch(camerasEndpoint, {
+          headers: {
+            'Authorization': `Bearer ${session.token}`,
+            'x-user-id': session.user.id,
+          },
+        });
+      }
 
       if (!res.ok) {
         return { error: `HTTP ${res.status}`, cameras: [] };
@@ -304,3 +372,4 @@ function setupIpcHandlers() {
 app.on('before-quit', () => {
   isQuitting = true;
 });
+
