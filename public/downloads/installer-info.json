@@ -4,10 +4,10 @@
   "fileName": "itl-dvr-agent-windows.zip",
   "downloadUrl": "/downloads/itl-dvr-agent-windows.zip",
   "serverUrl": "https://centralitl.unityautomacoes.com.br",
-  "sizeBytes": 50226,
-  "sizeFormatted": "0.05 MB",
-  "sha256": "98e05f6af74c377e8f25ece5d75b2243a5856c52a92330be3921105edb04f73c",
-  "generatedAt": "2026-09-14T23:03:53.212Z",
+  "sizeBytes": 306195,
+  "sizeFormatted": "0.29 MB",
+  "sha256": "83bfa8377128857313519fd357f52ddde2f609fc501a457fe466b3cb6ac20a1a",
+  "generatedAt": "2026-09-14T23:26:29.352Z",
   "mode": "DVR_VIEWER",
   "cloudRecording": true
 }

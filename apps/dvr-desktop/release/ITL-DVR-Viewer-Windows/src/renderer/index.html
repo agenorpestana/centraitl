@@ -227,6 +227,17 @@
     .cam-cell.active-focus { border-color: #60a5fa; box-shadow: 0 0 10px rgba(96, 165, 250, 0.3); }
 
     /* Video Feed Element */
+    .cam-video-container {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      overflow: hidden;
+    }
     .cam-video {
       width: 100%;
       height: 100%;
@@ -235,28 +246,60 @@
       pointer-events: none;
     }
 
+    /* Channel Tag Top-Left (Identical to Web App Image 2) */
+    .cam-tag-channel {
+      position: absolute;
+      top: 6px;
+      left: 8px;
+      z-index: 20;
+      background: rgba(0, 0, 0, 0.85);
+      font-family: 'Consolas', monospace;
+      font-size: 11px;
+      color: #34d399;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+      pointer-events: none;
+    }
+    .cam-tag-channel .ping-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #34d399;
+      animation: blink 1s infinite;
+    }
+    .cam-tag-protocol {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-weight: 800;
+      font-family: sans-serif;
+      background: rgba(6, 78, 59, 0.9);
+      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.6);
+    }
+    .cam-tag-protocol.rtsp {
+      background: rgba(8, 51, 68, 0.9);
+      color: #67e8f9;
+      border: 1px solid rgba(6, 182, 212, 0.6);
+    }
+
     /* OSD Top Overlay */
     .osd-top {
       position: absolute;
       top: 6px;
-      left: 8px;
       right: 8px;
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      z-index: 10;
+      gap: 6px;
+      z-index: 20;
       pointer-events: none;
-    }
-    .osd-cam-title {
-      font-family: 'Consolas', 'Courier New', monospace;
-      font-size: 11px;
-      font-weight: 700;
-      background: rgba(0,0,0,0.75);
-      color: #fff;
-      padding: 2px 8px;
-      border-radius: 3px;
-      border: 1px solid rgba(255,255,255,0.15);
-      letter-spacing: 0.5px;
     }
     .osd-cloud-rec {
       display: inline-flex;
@@ -265,116 +308,294 @@
       font-size: 10px;
       font-weight: 800;
       color: #ef4444;
-      background: rgba(0,0,0,0.75);
-      padding: 2px 6px;
-      border-radius: 3px;
+      background: rgba(0,0,0,0.8);
+      padding: 2px 7px;
+      border-radius: 4px;
       border: 1px solid rgba(239, 68, 68, 0.4);
     }
     .rec-dot { width: 6px; height: 6px; border-radius: 50%; background: #ef4444; animation: blink 1s infinite; }
     @keyframes blink { 50% { opacity: 0.2; } }
 
-    /* OSD Bottom Overlay */
-    .osd-bottom {
+    /* Bottom Label Bar (Identical to Web App Image 2) */
+    .cam-bottom-bar {
       position: absolute;
-      bottom: 6px;
-      left: 8px;
-      right: 8px;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: rgba(10, 15, 29, 0.92);
+      border-top: 1px solid rgba(30, 41, 59, 0.85);
+      padding: 4px 10px;
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      z-index: 10;
-      pointer-events: none;
+      justify-content: space-between;
+      z-index: 20;
+      backdrop-filter: blur(4px);
     }
-    .osd-timestamp {
-      font-family: 'Consolas', 'Courier New', monospace;
+    .cam-bottom-name {
+      font-size: 12px;
+      font-weight: 700;
+      color: #f1f5f9;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 60%;
+    }
+    .cam-bottom-location {
       font-size: 11px;
-      font-weight: 700;
-      color: #22c55e;
-      background: rgba(0,0,0,0.75);
-      padding: 2px 6px;
-      border-radius: 3px;
-    }
-    .osd-fps {
-      font-size: 10px;
-      font-weight: 700;
       color: #94a3b8;
-      background: rgba(0,0,0,0.75);
-      padding: 2px 6px;
-      border-radius: 3px;
+      font-family: monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: right;
     }
 
     /* Hover Control Action Overlay */
-    .cam-action-bar {
+    .cam-hover-actions {
       position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
+      bottom: 30px;
+      right: 8px;
       display: flex;
-      gap: 8px;
-      background: rgba(15, 23, 42, 0.85);
-      border: 1px solid var(--border);
-      padding: 6px 10px;
-      border-radius: 8px;
+      gap: 6px;
+      z-index: 25;
       opacity: 0;
       transition: opacity 0.2s ease;
-      z-index: 20;
     }
-    .cam-cell:hover .cam-action-bar { opacity: 1; }
-    .btn-cam-action {
-      background: #1e293b;
-      border: 1px solid #334155;
-      color: #fff;
-      padding: 6px 8px;
-      border-radius: 4px;
+    .cam-cell:hover .cam-hover-actions { opacity: 1; }
+    .btn-cam-overlay {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(51, 65, 85, 0.9);
+      color: #e2e8f0;
+      padding: 5px 10px;
+      border-radius: 6px;
       font-size: 11px;
       cursor: pointer;
-      font-weight: 600;
-      transition: all 0.15s;
-    }
-    .btn-cam-action:hover { background: var(--primary); border-color: var(--primary); }
-
-    /* Offline State in Cell */
-    .cam-status-badge {
-      position: absolute;
-      top: 32px;
-      left: 8px;
+      font-weight: 700;
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      background: rgba(15, 23, 42, 0.9);
-      border: 1px solid rgba(245, 158, 11, 0.5);
-      color: #fbbf24;
-      font-size: 10px;
-      font-weight: 700;
-      padding: 2px 7px;
-      border-radius: 4px;
-      z-index: 15;
-      pointer-events: none;
-      transition: opacity 0.2s;
+      backdrop-filter: blur(4px);
+      transition: all 0.15s;
     }
-    .cam-status-badge.hidden { display: none; }
-    .cam-status-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #fbbf24;
-      animation: pulse-dot 1.2s infinite;
+    .btn-cam-overlay:hover {
+      background: #2563eb;
+      border-color: #3b82f6;
+      color: #fff;
     }
-    @keyframes pulse-dot { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }
 
-    .cam-offline-banner {
+    /* Loading Overlay State */
+    .cam-loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(7, 10, 18, 0.92);
+      backdrop-filter: blur(4px);
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 8px;
-      color: #64748b;
-      font-size: 12px;
-      font-weight: 600;
+      gap: 10px;
+      z-index: 15;
       text-align: center;
-      padding: 12px;
+      padding: 16px;
     }
-    .cam-offline-banner .icon { font-size: 24px; color: #475569; }
+    .loading-spinner-ring {
+      width: 38px;
+      height: 38px;
+      border: 3px solid rgba(16, 185, 129, 0.15);
+      border-top-color: #10b981;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+    .loading-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #f8fafc;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .loading-subtitle {
+      font-size: 11px;
+      color: #94a3b8;
+      font-family: monospace;
+    }
+
+    /* OFFLINE STATE (Matching Web App Image 2 exactly) */
+    .cam-offline-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(8, 12, 22, 0.96);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      text-align: center;
+      gap: 10px;
+      z-index: 18;
+    }
+    .offline-icon-box {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: rgba(136, 19, 55, 0.35);
+      border: 1px solid rgba(244, 63, 94, 0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #f43f5e;
+      box-shadow: 0 4px 12px rgba(244, 63, 94, 0.15);
+    }
+    .offline-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-top: 2px;
+    }
+    .offline-subtitle {
+      font-size: 11px;
+      color: #94a3b8;
+      line-height: 1.4;
+      max-width: 240px;
+    }
+    .offline-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .btn-offline-action {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-offline-reconnect {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #f1f5f9;
+    }
+    .btn-offline-reconnect:hover {
+      background: #334155;
+      border-color: #475569;
+    }
+    .btn-offline-diag {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: #34d399;
+    }
+    .btn-offline-diag:hover {
+      background: rgba(16, 185, 129, 0.25);
+      border-color: rgba(16, 185, 129, 0.6);
+    }
+    .btn-offline-fullscreen {
+      position: absolute;
+      bottom: 30px;
+      right: 10px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      padding: 4px 9px;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+    }
+    .btn-offline-fullscreen:hover {
+      background: #2563eb;
+      border-color: #3b82f6;
+      color: #fff;
+    }
+
+    /* Modal Diagnostic Test */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(3, 7, 18, 0.85);
+      backdrop-filter: blur(6px);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-backdrop.hidden { display: none !important; }
+    .modal-box {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      max-width: 520px;
+      width: 100%;
+      padding: 22px;
+      color: #f8fafc;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      position: relative;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #1e293b;
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+    }
+    .modal-title { font-size: 14px; font-weight: 800; display: flex; align-items: center; gap: 8px; color: #38bdf8; }
+    .btn-modal-close {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      border-radius: 6px;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .btn-modal-close:hover { color: #fff; background: #334155; }
+    .diag-status-card {
+      padding: 12px 14px;
+      border-radius: 10px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 12px;
+    }
+    .diag-status-card.success {
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      color: #34d399;
+    }
+    .diag-status-card.error {
+      background: rgba(244, 63, 94, 0.12);
+      border: 1px solid rgba(244, 63, 94, 0.35);
+      color: #f43f5e;
+    }
+    .diag-logs {
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 10px;
+      font-family: 'Consolas', monospace;
+      font-size: 11px;
+      color: #cbd5e1;
+      max-height: 160px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
 
     /* Empty cameras notice */
     .empty-cameras {
@@ -484,6 +705,44 @@
     </div>
   </main>
 
+  <!-- DIAGNOSTIC MODAL -->
+  <div id="diagModal" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          <span id="diagModalTitle">Diagnóstico da Câmera</span>
+        </div>
+        <button id="btnDiagClose" class="btn-modal-close" title="Fechar">✕</button>
+      </div>
+
+      <div id="diagModalBody">
+        <div id="diagLoading" class="py-6 text-center" style="display: none; padding: 24px; text-align: center;">
+          <div class="loading-spinner-ring" style="margin: 0 auto 12px;"></div>
+          <div style="font-size: 13px; font-weight: 700; color: #f8fafc;">Testando sinal RTSP / RTMP...</div>
+          <div style="font-size: 11px; color: #94a3b8; font-family: monospace; margin-top: 4px;">Validando handshake e pacotes de vídeo</div>
+        </div>
+
+        <div id="diagStatusCard" class="diag-status-card success" style="display: none;">
+          <div>
+            <div id="diagStatusTitle" style="font-weight: 800; font-size: 12px; margin-bottom: 3px;">SINAL DETECTADO</div>
+            <div id="diagStatusMsg" style="font-size: 11px; color: #cbd5e1;">A câmera está enviando dados de transmissão normalmente.</div>
+          </div>
+        </div>
+
+        <div style="font-size: 11px; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">Logs de Diagnóstico do Servidor:</div>
+        <pre id="diagLogs" class="diag-logs">Aguardando início do teste...</pre>
+
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
+          <button id="btnDiagRetry" class="btn-offline-action btn-offline-reconnect" style="padding: 7px 14px;">↺ Retestar Câmera</button>
+          <button id="btnDiagDismiss" class="btn-offline-action btn-offline-diag" style="padding: 7px 14px;">Fechar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     // Polyfill to prevent CommonJS "exports is not defined" error in Electron / browser renderer
     if (typeof exports === 'undefined') {
@@ -491,6 +750,14 @@
     }
     if (typeof module === 'undefined') {
       window.module = { exports: window.exports };
+    }
+  </script>
+  <!-- Load Local HLS.js first, fallback to CDN if needed -->
+  <script src="hls.min.js"></script>
+  <script>
+    if (!window.Hls) {
+      console.warn('[HLS] Local hls.min.js not found, loading from CDN...');
+      document.write('<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"><\\/script>');
     }
   </script>
   <script src="renderer.js"></script>

@@ -93,89 +93,277 @@
     });
   }
 
-  // Initialize resilient camera stream with auto-reconnection and staggered startup
-  function initCameraStream(cam, cell, index) {
-    const img = cell.querySelector('.cam-video');
-    const badge = cell.querySelector('.cam-status-badge');
-    const badgeText = cell.querySelector('.cam-status-text');
-    if (!img) return;
+  // Diagnostic Modal State
+  let currentDiagnosticCam = null;
+  const diagModal = document.getElementById('diagModal');
+  const btnDiagClose = document.getElementById('btnDiagClose');
+  const btnDiagDismiss = document.getElementById('btnDiagDismiss');
+  const btnDiagRetry = document.getElementById('btnDiagRetry');
 
-    let isActive = true;
-    let retryTimer = null;
-    let stallInterval = null;
-    let retryDelay = 2000;
-    let consecutiveFails = 0;
-    let lastFrameTime = Date.now();
+  if (btnDiagClose) btnDiagClose.addEventListener('click', function() { if (diagModal) diagModal.classList.add('hidden'); });
+  if (btnDiagDismiss) btnDiagDismiss.addEventListener('click', function() { if (diagModal) diagModal.classList.add('hidden'); });
+  if (btnDiagRetry) {
+    btnDiagRetry.addEventListener('click', function() {
+      if (currentDiagnosticCam) runCameraDiagnostic(currentDiagnosticCam);
+    });
+  }
 
+  // Diagnostic Test execution
+  async function runCameraDiagnostic(cam) {
+    currentDiagnosticCam = cam;
+    const title = document.getElementById('diagModalTitle');
+    const loading = document.getElementById('diagLoading');
+    const statusCard = document.getElementById('diagStatusCard');
+    const statusTitle = document.getElementById('diagStatusTitle');
+    const statusMsg = document.getElementById('diagStatusMsg');
+    const logs = document.getElementById('diagLogs');
+
+    if (!diagModal) return;
+    diagModal.classList.remove('hidden');
+
+    if (title) title.textContent = 'Diagnóstico: ' + (cam.name || cam.id);
+    if (loading) loading.style.display = 'block';
+    if (statusCard) statusCard.style.display = 'none';
+    if (logs) logs.textContent = 'Testando conectividade RTSP / RTMP para [' + (cam.name || cam.id) + ']...\n';
+
+    try {
+      const cleanServer = currentServerUrl.replace(/\/$/, '');
+      const resp = await fetch(cleanServer + '/api/cameras/' + cam.id + '/test-connection', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': currentAuthToken ? ('Bearer ' + currentAuthToken) : '',
+          'x-user-id': currentUserId || ''
+        }
+      });
+
+      const res = await resp.json();
+      if (loading) loading.style.display = 'none';
+
+      if (res && res.success) {
+        if (statusCard) {
+          statusCard.className = 'diag-status-card success';
+          statusCard.style.display = 'flex';
+        }
+        if (statusTitle) statusTitle.textContent = 'SINAL DETECTADO COM SUCESSO';
+        if (statusMsg) statusMsg.textContent = res.message || 'Câmera respondendo e gerando dados de transmissão.';
+      } else {
+        if (statusCard) {
+          statusCard.className = 'diag-status-card error';
+          statusCard.style.display = 'flex';
+        }
+        if (statusTitle) statusTitle.textContent = 'SINAL NÃO DETECTADO';
+        if (statusMsg) statusMsg.textContent = (res && res.message) || 'Nenhum pacote de vídeo recebido no servidor no momento.';
+      }
+
+      if (logs) {
+        let logText = (res && res.logs && res.logs.join('\n')) || '';
+        if (res && res.details) logText += '\nDetalhes: ' + res.details;
+        logs.textContent = logText || 'Nenhum detalhe adicional reportado pelo servidor.';
+      }
+    } catch (err) {
+      if (loading) loading.style.display = 'none';
+      if (statusCard) {
+        statusCard.className = 'diag-status-card error';
+        statusCard.style.display = 'flex';
+      }
+      if (statusTitle) statusTitle.textContent = 'ERRO DE REQUISIÇÃO';
+      if (statusMsg) statusMsg.textContent = 'Falha ao contatar a Central ITL: ' + (err.message || 'Verifique sua conexão');
+      if (logs) logs.textContent = String(err.stack || err);
+    }
+  }
+
+  // Get HLS URLs for camera
+  function getCameraHlsUrls(cam, isFocus) {
     const cleanServer = currentServerUrl.replace(/\/$/, '');
-    const w = currentLayout === '1x1' ? '1280' : (currentLayout === '2x2' ? '960' : '640');
-    const fps = currentLayout === '1x1' ? '20' : (currentLayout === '2x2' ? '15' : '10');
-    const streamBase = cleanServer + '/api/cameras/' + cam.id + '/stream?w=' + w + '&fps=' + fps;
+    const rawKey = cam.streamKey || cam.id || 'stream';
+    const cleanKey = String(rawKey).replace(/^cam[-_]/i, '');
+    const mainUrl = cleanServer + '/live/cam_' + cleanKey + '.m3u8';
+    const subUrl = cleanServer + '/live/cam_' + cleanKey + '_sub.m3u8';
 
-    function connect() {
-      if (!isActive) return;
-      img.src = streamBase + '&_t=' + Date.now();
+    return {
+      primary: isFocus ? mainUrl : subUrl,
+      fallback: mainUrl
+    };
+  }
+
+  // Initialize HLS camera stream matching Web App Image 2 exactly
+  function initCameraStream(cam, cell, index) {
+    const video = cell.querySelector('.cam-video');
+    const loadingOverlay = cell.querySelector('.cam-loading-overlay');
+    const offlineOverlay = cell.querySelector('.cam-offline-overlay');
+    const btnRetry = cell.querySelector('.btn-retry-stream');
+    const btnDiag = cell.querySelector('.btn-diag-stream');
+    const btnFullCell = cell.querySelector('.btn-fullscreen-trigger');
+
+    if (!video) return;
+
+    let hlsInstance = null;
+    let isActive = true;
+    let isFallback = false;
+    let currentAttempt = 0;
+    const isFocus = (currentLayout === '1x1');
+    const urls = getCameraHlsUrls(cam, isFocus);
+
+    function showLoading() {
+      if (loadingOverlay) loadingOverlay.classList.remove('hidden');
+      if (offlineOverlay) offlineOverlay.classList.add('hidden');
     }
 
-    img.onload = function() {
-      lastFrameTime = Date.now();
-      consecutiveFails = 0;
-      retryDelay = 2000;
-      if (badge) badge.classList.add('hidden');
-    };
+    function showOnline() {
+      if (loadingOverlay) loadingOverlay.classList.add('hidden');
+      if (offlineOverlay) offlineOverlay.classList.add('hidden');
+    }
 
-    img.onerror = function() {
-      if (!isActive) return;
-      consecutiveFails++;
+    function showOffline() {
+      if (loadingOverlay) loadingOverlay.classList.add('hidden');
+      if (offlineOverlay) offlineOverlay.classList.remove('hidden');
+    }
 
-      // Keep current image rendered (do NOT blank to black), show reconnect badge
-      if (badge) {
-        const sec = Math.round(retryDelay / 1000);
-        if (badgeText) badgeText.textContent = 'Reconectando em ' + sec + 's...';
-        badge.classList.remove('hidden');
+    function cleanupHls() {
+      if (hlsInstance) {
+        try {
+          hlsInstance.destroy();
+        } catch (e) {}
+        hlsInstance = null;
       }
+    }
 
-      if (retryTimer) clearTimeout(retryTimer);
-      retryTimer = setTimeout(function() {
-        if (!isActive) return;
-        connect();
-        // Exponential backoff up to 8s
-        retryDelay = Math.min(Math.round(retryDelay * 1.5), 8000);
-      }, retryDelay);
-    };
-
-    // Stagger stream connections (150ms per camera) to avoid simultaneous CPU/socket spike on server
-    const staggerDelay = Math.min(index * 150, 2500);
-    const startTimer = setTimeout(function() {
-      if (isActive) connect();
-    }, staggerDelay);
-
-    // Watchdog: detect silent stream stalls
-    stallInterval = setInterval(function() {
+    function startHls(streamUrl) {
       if (!isActive) return;
-      // If no new frames for 20s and not currently in retry, reconnect
-      if (Date.now() - lastFrameTime > 20000 && !retryTimer) {
-        if (badge) {
-          if (badgeText) badgeText.textContent = 'Sinal estagnado, reconectando...';
-          badge.classList.remove('hidden');
-        }
-        connect();
+      showLoading();
+      cleanupHls();
+
+      const HlsClass = window.Hls;
+      if (HlsClass && HlsClass.isSupported()) {
+        hlsInstance = new HlsClass({
+          enableWorker: true,
+          lowLatencyMode: true,
+          backBufferLength: 4,
+          maxBufferLength: 6,
+          maxMaxBufferLength: 10,
+          liveSyncDurationCount: 1,
+          liveMaxLatencyDurationCount: 3,
+          manifestLoadingTimeOut: 10000,
+          manifestLoadingMaxRetry: 6,
+          levelLoadingTimeOut: 10000,
+          levelLoadingMaxRetry: 6,
+          fragLoadingTimeOut: 12000,
+          fragLoadingMaxRetry: 6,
+        });
+
+        hlsInstance.loadSource(streamUrl);
+        hlsInstance.attachMedia(video);
+
+        hlsInstance.on(HlsClass.Events.MANIFEST_PARSED, function() {
+          showOnline();
+          video.play().catch(function() {});
+        });
+
+        hlsInstance.on(HlsClass.Events.FRAG_LOADED, function() {
+          showOnline();
+        });
+
+        hlsInstance.on(HlsClass.Events.ERROR, function(event, data) {
+          if (!isActive) return;
+          if (data && data.fatal) {
+            console.warn('[DVR HLS Fatal]', cam.name, data.type, data.details);
+
+            // If sub-stream failed, try main stream
+            if (!isFallback && streamUrl.includes('_sub.m3u8')) {
+              isFallback = true;
+              console.log('[DVR HLS] Tentando fluxo principal para:', cam.name);
+              startHls(urls.fallback);
+              return;
+            }
+
+            // Retry on network error up to 2 times
+            if (data.type === HlsClass.ErrorTypes.NETWORK_ERROR && currentAttempt < 2) {
+              currentAttempt++;
+              setTimeout(function() {
+                if (isActive && hlsInstance) {
+                  try { hlsInstance.startLoad(); } catch (e) { showOffline(); }
+                }
+              }, 2000);
+              return;
+            }
+
+            // Unrecoverable: camera is offline (no RTMP/RTSP signal)
+            showOffline();
+          }
+        });
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = streamUrl;
+        video.onloadedmetadata = function() {
+          showOnline();
+          video.play().catch(function() {});
+        };
+        video.onerror = function() {
+          if (!isFallback && streamUrl.includes('_sub.m3u8')) {
+            isFallback = true;
+            video.src = urls.fallback;
+            return;
+          }
+          showOffline();
+        };
+      } else {
+        showOffline();
       }
-    }, 10000);
+    }
+
+    // Connect video events
+    video.onplaying = function() { showOnline(); };
+    video.oncanplay = function() { showOnline(); };
+
+    // Stagger startup slightly so 16 cameras don't spike simultaneously
+    const startDelay = Math.min(index * 120, 2000);
+    const timer = setTimeout(function() {
+      if (isActive) {
+        startHls(urls.primary);
+      }
+    }, startDelay);
+
+    // Event listeners
+    if (btnRetry) {
+      btnRetry.addEventListener('click', function(e) {
+        e.stopPropagation();
+        isFallback = false;
+        currentAttempt = 0;
+        startHls(urls.primary);
+      });
+    }
+
+    if (btnDiag) {
+      btnDiag.addEventListener('click', function(e) {
+        e.stopPropagation();
+        runCameraDiagnostic(cam);
+      });
+    }
+
+    if (btnFullCell) {
+      btnFullCell.addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggleFocusCamera(cam.id);
+      });
+    }
 
     activeStreamControllers.set(cam.id, {
       stop: function() {
         isActive = false;
-        clearTimeout(startTimer);
-        if (retryTimer) clearTimeout(retryTimer);
-        if (stallInterval) clearInterval(stallInterval);
-        img.onload = null;
-        img.onerror = null;
-        img.src = '';
+        clearTimeout(timer);
+        cleanupHls();
+        if (video) {
+          try {
+            video.pause();
+            video.removeAttribute('src');
+            video.load();
+          } catch (e) {}
+        }
       },
       reload: function() {
-        lastFrameTime = Date.now();
-        connect();
+        isFallback = false;
+        currentAttempt = 0;
+        startHls(urls.primary);
       }
     });
   }
@@ -221,31 +409,78 @@
         const isFocused = cam.id === focusedCameraId;
         const camNumber = String(idx + 1).padStart(2, '0');
         const camName = cam.name || ('CÂMERA ' + camNumber);
-        const protocol = (cam.protocol || 'RTSP').toUpperCase();
-        const resolution = cam.resolution || '1080p';
-        const fps = cam.fps || 30;
+        const protocol = (cam.protocol || 'RTMP').toUpperCase();
+        const location = cam.location || ((cam.city || 'Itamaraju') + ' - ' + (cam.stateUf || 'BA'));
 
         return (
-          '<div class="cam-cell ' + (isFocused ? 'active-focus' : '') + '" data-camera-id="' + cam.id + '" title="Duplo clique para tela cheia desta câmera">' +
-            '<img class="cam-video" data-camera-id="' + cam.id + '" alt="' + escapeHtml(camName) + '" />' +
-            '<div class="cam-status-badge hidden" data-camera-id="' + cam.id + '">' +
-              '<span class="cam-status-dot"></span>' +
-              '<span class="cam-status-text">Conectando...</span>' +
+          '<div class="cam-cell ' + (isFocused ? 'active-focus' : '') + '" data-camera-id="' + cam.id + '" title="Duplo clique para focar">' +
+            '<div class="cam-video-container">' +
+              '<video class="cam-video" autoplay playsinline muted></video>' +
             '</div>' +
+
+            '<!-- Channel Badge Top-Left -->' +
+            '<div class="cam-tag-channel">' +
+              '<span class="ping-dot"></span>' +
+              '<span>[CH ' + camNumber + ']</span>' +
+              '<span class="cam-tag-protocol ' + (protocol === 'RTSP' ? 'rtsp' : '') + '">' + protocol + ' &bull; HLS</span>' +
+            '</div>' +
+
+            '<!-- OSD Top-Right Recording Indicator -->' +
             '<div class="osd-top">' +
-              '<div class="osd-cam-title">[CAM ' + camNumber + '] ' + escapeHtml(camName) + ' &bull; ' + protocol + '</div>' +
               '<div class="osd-cloud-rec"><span class="rec-dot"></span>NUVEM</div>' +
             '</div>' +
-            '<div class="osd-bottom">' +
-              '<div class="osd-timestamp live-timestamp-osd">--/--/---- --:--:--</div>' +
-              '<div class="osd-fps">' + resolution + ' &bull; ' + fps + ' FPS</div>' +
+
+            '<!-- Loading Overlay State -->' +
+            '<div class="cam-loading-overlay">' +
+              '<div class="loading-spinner-ring"></div>' +
+              '<div class="loading-title">Carregando Câmera...</div>' +
+              '<div class="loading-subtitle">Conectando ao fluxo ' + protocol + '...</div>' +
             '</div>' +
-            '<div class="cam-action-bar">' +
-              '<button class="btn-cam-action btn-cam-focus" data-id="' + cam.id + '" title="Alternar foco 1x1">' +
+
+            '<!-- OFFLINE STATE (Matching Image 2 exactly) -->' +
+            '<div class="cam-offline-overlay hidden">' +
+              '<div class="offline-icon-box">' +
+                '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+                  '<line x1="1" y1="1" x2="23" y2="23"/>' +
+                  '<path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/>' +
+                  '<path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>' +
+                  '<path d="M10.71 5.05A16 16 0 0 1 22.58 9"/>' +
+                  '<path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/>' +
+                  '<path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>' +
+                  '<line x1="12" y1="20" x2="12.01" y2="20"/>' +
+                '</svg>' +
+              '</div>' +
+              '<div class="offline-title">Transmissão da Câmera Indisponível</div>' +
+              '<div class="offline-subtitle">Sinal ' + protocol + ' sem pacotes no momento.</div>' +
+              '<div class="offline-actions">' +
+                '<button class="btn-offline-action btn-offline-reconnect btn-retry-stream" data-id="' + cam.id + '">' +
+                  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>' +
+                  '<span>Reconectar</span>' +
+                '</button>' +
+                '<button class="btn-offline-action btn-offline-diag btn-diag-stream" data-id="' + cam.id + '">' +
+                  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>' +
+                  '<span>Diagnóstico</span>' +
+                '</button>' +
+              '</div>' +
+              '<button class="btn-offline-fullscreen btn-fullscreen-trigger" data-id="' + cam.id + '">' +
+                '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.5"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>' +
+                '<span>Tela Cheia</span>' +
+              '</button>' +
+            '</div>' +
+
+            '<!-- Bottom Label Bar (Matching Image 2) -->' +
+            '<div class="cam-bottom-bar">' +
+              '<div class="cam-bottom-name" title="' + escapeHtml(camName) + '">' + escapeHtml(camName) + '</div>' +
+              '<div class="cam-bottom-location" title="' + escapeHtml(location) + '">' + escapeHtml(location) + '</div>' +
+            '</div>' +
+
+            '<!-- Hover Actions for Online State -->' +
+            '<div class="cam-hover-actions">' +
+              '<button class="btn-cam-overlay btn-cam-focus" data-id="' + cam.id + '" title="Focar câmera">' +
                 (currentLayout === '1x1' ? 'Grade' : 'Focar') +
               '</button>' +
-              '<button class="btn-cam-action btn-cam-snapshot" data-id="' + cam.id + '" data-name="' + escapeHtml(camName) + '" title="Capturar foto instantânea">' +
-                'Capturar Foto' +
+              '<button class="btn-cam-overlay btn-cam-snapshot" data-id="' + cam.id + '" data-name="' + escapeHtml(camName) + '" title="Capturar Foto">' +
+                'Foto' +
               '</button>' +
             '</div>' +
           '</div>'
@@ -284,15 +519,15 @@
         e.stopPropagation();
         const name = btn.dataset.name || 'camera';
         const cell = btn.closest('.cam-cell');
-        const img = cell ? cell.querySelector('.cam-video') : null;
-        if (img) {
+        const media = cell ? cell.querySelector('.cam-video') : null;
+        if (media) {
           try {
             const canvas = document.createElement('canvas');
-            canvas.width = img.naturalWidth || 1280;
-            canvas.height = img.naturalHeight || 720;
+            canvas.width = media.videoWidth || media.naturalWidth || 1280;
+            canvas.height = media.videoHeight || media.naturalHeight || 720;
             const ctx = canvas.getContext('2d');
             if (ctx) {
-              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              ctx.drawImage(media, 0, 0, canvas.width, canvas.height);
               const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
               if (window.dvrApi && window.dvrApi.saveSnapshot) {
                 const res = await window.dvrApi.saveSnapshot({ dataUrl: dataUrl, cameraName: name });

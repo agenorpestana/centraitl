@@ -27,6 +27,7 @@ copyIfExists(path.join(srcDir, 'main', 'security-vault.js'), path.join(distDir, 
 // 2. Copy renderer files
 copyIfExists(path.join(srcDir, 'renderer', 'index.html'), path.join(distDir, 'renderer', 'index.html'));
 copyIfExists(path.join(srcDir, 'renderer', 'renderer.js'), path.join(distDir, 'renderer', 'renderer.js'));
+copyIfExists(path.join(srcDir, 'renderer', 'hls.min.js'), path.join(distDir, 'renderer', 'hls.min.js'));
 
 // Copy renderer assets if exist
 const srcAssets = path.join(srcDir, 'renderer', 'assets');

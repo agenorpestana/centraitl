@@ -4,7 +4,7 @@
 ====================================================================
 
 Servidor Central: https://centralitl.unityautomacoes.com.br
-Gerado em: 2026-09-14T23:03:53.212Z
+Gerado em: 2026-09-14T23:26:29.352Z
 
 Este pacote contém o Visualizador DVR Nativo para Windows, permitindo
 monitorar todas as suas câmeras em formato de mural DVR (grades 1x1,
