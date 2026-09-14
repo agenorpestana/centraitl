@@ -3886,21 +3886,24 @@ async function startServer() {
       return res.status(404).send('URL da câmera indisponível ou não configurada');
     }
 
-    const width = (req.query.w || '1280').toString();
-    const fps = (req.query.fps || '15').toString();
+    const width = (req.query.w || '800').toString();
+    const fps = (req.query.fps || '10').toString();
 
     const ffmpegArgs: string[] = [];
 
     if (targetUrl.startsWith('rtsp://')) {
-      ffmpegArgs.push('-rtsp_transport', 'tcp');
+      ffmpegArgs.push('-rtsp_transport', 'tcp', '-stimeout', '15000000');
+    } else if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
+      ffmpegArgs.push('-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
     }
 
     ffmpegArgs.push(
-      '-analyzeduration', '1000000',
-      '-probesize', '1000000',
+      '-analyzeduration', '2000000',
+      '-probesize', '2000000',
       '-i', targetUrl,
       '-vf', `fps=${fps},scale=${width}:-1`,
-      '-q:v', '5',
+      '-q:v', '6',
+      '-threads', '1',
       '-f', 'mpjpeg',
       '-boundary_tag', 'ffmpegboundary',
       'pipe:1'
@@ -3930,6 +3933,7 @@ async function startServer() {
       }
     };
 
+    // 25s connection timeout to accommodate multi-camera startup load
     const timeoutTimer = setTimeout(() => {
       if (!hasReceivedData) {
         killProc();
@@ -3939,7 +3943,7 @@ async function startServer() {
           try { res.end(); } catch (e) {}
         }
       }
-    }, 6000);
+    }, 25000);
 
     proc.stdout.on('data', (chunk) => {
       hasReceivedData = true;
@@ -5292,7 +5296,7 @@ async function startServer() {
   });
 
   // Real-time direct MJPEG stream endpoint for cameras (Instantaneous low-latency stream for RTSP / RTMP / HLS fallback)
-  app.get(['/api/cameras/:id/stream', '/api/cameras/:id/mjpeg', '/api/cameras/:id/live-feed'], async (req, res) => {
+  app.get(['/api/cameras/:id/mjpeg', '/api/cameras/:id/live-feed'], async (req, res) => {
     const { id } = req.params;
     const cleanId = id.replace(/[^a-zA-Z0-9_-]/g, '_');
     const rawId = id.replace(/^cam[-_]/i, '');

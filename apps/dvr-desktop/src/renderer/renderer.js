@@ -61,6 +61,18 @@
   setInterval(updateClock, 1000);
   updateClock();
 
+  // Active stream controllers map (camId -> { stop, reload, isActive })
+  const activeStreamControllers = new Map();
+
+  function stopAllStreams() {
+    activeStreamControllers.forEach(function(ctrl) {
+      if (ctrl && typeof ctrl.stop === 'function') {
+        try { ctrl.stop(); } catch (e) {}
+      }
+    });
+    activeStreamControllers.clear();
+  }
+
   // Escape HTML helper
   function escapeHtml(str) {
     return String(str || '')
@@ -81,9 +93,100 @@
     });
   }
 
+  // Initialize resilient camera stream with auto-reconnection and staggered startup
+  function initCameraStream(cam, cell, index) {
+    const img = cell.querySelector('.cam-video');
+    const badge = cell.querySelector('.cam-status-badge');
+    const badgeText = cell.querySelector('.cam-status-text');
+    if (!img) return;
+
+    let isActive = true;
+    let retryTimer = null;
+    let stallInterval = null;
+    let retryDelay = 2000;
+    let consecutiveFails = 0;
+    let lastFrameTime = Date.now();
+
+    const cleanServer = currentServerUrl.replace(/\/$/, '');
+    const w = currentLayout === '1x1' ? '1280' : (currentLayout === '2x2' ? '960' : '640');
+    const fps = currentLayout === '1x1' ? '20' : (currentLayout === '2x2' ? '15' : '10');
+    const streamBase = cleanServer + '/api/cameras/' + cam.id + '/stream?w=' + w + '&fps=' + fps;
+
+    function connect() {
+      if (!isActive) return;
+      img.src = streamBase + '&_t=' + Date.now();
+    }
+
+    img.onload = function() {
+      lastFrameTime = Date.now();
+      consecutiveFails = 0;
+      retryDelay = 2000;
+      if (badge) badge.classList.add('hidden');
+    };
+
+    img.onerror = function() {
+      if (!isActive) return;
+      consecutiveFails++;
+
+      // Keep current image rendered (do NOT blank to black), show reconnect badge
+      if (badge) {
+        const sec = Math.round(retryDelay / 1000);
+        if (badgeText) badgeText.textContent = 'Reconectando em ' + sec + 's...';
+        badge.classList.remove('hidden');
+      }
+
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(function() {
+        if (!isActive) return;
+        connect();
+        // Exponential backoff up to 8s
+        retryDelay = Math.min(Math.round(retryDelay * 1.5), 8000);
+      }, retryDelay);
+    };
+
+    // Stagger stream connections (150ms per camera) to avoid simultaneous CPU/socket spike on server
+    const staggerDelay = Math.min(index * 150, 2500);
+    const startTimer = setTimeout(function() {
+      if (isActive) connect();
+    }, staggerDelay);
+
+    // Watchdog: detect silent stream stalls
+    stallInterval = setInterval(function() {
+      if (!isActive) return;
+      // If no new frames for 20s and not currently in retry, reconnect
+      if (Date.now() - lastFrameTime > 20000 && !retryTimer) {
+        if (badge) {
+          if (badgeText) badgeText.textContent = 'Sinal estagnado, reconectando...';
+          badge.classList.remove('hidden');
+        }
+        connect();
+      }
+    }, 10000);
+
+    activeStreamControllers.set(cam.id, {
+      stop: function() {
+        isActive = false;
+        clearTimeout(startTimer);
+        if (retryTimer) clearTimeout(retryTimer);
+        if (stallInterval) clearInterval(stallInterval);
+        img.onload = null;
+        img.onerror = null;
+        img.src = '';
+      },
+      reload: function() {
+        lastFrameTime = Date.now();
+        connect();
+      }
+    });
+  }
+
   // Render Camera Grid
   function renderCameraGrid() {
     if (!videoGrid) return;
+
+    // Clean up existing streams before rebuilding grid
+    stopAllStreams();
+
     videoGrid.className = 'camera-grid grid-' + currentLayout;
 
     if (!currentCameras || currentCameras.length === 0) {
@@ -113,8 +216,6 @@
       camerasToDisplay = currentCameras.slice(0, capacity);
     }
 
-    const cleanServer = currentServerUrl.replace(/\/$/, '');
-
     videoGrid.innerHTML = camerasToDisplay
       .map(function(cam, idx) {
         const isFocused = cam.id === focusedCameraId;
@@ -124,12 +225,13 @@
         const resolution = cam.resolution || '1080p';
         const fps = cam.fps || 30;
 
-        const streamUrl = cleanServer + '/api/cameras/' + cam.id + '/stream';
-        const snapshotFallback = cleanServer + '/api/cameras/' + cam.id + '/snapshot?t=' + Date.now();
-
         return (
           '<div class="cam-cell ' + (isFocused ? 'active-focus' : '') + '" data-camera-id="' + cam.id + '" title="Duplo clique para tela cheia desta câmera">' +
-            '<img class="cam-video" src="' + streamUrl + '" alt="' + escapeHtml(camName) + '" onerror="this.onerror=null; this.src=\'' + snapshotFallback + '\';" />' +
+            '<img class="cam-video" data-camera-id="' + cam.id + '" alt="' + escapeHtml(camName) + '" />' +
+            '<div class="cam-status-badge hidden" data-camera-id="' + cam.id + '">' +
+              '<span class="cam-status-dot"></span>' +
+              '<span class="cam-status-text">Conectando...</span>' +
+            '</div>' +
             '<div class="osd-top">' +
               '<div class="osd-cam-title">[CAM ' + camNumber + '] ' + escapeHtml(camName) + ' &bull; ' + protocol + '</div>' +
               '<div class="osd-cloud-rec"><span class="rec-dot"></span>NUVEM</div>' +
@@ -151,8 +253,18 @@
       })
       .join('');
 
+    // Attach stream controllers and listeners to each camera cell
+    const cells = videoGrid.querySelectorAll('.cam-cell');
+    cells.forEach(function(cell, idx) {
+      const camId = cell.dataset.cameraId;
+      const cam = camerasToDisplay.find(function(c) { return c.id === camId; });
+      if (cam) {
+        initCameraStream(cam, cell, idx);
+      }
+    });
+
     // Attach cell interaction events
-    document.querySelectorAll('.cam-cell').forEach(function(cell) {
+    cells.forEach(function(cell) {
       cell.addEventListener('dblclick', function() {
         const camId = cell.dataset.cameraId;
         if (camId) toggleFocusCamera(camId);
@@ -190,7 +302,6 @@
                   setTimeout(function() { btn.textContent = prev; }, 2000);
                 }
               } else {
-                // Browser download fallback
                 const a = document.createElement('a');
                 a.href = dataUrl;
                 a.download = name + '-' + Date.now() + '.jpg';
@@ -220,8 +331,10 @@
     renderCameraGrid();
   }
 
+  let lastLoadedCameraIds = [];
+
   // Load Cameras from Central ITL Server
-  async function loadCameras() {
+  async function loadCameras(forceRender) {
     if (camCountLabel) camCountLabel.textContent = 'Sincronizando câmeras...';
 
     try {
@@ -252,7 +365,12 @@
         camCountLabel.textContent = onlineCount + ' / ' + currentCameras.length + ' Câmeras Online';
       }
 
-      renderCameraGrid();
+      const prevIds = (lastLoadedCameraIds || []).join(',');
+      const newIds = currentCameras.map(function(c) { return c.id; }).join(',');
+      if (forceRender || prevIds !== newIds || !videoGrid.querySelector('.cam-cell')) {
+        lastLoadedCameraIds = currentCameras.map(function(c) { return c.id; });
+        renderCameraGrid();
+      }
     } catch (e) {
       console.error('Erro ao carregar câmeras:', e);
       if (camCountLabel) {
@@ -335,7 +453,7 @@
   // Refresh Cameras
   if (btnRefresh) {
     btnRefresh.addEventListener('click', function() {
-      loadCameras();
+      loadCameras(true);
     });
   }
 

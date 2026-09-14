@@ -86,8 +86,101 @@ async function init() {
   }
 }
 
+// Active stream controllers map
+const activeStreamControllers = new Map<string, { stop: () => void; reload: () => void }>();
+
+function stopAllStreams() {
+  activeStreamControllers.forEach((ctrl) => {
+    try { ctrl.stop(); } catch (e) {}
+  });
+  activeStreamControllers.clear();
+}
+
+// Initialize resilient camera stream with auto-reconnection and staggered startup
+function initCameraStream(cam: any, cell: HTMLElement, index: number) {
+  const img = cell.querySelector<HTMLImageElement>('.cam-video');
+  const badge = cell.querySelector<HTMLElement>('.cam-status-badge');
+  const badgeText = cell.querySelector<HTMLElement>('.cam-status-text');
+  if (!img) return;
+
+  let isActive = true;
+  let retryTimer: any = null;
+  let stallInterval: any = null;
+  let retryDelay = 2000;
+  let lastFrameTime = Date.now();
+
+  const cleanServer = currentServerUrl.replace(/\/$/, '');
+  const w = currentLayout === '1x1' ? '1280' : (currentLayout === '2x2' ? '960' : '640');
+  const fps = currentLayout === '1x1' ? '20' : (currentLayout === '2x2' ? '15' : '10');
+  const streamBase = `${cleanServer}/api/cameras/${cam.id}/stream?w=${w}&fps=${fps}`;
+
+  function connect() {
+    if (!isActive || !img) return;
+    img.src = `${streamBase}&_t=${Date.now()}`;
+  }
+
+  img.onload = () => {
+    lastFrameTime = Date.now();
+    retryDelay = 2000;
+    if (badge) badge.classList.add('hidden');
+  };
+
+  img.onerror = () => {
+    if (!isActive) return;
+
+    if (badge) {
+      const sec = Math.round(retryDelay / 1000);
+      if (badgeText) badgeText.textContent = `Reconectando em ${sec}s...`;
+      badge.classList.remove('hidden');
+    }
+
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      if (!isActive) return;
+      connect();
+      retryDelay = Math.min(Math.round(retryDelay * 1.5), 8000);
+    }, retryDelay);
+  };
+
+  const staggerDelay = Math.min(index * 150, 2500);
+  const startTimer = setTimeout(() => {
+    if (isActive) connect();
+  }, staggerDelay);
+
+  stallInterval = setInterval(() => {
+    if (!isActive) return;
+    if (Date.now() - lastFrameTime > 20000 && !retryTimer) {
+      if (badge) {
+        if (badgeText) badgeText.textContent = 'Sinal estagnado, reconectando...';
+        badge.classList.remove('hidden');
+      }
+      connect();
+    }
+  }, 10000);
+
+  activeStreamControllers.set(cam.id, {
+    stop: () => {
+      isActive = false;
+      clearTimeout(startTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+      if (stallInterval) clearInterval(stallInterval);
+      if (img) {
+        img.onload = null;
+        img.onerror = null;
+        img.src = '';
+      }
+    },
+    reload: () => {
+      lastFrameTime = Date.now();
+      connect();
+    }
+  });
+}
+
+let lastLoadedCameraIds: string[] = [];
+
 // Load Cameras from Central ITL Server
-async function loadCameras() {
+async function loadCameras(forceRender?: boolean) {
   if (!window.dvrApi) return;
 
   camCountLabel.textContent = 'Sincronizando câmeras...';
@@ -102,7 +195,12 @@ async function loadCameras() {
     const onlineCount = currentCameras.filter((c) => c.status !== 'OFFLINE').length;
     camCountLabel.textContent = `${onlineCount} / ${currentCameras.length} Câmeras Online`;
 
-    renderCameraGrid();
+    const prevIds = lastLoadedCameraIds.join(',');
+    const newIds = currentCameras.map((c) => c.id).join(',');
+    if (forceRender || prevIds !== newIds || !videoGrid.querySelector('.cam-cell')) {
+      lastLoadedCameraIds = currentCameras.map((c) => c.id);
+      renderCameraGrid();
+    }
   } catch (e: any) {
     camCountLabel.textContent = `Falha na conexão: ${e.message}`;
   }
@@ -110,6 +208,7 @@ async function loadCameras() {
 
 // Render Camera Grid
 function renderCameraGrid() {
+  stopAllStreams();
   videoGrid.className = `camera-grid grid-${currentLayout}`;
 
   if (!currentCameras || currentCameras.length === 0) {
@@ -150,22 +249,14 @@ function renderCameraGrid() {
       const resolution = cam.resolution || '1080p';
       const fps = cam.fps || 30;
 
-      // Construct high performance stream URL from Central ITL
-      const cleanServer = currentServerUrl.replace(/\/$/, '');
-      const streamUrl = `${cleanServer}/api/cameras/${cam.id}/stream`;
-      const snapshotFallback = `${cleanServer}/api/cameras/${cam.id}/snapshot?t=${Date.now()}`;
-
       return `
         <div class="cam-cell ${isFocused ? 'active-focus' : ''}" data-camera-id="${cam.id}" title="Duplo clique para tela cheia desta câmera">
-          <!-- Video Stream -->
-          <img
-            class="cam-video"
-            src="${streamUrl}"
-            alt="${escapeHtml(camName)}"
-            onerror="this.onerror=null; this.src='${snapshotFallback}'; this.parentElement.querySelector('.cam-offline-banner')?.classList.remove('hidden');"
-          />
+          <img class="cam-video" data-camera-id="${cam.id}" alt="${escapeHtml(camName)}" />
+          <div class="cam-status-badge hidden" data-camera-id="${cam.id}">
+            <span class="cam-status-dot"></span>
+            <span class="cam-status-text">Conectando...</span>
+          </div>
 
-          <!-- OSD Top Overlay -->
           <div class="osd-top">
             <div class="osd-cam-title">[CAM ${camNumber}] ${escapeHtml(camName)} &bull; ${protocol}</div>
             <div class="osd-cloud-rec">
@@ -174,13 +265,11 @@ function renderCameraGrid() {
             </div>
           </div>
 
-          <!-- OSD Bottom Overlay -->
           <div class="osd-bottom">
             <div class="osd-timestamp live-timestamp-osd">--/--/---- --:--:--</div>
             <div class="osd-fps">${resolution} &bull; ${fps} FPS</div>
           </div>
 
-          <!-- Quick Action Controls -->
           <div class="cam-action-bar">
             <button class="btn-cam-action btn-cam-focus" data-id="${cam.id}" title="Alternar foco 1x1">
               ${currentLayout === '1x1' ? 'Grade' : 'Focar'}
@@ -193,6 +282,16 @@ function renderCameraGrid() {
       `;
     })
     .join('');
+
+  // Initialize streams with staggered delay
+  const cells = videoGrid.querySelectorAll<HTMLElement>('.cam-cell');
+  cells.forEach((cell, idx) => {
+    const camId = cell.dataset.cameraId;
+    const cam = camerasToDisplay.find((c) => c.id === camId);
+    if (cam) {
+      initCameraStream(cam, cell, idx);
+    }
+  });
 
   // Attach cell interaction events
   document.querySelectorAll<HTMLElement>('.cam-cell').forEach((cell) => {
