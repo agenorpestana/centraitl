@@ -2,17 +2,14 @@
 (function() {
   'use strict';
 
-  // Global safety for exports
-  if (typeof window !== 'undefined') {
-    window.exports = window.exports || {};
-  }
+  console.log('[ITL DVR] Inicializando Renderer Process...');
 
   // Global error trap to prevent silent failures
   window.addEventListener('error', function(e) {
     console.error('[ITL DVR Error]', e.error || e.message);
     const errEl = document.getElementById('loginError');
     if (errEl) {
-      errEl.textContent = 'Erro no aplicativo: ' + (e.message || 'Falha de execução');
+      errEl.textContent = 'Aviso no aplicativo: ' + (e.message || 'Falha de execução');
       errEl.classList.remove('hidden');
     }
   });
@@ -633,10 +630,10 @@
         }
       }
 
-      // Check localStorage fallback
-      const savedToken = localStorage.getItem('itl_dvr_token');
-      const savedUser = localStorage.getItem('itl_dvr_user');
-      const savedUrl = localStorage.getItem('itl_dvr_url');
+      // Check localStorage fallback safely
+      const savedToken = safeGetStorage('itl_dvr_token');
+      const savedUser = safeGetStorage('itl_dvr_user');
+      const savedUrl = safeGetStorage('itl_dvr_url');
       if (savedUrl && serverUrlInput) {
         currentServerUrl = savedUrl;
         serverUrlInput.value = savedUrl;
@@ -711,9 +708,47 @@
     });
   }
 
+  // Safe local storage helpers (prevents crashes in sandboxed or file:// origins)
+  function safeSetStorage(key, val) {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(key, val);
+      }
+    } catch (e) {
+      console.warn('[ITL DVR Storage] Falha ao salvar no storage local:', e);
+    }
+  }
+
+  function safeGetStorage(key) {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        return localStorage.getItem(key);
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }
+
   // Primary Login Handler
-  async function performLogin() {
-    if (loginError) loginError.classList.add('hidden');
+  let isAuthenticating = false;
+
+  async function performLogin(event) {
+    if (event) {
+      if (typeof event.preventDefault === 'function') event.preventDefault();
+      if (typeof event.stopPropagation === 'function') event.stopPropagation();
+    }
+
+    if (isAuthenticating) {
+      console.log('[ITL DVR] Autenticação já em andamento...');
+      return false;
+    }
+
+    if (loginError) {
+      loginError.classList.add('hidden');
+      loginError.textContent = '';
+    }
+
     if (btnLoginSubmit) {
       btnLoginSubmit.disabled = true;
       btnLoginSubmit.textContent = 'Autenticando na Central ITL...';
@@ -723,106 +758,150 @@
     const email = (emailInput ? emailInput.value : '').trim();
     const password = passwordInput ? passwordInput.value : '';
 
+    console.log('[ITL DVR] Tentativa de login:', { serverUrl, email, hasPassword: !!password });
+
     if (!serverUrl || !email || !password) {
       if (loginError) {
-        loginError.textContent = 'Por favor, preencha URL, e-mail/usuário e senha.';
+        loginError.textContent = 'Por favor, preencha o endereço da Central, seu e-mail/usuário e a senha.';
         loginError.classList.remove('hidden');
       }
       if (btnLoginSubmit) {
         btnLoginSubmit.disabled = false;
         btnLoginSubmit.textContent = 'Entrar no Visualizador DVR';
       }
-      return;
+      return false;
     }
+
+    isAuthenticating = true;
 
     try {
       let res = null;
 
       // Method 1: Electron IPC Native Login
       if (window.dvrApi && typeof window.dvrApi.login === 'function') {
+        console.log('[ITL DVR] Enviando credenciais via IPC Nativo...');
         res = await window.dvrApi.login({ serverUrl: serverUrl, email: email, password: password });
+        console.log('[ITL DVR] Retorno do IPC:', res);
       }
 
       // Method 2: Direct Fetch Fallback (if IPC not available or in browser mode)
       if (!res) {
+        console.log('[ITL DVR] Usando fallback direto HTTP fetch...');
         const cleanUrl = serverUrl.replace(/\/$/, '');
-        let response = await fetch(cleanUrl + '/api/v1/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: email, username: email, password: password })
-        }).catch(function() { return null; });
+        const loginData = { email: email, username: email, password: password };
 
-        if (!response || !response.ok) {
-          // Try /api/auth/login
-          response = await fetch(cleanUrl + '/api/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: email, username: email, password: password })
-          });
+        const fetchDirect = async (url) => {
+          const ctrl = new AbortController();
+          const tId = setTimeout(() => ctrl.abort(), 9000);
+          try {
+            const resp = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(loginData),
+              signal: ctrl.signal,
+            });
+            clearTimeout(tId);
+            return resp;
+          } catch (err) {
+            clearTimeout(tId);
+            throw err;
+          }
+        };
+
+        let response = null;
+        try {
+          response = await fetchDirect(cleanUrl + '/api/v1/auth/login');
+        } catch (e1) {
+          try {
+            response = await fetchDirect(cleanUrl + '/api/auth/login');
+          } catch (e2) {
+            res = { success: false, error: 'Não foi possível alcançar o servidor (' + e2.message + '). Verifique o link e sua internet.' };
+          }
         }
 
-        const data = await response.json();
-        if (!response.ok || !data.success) {
-          res = { success: false, error: data.error || ('Erro HTTP ' + response.status + ': Credenciais inválidas') };
-        } else {
-          res = { success: true, user: data.user, token: data.token };
+        if (response) {
+          if (!response.ok && response.status === 404) {
+            try { response = await fetchDirect(cleanUrl + '/api/auth/login'); } catch (e) {}
+          }
+
+          if (response) {
+            const data = await response.json().catch(() => ({ success: false, error: 'Resposta inválida do servidor' }));
+            if (!response.ok || !data.success) {
+              res = { success: false, error: data.error || ('Erro HTTP ' + response.status + ': Credenciais inválidas') };
+            } else {
+              res = { success: true, user: data.user, token: data.token };
+            }
+          }
         }
       }
 
       if (!res || !res.success) {
+        const errMsg = (res && res.error) || 'Falha na autenticação. Verifique o servidor, usuário ou senha.';
+        console.warn('[ITL DVR] Erro no login:', errMsg);
         if (loginError) {
-          loginError.textContent = (res && res.error) || 'Falha na autenticação. Verifique o servidor, usuário ou senha.';
+          loginError.textContent = errMsg;
           loginError.classList.remove('hidden');
         }
       } else {
+        console.log('[ITL DVR] Login efetuado com sucesso! Carregando mural DVR...');
         currentServerUrl = serverUrl;
         currentAuthToken = res.token || '';
         currentUserId = (res.user && res.user.id) || '';
 
-        localStorage.setItem('itl_dvr_token', currentAuthToken);
-        localStorage.setItem('itl_dvr_user', currentUserId);
-        localStorage.setItem('itl_dvr_url', currentServerUrl);
+        safeSetStorage('itl_dvr_token', currentAuthToken);
+        safeSetStorage('itl_dvr_user', currentUserId);
+        safeSetStorage('itl_dvr_url', currentServerUrl);
 
         if (passwordInput) passwordInput.value = '';
         if (loginSection) loginSection.classList.add('hidden');
-        await loadCameras();
+        await loadCameras(true);
       }
     } catch (err) {
-      console.error('Erro no login:', err);
+      console.error('[ITL DVR] Exceção durante o login:', err);
       if (loginError) {
         loginError.textContent = 'Não foi possível conectar: ' + (err.message || 'Verifique se o servidor está online.');
         loginError.classList.remove('hidden');
       }
     } finally {
+      isAuthenticating = false;
       if (btnLoginSubmit) {
         btnLoginSubmit.disabled = false;
         btnLoginSubmit.textContent = 'Entrar no Visualizador DVR';
       }
     }
+
+    return false;
   }
+
+  // Expose login function to global scope
+  window.itlPerformLogin = performLogin;
+  window.performLogin = performLogin;
 
   // Bind Form Submit & Button Click
   if (loginForm) {
     loginForm.addEventListener('submit', function(e) {
-      if (e) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-      performLogin();
+      performLogin(e);
       return false;
     });
   }
 
   if (btnLoginSubmit) {
     btnLoginSubmit.addEventListener('click', function(e) {
-      if (e) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-      performLogin();
+      performLogin(e);
       return false;
     });
   }
+
+  // Allow pressing Enter in input fields
+  [serverUrlInput, emailInput, passwordInput].forEach(function(inp) {
+    if (inp) {
+      inp.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+          performLogin(e);
+        }
+      });
+    }
+  });
 
   // Auto-refresh cameras every 30s
   setInterval(function() {
@@ -832,5 +911,6 @@
   }, 30000);
 
   // Run initial session check
+  console.log('[ITL DVR] Iniciando sessão...');
   init();
 })();

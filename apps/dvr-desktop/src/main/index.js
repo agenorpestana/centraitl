@@ -194,7 +194,11 @@ function setupIpcHandlers() {
   // Auth: Login
   ipcMain.handle('auth:login', async (_, payload) => {
     try {
-      const cleanUrl = (payload.serverUrl || '').trim().replace(/\/$/, '');
+      const cleanUrl = (payload?.serverUrl || '').trim().replace(/\/$/, '');
+      if (!cleanUrl) {
+        return { success: false, error: 'URL da Central ITL não informada.' };
+      }
+
       const loginPayload = {
         email: payload.email,
         username: payload.email,
@@ -204,34 +208,56 @@ function setupIpcHandlers() {
       let response = null;
       let usedEndpoint = `${cleanUrl}/api/v1/auth/login`;
 
+      const fetchWithTimeout = async (url, body, timeoutMs = 9000) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          return res;
+        } catch (e) {
+          clearTimeout(timeoutId);
+          throw e;
+        }
+      };
+
       try {
-        response = await fetch(usedEndpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(loginPayload),
-        });
+        response = await fetchWithTimeout(usedEndpoint, loginPayload);
       } catch (err) {
+        // Fallback endpoint
         usedEndpoint = `${cleanUrl}/api/auth/login`;
-        response = await fetch(usedEndpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(loginPayload),
-        });
+        try {
+          response = await fetchWithTimeout(usedEndpoint, loginPayload);
+        } catch (secondErr) {
+          return {
+            success: false,
+            error: `Não foi possível alcançar o servidor em "${cleanUrl}". Verifique a conexão com a internet ou se o endereço está correto (${secondErr.message})`,
+          };
+        }
       }
 
       if (!response.ok && response.status === 404) {
-        response = await fetch(`${cleanUrl}/api/auth/login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(loginPayload),
-        });
+        try {
+          response = await fetchWithTimeout(`${cleanUrl}/api/auth/login`, loginPayload);
+        } catch (e) {
+          // ignore
+        }
       }
 
-      const data = await response.json().catch(() => ({ success: false, error: `Resposta inválida da Central (${response?.status})` }));
+      const data = await response.json().catch(() => ({
+        success: false,
+        error: `Resposta inválida da Central (Status ${response?.status})`,
+      }));
+
       if (!response.ok || !data.success) {
         return {
           success: false,
-          error: data.error || `Erro HTTP ${response.status}: Credenciais inválidas ou acesso não autorizado`,
+          error: data.error || `Erro de autenticação (HTTP ${response.status}): Credenciais incorretas ou acesso negado.`,
         };
       }
 
@@ -239,11 +265,11 @@ function setupIpcHandlers() {
         serverUrl: cleanUrl,
         token: data.token,
         user: {
-          id: data.user.id,
-          name: data.user.name,
-          email: data.user.email,
-          role: data.user.role,
-          companyId: data.user.companyId,
+          id: data.user?.id || 'admin',
+          name: data.user?.name || 'Administrador',
+          email: data.user?.email || payload.email,
+          role: data.user?.role || 'USER',
+          companyId: data.user?.companyId || null,
         },
         expiresAt: Date.now() + (data.expiresIn ? data.expiresIn * 1000 : 86400000),
       };
@@ -251,7 +277,7 @@ function setupIpcHandlers() {
       vault.saveSession(session);
       return { success: true, user: session.user, token: session.token };
     } catch (err) {
-      return { success: false, error: `Não foi possível conectar à Central: ${err.message}` };
+      return { success: false, error: `Erro na comunicação com a Central: ${err.message}` };
     }
   });
 

@@ -669,7 +669,7 @@
 
         <div id="loginError" class="login-error hidden"></div>
 
-        <form id="loginForm" onsubmit="event.preventDefault(); return false;">
+        <form id="loginForm" onsubmit="window.itlPerformLogin && window.itlPerformLogin(event); return false;">
           <div class="form-group">
             <label>URL do Servidor Central:</label>
             <input type="text" id="serverUrl" class="form-input" value="https://centralitl.unityautomacoes.com.br" required />
@@ -685,7 +685,7 @@
             <input type="password" id="password" class="form-input" placeholder="••••••••" required />
           </div>
 
-          <button type="submit" id="btnLoginSubmit" class="btn-submit">
+          <button type="submit" id="btnLoginSubmit" class="btn-submit" onclick="window.itlPerformLogin && window.itlPerformLogin(event)">
             Entrar no Visualizador DVR
           </button>
         </form>
@@ -743,22 +743,22 @@
     </div>
   </div>
 
-  <script>
-    // Polyfill to prevent CommonJS "exports is not defined" error in Electron / browser renderer
-    if (typeof exports === 'undefined') {
-      window.exports = {};
-    }
-    if (typeof module === 'undefined') {
-      window.module = { exports: window.exports };
-    }
-  </script>
-  <!-- Load Local HLS.js first, fallback to CDN if needed -->
+  <!-- Engine de Vídeo HLS Local Nativa -->
   <script src="hls.min.js"></script>
   <script>
-    if (!window.Hls) {
-      console.warn('[HLS] Local hls.min.js not found, loading from CDN...');
-      document.write('<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"><\\/script>');
-    }
+    // Garantir que a instância Hls esteja sempre acessível no objeto window
+    (function() {
+      if (typeof window.Hls === 'undefined') {
+        if (typeof Hls !== 'undefined') {
+          window.Hls = Hls;
+        } else if (typeof module !== 'undefined' && module.exports) {
+          window.Hls = module.exports;
+        } else if (typeof exports !== 'undefined' && exports.Hls) {
+          window.Hls = exports.Hls;
+        }
+      }
+      console.log('[ITL DVR] Motor HLS Carregado:', typeof window.Hls);
+    })();
   </script>
   <script src="renderer.js"></script>
 </body>
