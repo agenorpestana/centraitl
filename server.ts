@@ -618,13 +618,24 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         cameraReconnectFailures.set(key, fails);
       }
 
-      // Auto-reconnect supervisor with exponential backoff (8s -> 20s -> 45s -> 90s)
+      // Auto-reconnect supervisor only if there is an active viewer or stream is RTMP
       if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
+        const isRtspCam = cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.startsWith('rtsp://'));
+        const lastAccess = lastViewerAccessMap.get(key) || lastViewerAccessMap.get(cleanKey) || 0;
+        const hasRecentViewer = (Date.now() - lastAccess) < 45000;
+
+        // RTSP cameras stream via MJPEG by default; do not auto-restart HLS without an active viewer!
+        if (isRtspCam && !hasRecentViewer) {
+          return;
+        }
+
         const failCount = cameraReconnectFailures.get(key) || 0;
-        const delay = failCount <= 1 ? 8000 : Math.min(90000, 10000 * Math.pow(1.8, Math.min(failCount - 1, 4)));
+        const delay = failCount <= 1 ? 12000 : Math.min(180000, 25000 * Math.pow(2, Math.min(failCount - 1, 3)));
 
         setTimeout(() => {
           if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
+          const currentViewerAccess = lastViewerAccessMap.get(key) || lastViewerAccessMap.get(cleanKey) || 0;
+          if (isRtspCam && (Date.now() - currentViewerAccess) > 45000) return;
           const currentProc = activeFfmpegProcesses.get(key);
           if (!currentProc || currentProc.exitCode !== null || currentProc.killed) {
             startCameraRtspStream(cam, false, isSubStream);
@@ -642,7 +653,11 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
       cameraReconnectFailures.set(key, fails);
 
       if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
-        const delay = Math.min(90000, 15000 * Math.pow(1.8, Math.min(fails - 1, 4)));
+        const isRtspCam = cam.protocol === 'RTSP' || (cam.rtspUrl && cam.rtspUrl.startsWith('rtsp://'));
+        const lastAccess = lastViewerAccessMap.get(key) || lastViewerAccessMap.get(cleanKey) || 0;
+        if (isRtspCam && (Date.now() - lastAccess) > 45000) return;
+
+        const delay = Math.min(180000, 30000 * Math.pow(2, Math.min(fails - 1, 3)));
         setTimeout(() => {
           if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
           startCameraRtspStream(cam, false, isSubStream);
@@ -681,13 +696,13 @@ setInterval(() => {
   const now = Date.now();
   for (const [key, proc] of activeFfmpegProcesses.entries()) {
     const lastAccess = lastViewerAccessMap.get(key) || lastViewerAccessMap.get(key.replace(/[-_]sub$/, '')) || 0;
-    // If not viewed for over 180s (3 minutes) and not active in continuous recording
-    if (now - lastAccess > 180000 && !activeAutoRecordingProcesses.has(key) && !activeAutoRecordingProcesses.has(`cam-${key}`)) {
-      console.log(`[FFmpeg ITL Idle Reaper] Economizando CPU: pausando transmissão inativa '${key}' (sem espectadores há mais de 3 min).`);
+    // If not viewed for over 45s, terminate inactive process to keep CPU near 0%
+    if (now - lastAccess > 45000) {
+      console.log(`[FFmpeg ITL Idle Reaper] Economizando CPU: pausando transmissão inativa '${key}' (sem espectadores).`);
       stopCameraRtspStream(key);
     }
   }
-}, 60000);
+}, 30000);
 import {
   INITIAL_CAMERAS,
   INITIAL_RECORDINGS,
@@ -1020,6 +1035,21 @@ async function startServer() {
           );
           if (tokenUser) return tokenUser;
         }
+      }
+
+      const qToken = (req.query?.token || req.query?.auth || req.query?.bearer || '').toString().trim();
+      if (qToken) {
+        const cleanQToken = qToken.replace(/^Bearer\s+/i, '').trim();
+        if (activeTokensMap[cleanQToken]) {
+          const u = users.find((usr) => usr.id === activeTokensMap[cleanQToken]);
+          if (u) return u;
+        }
+        const tokenUser = users.find(
+          (u) =>
+            u.id.toLowerCase() === cleanQToken.toLowerCase() ||
+            u.email.toLowerCase() === cleanQToken.toLowerCase()
+        );
+        if (tokenUser) return tokenUser;
       }
 
       if (searchId) {
@@ -2997,10 +3027,13 @@ async function startServer() {
     }
   }, 30000);
 
-  // Start FFmpeg streams for all cameras (Cards 30fps SD sub-stream and Full HD main stream)
+  // Start HLS streams only for RTMP cameras (-c:v copy uses ~0% CPU)
+  // RTSP cameras stream via on-demand MJPEG by default, eliminating CPU overload!
   cameras.forEach((c) => {
-    startCameraRtspStream(c, false, true);  // Sub-stream SD (30fps fluid for grid cards)
-    startCameraRtspStream(c, false, false); // Main stream Full HD 1080p (for fullscreen)
+    const isRtsp = c.protocol === 'RTSP' || (c.rtspUrl && c.rtspUrl.startsWith('rtsp://'));
+    if (!isRtsp) {
+      startCameraRtspStream(c, false, false);
+    }
   });
 
   // Continuous 24/7 Automatic Recording Engine for All Active Cameras
@@ -3892,17 +3925,17 @@ async function startServer() {
     const ffmpegArgs: string[] = [];
 
     if (targetUrl.startsWith('rtsp://')) {
-      ffmpegArgs.push('-rtsp_transport', 'tcp', '-stimeout', '15000000');
+      ffmpegArgs.push('-rtsp_transport', 'tcp', '-stimeout', '8000000');
     } else if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
-      ffmpegArgs.push('-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
+      ffmpegArgs.push('-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '3');
     }
 
     ffmpegArgs.push(
-      '-analyzeduration', '2000000',
-      '-probesize', '2000000',
+      '-analyzeduration', '1000000',
+      '-probesize', '1000000',
       '-i', targetUrl,
       '-vf', `fps=${fps},scale=${width}:-1`,
-      '-q:v', '6',
+      '-q:v', '5',
       '-threads', '1',
       '-f', 'mpjpeg',
       '-boundary_tag', 'ffmpegboundary',
@@ -3933,9 +3966,12 @@ async function startServer() {
       }
     };
 
-    // 25s connection timeout to accommodate multi-camera startup load
+    // 8s connection timeout: If camera has no stream, detect offline quickly and free CPU
     const timeoutTimer = setTimeout(() => {
       if (!hasReceivedData) {
+        if (matchedCam) {
+          matchedCam.status = 'OFFLINE';
+        }
         killProc();
         if (!res.headersSent && !headersWritten) {
           res.status(504).send('Timeout ao conectar à câmera (Off-line)');
@@ -3943,7 +3979,7 @@ async function startServer() {
           try { res.end(); } catch (e) {}
         }
       }
-    }, 25000);
+    }, 8000);
 
     proc.stdout.on('data', (chunk) => {
       hasReceivedData = true;
@@ -3960,18 +3996,26 @@ async function startServer() {
 
     proc.on('exit', () => {
       clearTimeout(timeoutTimer);
-      if (!hasReceivedData && !res.headersSent && !headersWritten) {
-        res.status(502).send('Sinal de vídeo indisponível (Câmera Off-line)');
-      } else {
-        try { res.end(); } catch (e) {}
+      if (!hasReceivedData) {
+        if (matchedCam) matchedCam.status = 'OFFLINE';
+        if (!res.headersSent && !headersWritten) {
+          res.status(502).send('Sinal de vídeo indisponível (Câmera Off-line)');
+          return;
+        }
       }
+      try { res.end(); } catch (e) {}
     });
 
     const killProc = () => {
       clearTimeout(timeoutTimer);
       try {
-        proc.stdout.unpipe(res);
-        proc.kill('SIGKILL');
+        if (proc) {
+          proc.stdout.unpipe(res);
+          proc.kill('SIGTERM');
+          setTimeout(() => {
+            try { proc.kill('SIGKILL'); } catch (e) {}
+          }, 300);
+        }
       } catch (e) {}
     };
 

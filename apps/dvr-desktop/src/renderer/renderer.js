@@ -197,8 +197,229 @@
     };
   }
 
-  // Initialize HLS camera stream matching Web App Image 2 exactly
-  function initCameraStream(cam, cell, index) {
+  // Helper to determine if camera uses RTSP protocol
+  function isCameraRtsp(cam) {
+    if (!cam) return false;
+    const proto = (cam.protocol || '').toUpperCase();
+    if (proto === 'RTSP') return true;
+    const rtsp = (cam.rtspUrl || '').toLowerCase();
+    if (rtsp.startsWith('rtsp://') || rtsp.includes('rtsp')) return true;
+    const vUrl = (cam.videoStreamUrl || '').toLowerCase();
+    if (vUrl.startsWith('rtsp://') || vUrl.includes('rtsp')) return true;
+    return false;
+  }
+
+  // Initialize MJPEG camera stream for RTSP cameras (low CPU, direct frames, fast offline detection)
+  function initMjpegStream(cam, cell, index) {
+    const img = cell.querySelector('.cam-video');
+    const loadingOverlay = cell.querySelector('.cam-loading-overlay');
+    const offlineOverlay = cell.querySelector('.cam-offline-overlay');
+    const btnRetry = cell.querySelector('.btn-retry-stream');
+    const btnDiag = cell.querySelector('.btn-diag-stream');
+    const btnFullCell = cell.querySelector('.btn-fullscreen-trigger');
+
+    if (!img) return;
+
+    let isActive = true;
+    let isOnline = false;
+    let connectTimeout = null;
+    let probeTimer = null;
+    let startTimer = null;
+
+    const cleanServer = currentServerUrl.replace(/\/$/, '');
+    const isFocus = (currentLayout === '1x1');
+
+    function getMjpegUrl() {
+      const w = isFocus ? 1280 : 640;
+      const fps = isFocus ? 15 : 10;
+      const userParam = currentUserId ? ('&userId=' + encodeURIComponent(currentUserId)) : '';
+      const tokenParam = currentAuthToken ? ('&token=' + encodeURIComponent(currentAuthToken)) : '';
+      return cleanServer + '/api/cameras/' + encodeURIComponent(cam.id) + '/stream?w=' + w + '&fps=' + fps + userParam + tokenParam + '&t=' + Date.now();
+    }
+
+    function showLoading() {
+      if (loadingOverlay) loadingOverlay.classList.remove('hidden');
+      if (offlineOverlay) offlineOverlay.classList.add('hidden');
+    }
+
+    function showOnline() {
+      if (loadingOverlay) loadingOverlay.classList.add('hidden');
+      if (offlineOverlay) offlineOverlay.classList.add('hidden');
+    }
+
+    function showOffline() {
+      if (loadingOverlay) loadingOverlay.classList.add('hidden');
+      if (offlineOverlay) offlineOverlay.classList.remove('hidden');
+    }
+
+    function handleOffline() {
+      if (!isActive) return;
+      isOnline = false;
+      if (connectTimeout) {
+        clearTimeout(connectTimeout);
+        connectTimeout = null;
+      }
+      // Detach source immediately to stop consuming network sockets & CPU on offline stream
+      if (img) {
+        img.onload = null;
+        img.onerror = null;
+        img.removeAttribute('src');
+        img.src = '';
+      }
+      showOffline();
+      schedulePeriodicProbe();
+    }
+
+    function schedulePeriodicProbe() {
+      if (probeTimer) clearInterval(probeTimer);
+      // Check every 45s if offline camera has come back online
+      probeTimer = setInterval(function() {
+        if (!isActive || isOnline) return;
+        probeCameraOnline();
+      }, 45000);
+    }
+
+    function probeCameraOnline() {
+      if (!isActive || isOnline) return;
+      console.log('[DVR Probe] Verificando se câmera RTSP retornou online:', cam.name);
+      try {
+        const testImg = new Image();
+        let finished = false;
+        const pTimeout = setTimeout(function() {
+          if (!finished) {
+            finished = true;
+            testImg.onload = null;
+            testImg.onerror = null;
+            testImg.src = '';
+          }
+        }, 6000);
+
+        testImg.onload = function() {
+          if (finished) return;
+          finished = true;
+          clearTimeout(pTimeout);
+          testImg.onload = null;
+          testImg.onerror = null;
+          testImg.src = '';
+          if (isActive && !isOnline) {
+            console.log('[DVR Probe] Câmera RTSP voltou a responder! Conectando fluxo:', cam.name);
+            if (probeTimer) {
+              clearInterval(probeTimer);
+              probeTimer = null;
+            }
+            startStream();
+          }
+        };
+
+        testImg.onerror = function() {
+          if (finished) return;
+          finished = true;
+          clearTimeout(pTimeout);
+          testImg.onload = null;
+          testImg.onerror = null;
+          testImg.src = '';
+        };
+
+        testImg.src = getMjpegUrl();
+      } catch (e) {}
+    }
+
+    function startStream() {
+      if (!isActive) return;
+      showLoading();
+      isOnline = false;
+
+      if (connectTimeout) clearTimeout(connectTimeout);
+      if (probeTimer) {
+        clearInterval(probeTimer);
+        probeTimer = null;
+      }
+
+      // Fast offline detection: If no frame arrives within 9s, declare offline to save CPU
+      connectTimeout = setTimeout(function() {
+        if (!isActive || isOnline) return;
+        console.warn('[DVR MJPEG Timeout] Sem resposta da câmera RTSP (Off-line):', cam.name);
+        handleOffline();
+      }, 9000);
+
+      img.onload = function() {
+        if (!isActive) return;
+        if (connectTimeout) {
+          clearTimeout(connectTimeout);
+          connectTimeout = null;
+        }
+        isOnline = true;
+        showOnline();
+      };
+
+      img.onerror = function() {
+        if (!isActive) return;
+        console.warn('[DVR MJPEG Erro] Falha ao carregar fluxo MJPEG:', cam.name);
+        handleOffline();
+      };
+
+      img.src = getMjpegUrl();
+    }
+
+    // Stagger startup slightly so 16 cameras do not spike initial requests at the exact same millisecond
+    const startDelay = Math.min(index * 120, 2000);
+    startTimer = setTimeout(function() {
+      if (isActive) {
+        startStream();
+      }
+    }, startDelay);
+
+    // Event listeners
+    if (btnRetry) {
+      btnRetry.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (probeTimer) {
+          clearInterval(probeTimer);
+          probeTimer = null;
+        }
+        startStream();
+      });
+    }
+
+    if (btnDiag) {
+      btnDiag.addEventListener('click', function(e) {
+        e.stopPropagation();
+        runCameraDiagnostic(cam);
+      });
+    }
+
+    if (btnFullCell) {
+      btnFullCell.addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggleFocusCamera(cam.id);
+      });
+    }
+
+    activeStreamControllers.set(cam.id, {
+      stop: function() {
+        isActive = false;
+        if (startTimer) clearTimeout(startTimer);
+        if (connectTimeout) clearTimeout(connectTimeout);
+        if (probeTimer) clearInterval(probeTimer);
+        if (img) {
+          img.onload = null;
+          img.onerror = null;
+          img.removeAttribute('src');
+          img.src = '';
+        }
+      },
+      reload: function() {
+        if (probeTimer) {
+          clearInterval(probeTimer);
+          probeTimer = null;
+        }
+        startStream();
+      }
+    });
+  }
+
+  // Initialize HLS camera stream for RTMP cameras (hardware remux -c:v copy, low CPU)
+  function initHlsStream(cam, cell, index) {
     const video = cell.querySelector('.cam-video');
     const loadingOverlay = cell.querySelector('.cam-loading-overlay');
     const offlineOverlay = cell.querySelector('.cam-offline-overlay');
@@ -210,9 +431,12 @@
 
     let hlsInstance = null;
     let isActive = true;
+    let isOnline = false;
     let isFallback = false;
     let currentAttempt = 0;
     let retryTimer = null;
+    let connectTimeout = null;
+    let probeTimer = null;
     let stallWatchdog = null;
     let lastPlayTime = 0;
     let lastProgressTime = Date.now();
@@ -235,6 +459,44 @@
       if (offlineOverlay) offlineOverlay.classList.remove('hidden');
     }
 
+    function handleOffline() {
+      if (!isActive) return;
+      isOnline = false;
+      if (connectTimeout) {
+        clearTimeout(connectTimeout);
+        connectTimeout = null;
+      }
+      cleanupHls();
+      showOffline();
+      schedulePeriodicProbe();
+    }
+
+    function schedulePeriodicProbe() {
+      if (probeTimer) clearInterval(probeTimer);
+      // Check every 45s if offline RTMP stream has packets again
+      probeTimer = setInterval(function() {
+        if (!isActive || isOnline) return;
+        probeHlsOnline();
+      }, 45000);
+    }
+
+    async function probeHlsOnline() {
+      if (!isActive || isOnline) return;
+      console.log('[DVR Probe] Verificando se câmera RTMP retornou online:', cam.name);
+      try {
+        const resp = await fetch(urls.primary, { method: 'HEAD', cache: 'no-cache' });
+        if (resp && resp.ok) {
+          console.log('[DVR Probe] Câmera RTMP retornou com manifesto HLS! Conectando:', cam.name);
+          if (probeTimer) {
+            clearInterval(probeTimer);
+            probeTimer = null;
+          }
+          currentAttempt = 0;
+          startHls(urls.primary);
+        }
+      } catch (e) {}
+    }
+
     function startWatchdog() {
       if (stallWatchdog) clearInterval(stallWatchdog);
       lastProgressTime = Date.now();
@@ -248,8 +510,7 @@
           if (Math.abs(video.currentTime - lastPlayTime) > 0.05) {
             lastPlayTime = video.currentTime;
             lastProgressTime = Date.now();
-          } else if (Date.now() - lastProgressTime > 4500) {
-            // Video stalled on same frame for over 4.5s
+          } else if (Date.now() - lastProgressTime > 5000) {
             lastProgressTime = Date.now();
             if (video.buffered && video.buffered.length > 0) {
               const end = video.buffered.end(video.buffered.length - 1);
@@ -275,11 +536,22 @@
         clearInterval(stallWatchdog);
         stallWatchdog = null;
       }
+      if (connectTimeout) {
+        clearTimeout(connectTimeout);
+        connectTimeout = null;
+      }
       if (hlsInstance) {
         try {
           hlsInstance.destroy();
         } catch (e) {}
         hlsInstance = null;
+      }
+      if (video) {
+        try {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+        } catch (e) {}
       }
     }
 
@@ -287,28 +559,36 @@
       if (!isActive) return;
       showLoading();
       cleanupHls();
+      isOnline = false;
+
+      // Fast offline detection: If manifest or media doesn't load within 12s, show offline
+      connectTimeout = setTimeout(function() {
+        if (!isActive || isOnline) return;
+        console.warn('[DVR HLS Timeout] Sem fluxo de pacotes RTMP/HLS (Off-line):', cam.name);
+        handleOffline();
+      }, 12000);
 
       const HlsClass = window.Hls;
       if (HlsClass && HlsClass.isSupported()) {
         hlsInstance = new HlsClass({
           enableWorker: true,
-          lowLatencyMode: false, // Prevents aggressive chunk drops on multi-camera 16x grids
-          backBufferLength: 0,   // Conserves RAM across 16 decoders
-          maxBufferLength: 8,    // 8-second buffer accommodates transient network jitter
+          lowLatencyMode: false,
+          backBufferLength: 0,
+          maxBufferLength: 8,
           maxMaxBufferLength: 16,
-          liveSyncDurationCount: 3, // Stable distance of ~6s from live edge
+          liveSyncDurationCount: 3,
           liveMaxLatencyDurationCount: 6,
-          manifestLoadingTimeOut: 15000,
-          manifestLoadingMaxRetry: 10,
+          manifestLoadingTimeOut: 10000,
+          manifestLoadingMaxRetry: 3,
           manifestLoadingRetryDelay: 1000,
-          levelLoadingTimeOut: 15000,
-          levelLoadingMaxRetry: 10,
+          levelLoadingTimeOut: 10000,
+          levelLoadingMaxRetry: 3,
           levelLoadingRetryDelay: 1000,
-          fragLoadingTimeOut: 20000,
-          fragLoadingMaxRetry: 10,
+          fragLoadingTimeOut: 15000,
+          fragLoadingMaxRetry: 3,
           fragLoadingRetryDelay: 1000,
           nudgeOffset: 0.2,
-          nudgeMaxRetry: 10,
+          nudgeMaxRetry: 5,
           maxLoadingDelay: 4,
         });
 
@@ -316,6 +596,12 @@
         hlsInstance.attachMedia(video);
 
         hlsInstance.on(HlsClass.Events.MANIFEST_PARSED, function() {
+          if (!isActive) return;
+          if (connectTimeout) {
+            clearTimeout(connectTimeout);
+            connectTimeout = null;
+          }
+          isOnline = true;
           showOnline();
           currentAttempt = 0;
           startWatchdog();
@@ -323,6 +609,12 @@
         });
 
         hlsInstance.on(HlsClass.Events.FRAG_LOADED, function() {
+          if (!isActive) return;
+          if (connectTimeout) {
+            clearTimeout(connectTimeout);
+            connectTimeout = null;
+          }
+          isOnline = true;
           showOnline();
           currentAttempt = 0;
           lastProgressTime = Date.now();
@@ -335,17 +627,18 @@
           if (data && data.fatal) {
             switch (data.type) {
               case HlsClass.ErrorTypes.NETWORK_ERROR:
-                // If sub-stream failed, try main stream immediately
                 if (!isFallback && streamUrl.includes('_sub.m3u8')) {
                   isFallback = true;
-                  console.log('[DVR HLS] Sub-fluxo indisponível, alternando para principal:', cam.name);
                   startHls(urls.fallback);
                   return;
                 }
                 currentAttempt++;
-                console.log('[DVR HLS] Tentando reconectar rede (' + currentAttempt + ') para:', cam.name);
-                // Continuous CCTV auto-reconnection with progressive backoff
-                const netDelay = Math.min(currentAttempt * 1500, 5000);
+                if (currentAttempt > 3) {
+                  // If repeated network failures, declare offline and avoid spinning CPU
+                  handleOffline();
+                  return;
+                }
+                const netDelay = Math.min(currentAttempt * 2000, 5000);
                 if (retryTimer) clearTimeout(retryTimer);
                 retryTimer = setTimeout(function() {
                   if (isActive && hlsInstance) {
@@ -359,7 +652,6 @@
                 break;
 
               case HlsClass.ErrorTypes.MEDIA_ERROR:
-                console.log('[DVR HLS] Recuperando decodificação de mídia para:', cam.name);
                 try {
                   hlsInstance.recoverMediaError();
                 } catch (e) {
@@ -373,11 +665,7 @@
                 break;
 
               default:
-                console.warn('[DVR HLS] Erro fatal irrecuperável (' + data.details + '), reiniciando:', cam.name);
-                if (retryTimer) clearTimeout(retryTimer);
-                retryTimer = setTimeout(function() {
-                  if (isActive) startHls(urls.fallback);
-                }, 3000);
+                handleOffline();
                 break;
             }
           }
@@ -385,6 +673,11 @@
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = streamUrl;
         video.onloadedmetadata = function() {
+          if (connectTimeout) {
+            clearTimeout(connectTimeout);
+            connectTimeout = null;
+          }
+          isOnline = true;
           showOnline();
           currentAttempt = 0;
           startWatchdog();
@@ -396,28 +689,28 @@
             video.src = urls.fallback;
             return;
           }
-          currentAttempt++;
-          setTimeout(function() {
-            if (isActive) {
-              video.src = urls.fallback;
-              video.load();
-            }
-          }, 3000);
+          handleOffline();
         };
       } else {
-        showOffline();
+        handleOffline();
       }
     }
 
-    // Connect video events
     video.onplaying = function() {
+      if (connectTimeout) {
+        clearTimeout(connectTimeout);
+        connectTimeout = null;
+      }
+      isOnline = true;
       showOnline();
       currentAttempt = 0;
       lastProgressTime = Date.now();
     };
-    video.oncanplay = function() { showOnline(); };
+    video.oncanplay = function() {
+      isOnline = true;
+      showOnline();
+    };
 
-    // Stagger startup slightly so 16 cameras don't spike simultaneously
     const startDelay = Math.min(index * 150, 2500);
     const timer = setTimeout(function() {
       if (isActive) {
@@ -425,10 +718,13 @@
       }
     }, startDelay);
 
-    // Event listeners
     if (btnRetry) {
       btnRetry.addEventListener('click', function(e) {
         e.stopPropagation();
+        if (probeTimer) {
+          clearInterval(probeTimer);
+          probeTimer = null;
+        }
         isFallback = false;
         currentAttempt = 0;
         startHls(urls.primary);
@@ -453,21 +749,28 @@
       stop: function() {
         isActive = false;
         clearTimeout(timer);
+        if (probeTimer) clearInterval(probeTimer);
         cleanupHls();
-        if (video) {
-          try {
-            video.pause();
-            video.removeAttribute('src');
-            video.load();
-          } catch (e) {}
-        }
       },
       reload: function() {
+        if (probeTimer) {
+          clearInterval(probeTimer);
+          probeTimer = null;
+        }
         isFallback = false;
         currentAttempt = 0;
         startHls(urls.primary);
       }
     });
+  }
+
+  // Master stream dispatcher: RTSP defaults to MJPEG, RTMP defaults to HLS
+  function initCameraStream(cam, cell, index) {
+    if (isCameraRtsp(cam)) {
+      initMjpegStream(cam, cell, index);
+    } else {
+      initHlsStream(cam, cell, index);
+    }
   }
 
   // Render Camera Grid
@@ -511,20 +814,25 @@
         const isFocused = cam.id === focusedCameraId;
         const camNumber = String(idx + 1).padStart(2, '0');
         const camName = cam.name || ('CÂMERA ' + camNumber);
-        const protocol = (cam.protocol || 'RTMP').toUpperCase();
+        const isRtsp = isCameraRtsp(cam);
+        const protocol = (cam.protocol || (isRtsp ? 'RTSP' : 'RTMP')).toUpperCase();
+        const streamType = isRtsp ? 'MJPEG' : 'HLS';
         const location = cam.location || ((cam.city || 'Itamaraju') + ' - ' + (cam.stateUf || 'BA'));
 
         return (
           '<div class="cam-cell ' + (isFocused ? 'active-focus' : '') + '" data-camera-id="' + cam.id + '" title="Duplo clique para focar">' +
             '<div class="cam-video-container">' +
-              '<video class="cam-video" autoplay playsinline muted></video>' +
+              (isRtsp
+                ? '<img class="cam-video cam-mjpeg" alt="' + escapeHtml(camName) + '" />'
+                : '<video class="cam-video" autoplay playsinline muted></video>'
+              ) +
             '</div>' +
 
             '<!-- Channel Badge Top-Left -->' +
             '<div class="cam-tag-channel">' +
               '<span class="ping-dot"></span>' +
               '<span>[CH ' + camNumber + ']</span>' +
-              '<span class="cam-tag-protocol ' + (protocol === 'RTSP' ? 'rtsp' : '') + '">' + protocol + ' &bull; HLS</span>' +
+              '<span class="cam-tag-protocol ' + (isRtsp ? 'rtsp' : '') + '">' + protocol + ' &bull; ' + streamType + '</span>' +
             '</div>' +
 
             '<!-- OSD Top-Right Recording Indicator -->' +
@@ -536,7 +844,7 @@
             '<div class="cam-loading-overlay">' +
               '<div class="loading-spinner-ring"></div>' +
               '<div class="loading-title">Carregando Câmera...</div>' +
-              '<div class="loading-subtitle">Conectando ao fluxo ' + protocol + '...</div>' +
+              '<div class="loading-subtitle">Conectando ao fluxo ' + protocol + ' (' + streamType + ')...</div>' +
             '</div>' +
 
             '<!-- OFFLINE STATE (Matching Image 2 exactly) -->' +
