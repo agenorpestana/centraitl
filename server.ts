@@ -3498,7 +3498,7 @@ async function startServer() {
     }
   }
 
-  // Cooldown and consecutive failure tracker to prevent restart thrashing on unstable network
+  // Cooldown tracker (capped at 5s) to prevent CPU thrashing on temporary network dropouts
   const recordingLastFailureTimes = new Map<string, number>();
   const recordingFailureCounts = new Map<string, number>();
   const isStartingAutoRecording = new Set<string>();
@@ -3516,7 +3516,7 @@ async function startServer() {
       return;
     }
 
-    // Cooldown check with exponential backoff
+    // Short 5s cooldown check on network/connection dropouts
     const lastFail = recordingLastFailureTimes.get(cam.id);
     if (lastFail && Date.now() < lastFail) {
       return;
@@ -3526,8 +3526,8 @@ async function startServer() {
       const proc = activeAutoRecordingProcesses.get(cam.id);
       const startTime = activeAutoRecordingStartTimes.get(cam.id) || Date.now();
       
-      // Watchdog check: If process actively running and hasn't exceeded time limit + 30s, keep running
-      if (proc && proc.exitCode === null && !proc.killed && Date.now() - startTime < (autoRecordingDurationSec + 30) * 1000) {
+      // Watchdog check: If process actively running and hasn't exceeded 5 minutes, keep recording current slice
+      if (proc && proc.exitCode === null && !proc.killed && (Date.now() - startTime < autoRecordingDurationSec * 1000)) {
         return; // Already actively recording a slice
       }
 
@@ -3549,12 +3549,12 @@ async function startServer() {
     isStartingAutoRecording.add(cam.id);
 
     try {
-      const rawKey = cam.streamKey || cam.id;
-      const cleanRawKey = rawKey.replace(/^cam-/, '').replace(/^cam_/, '');
-
       // Direct Full HD stream capture directly from camera source (RTSP / RTMP)
       const inputSource = getValidStreamSource(cam, false);
-      if (!inputSource) return;
+      if (!inputSource) {
+        recordingLastFailureTimes.set(cam.id, Date.now() + 5000);
+        return;
+      }
       const effectiveInputSource = inputSource;
 
       const now = new Date();
@@ -3578,13 +3578,13 @@ async function startServer() {
       if (effectiveInputSource.startsWith('rtsp://')) {
         ffmpegArgs.push(
           '-rtsp_transport', 'tcp',
-          '-stimeout', '20000000',
+          '-stimeout', '8000000', // 8s socket timeout
           '-analyzeduration', '1000000',
           '-probesize', '1000000'
         );
       } else if (effectiveInputSource.startsWith('rtmp://')) {
         ffmpegArgs.push(
-          '-rw_timeout', '20000000',
+          '-rw_timeout', '8000000',
           '-analyzeduration', '1000000',
           '-probesize', '1000000'
         );
@@ -3593,7 +3593,7 @@ async function startServer() {
           '-reconnect', '1',
           '-reconnect_at_eof', '1',
           '-reconnect_streamed', '1',
-          '-reconnect_delay_max', '5'
+          '-reconnect_delay_max', '3'
         );
       }
 
@@ -3618,116 +3618,133 @@ async function startServer() {
         proc.stderr?.on('data', () => {});
       } catch (e: any) {
         console.error('[Auto Recorder FFmpeg Spawn Error]:', e.message || e);
+        recordingLastFailureTimes.set(cam.id, Date.now() + 5000);
         return;
       }
+
+      // Hard wall-clock timer for 5-minute slice (300s):
+      // Ensures that even on variable network packet pacing, each block rotates exactly every 5 minutes!
+      const sliceTimer = setTimeout(() => {
+        if (proc && proc.exitCode === null && !proc.killed) {
+          console.log(`[Auto Recording] Bloco de 5 min atingido para [${cam.name || cam.id}]. Rotacionando para próximo bloco imediatamente...`);
+          try {
+            if (proc.stdin && proc.stdin.writable) proc.stdin.write('q\n');
+            proc.kill('SIGINT');
+          } catch (e) {}
+          setTimeout(() => {
+            if (proc && proc.exitCode === null && !proc.killed) {
+              try { proc.kill('SIGKILL'); } catch (e) {}
+            }
+          }, 1200);
+        }
+      }, autoRecordingDurationSec * 1000);
 
       let isFinalized = false;
       const finalizeSlice = async () => {
         if (isFinalized) return;
         isFinalized = true;
+        clearTimeout(sliceTimer);
+
         activeAutoRecordingProcesses.delete(cam.id);
         activeAutoRecordingStartTimes.delete(cam.id);
 
+        const currentCam = cameras.find((c) => c.id === cam.id) || cam;
+
+        // CRITICAL ZERO-GAP LOGIC:
+        // Immediately start the NEXT 5-minute recording slice without waiting for background disk/db operations!
+        if (currentCam && currentCam.cloudRecordingsActive !== false) {
+          startAutoRecordingForCamera(currentCam);
+        }
+
+        // Process completed slice asynchronously in background
         const endTime = new Date();
         let sourceFileToProcess = partPath;
         if (!fs.existsSync(partPath) && fs.existsSync(outputPath)) {
           sourceFileToProcess = outputPath;
         }
 
-        let validFile = false;
-        let fileSizeMB = 0;
-        let realDurationSec = Math.max(1, Math.round((endTime.getTime() - now.getTime()) / 1000));
-
         if (fs.existsSync(sourceFileToProcess)) {
           try {
             const stats = fs.statSync(sourceFileToProcess);
-            // Process any file with valid content (> 25KB)
-            if (stats.size > 25000) {
-              const repaired = await repairAndFinalizeMp4(sourceFileToProcess, outputPath);
-              if (repaired && fs.existsSync(outputPath)) {
-                const finalStats = fs.statSync(outputPath);
-                fileSizeMB = Math.max(0.1, +(finalStats.size / (1024 * 1024)).toFixed(1));
-                
-                const probedDur = await getMp4Duration(outputPath);
-                if (probedDur > 0) realDurationSec = probedDur;
-
-                // Accept any valid slice with duration >= 5s and size > 25KB
-                if (realDurationSec >= 5 && finalStats.size > 25000) {
-                  validFile = true;
-                } else {
-                  try { fs.unlinkSync(outputPath); } catch (e) {}
+            // If file contains valid video payload (> 20KB)
+            if (stats.size > 20000) {
+              // Move part file to final output path atomically (takes < 1ms)
+              if (sourceFileToProcess !== outputPath) {
+                try {
+                  fs.renameSync(sourceFileToProcess, outputPath);
+                } catch (e) {
+                  try {
+                    fs.copyFileSync(sourceFileToProcess, outputPath);
+                    fs.unlinkSync(sourceFileToProcess);
+                  } catch (e2) {}
                 }
+              }
+
+              if (fs.existsSync(outputPath)) {
+                const finalStats = fs.statSync(outputPath);
+                const fileSizeMB = Math.max(0.1, +(finalStats.size / (1024 * 1024)).toFixed(1));
+                let realDurationSec = Math.max(1, Math.round((endTime.getTime() - now.getTime()) / 1000));
+
+                try {
+                  const probedDur = await getMp4Duration(outputPath);
+                  if (probedDur > 0) realDurationSec = probedDur;
+                } catch (e) {}
+
+                recordingLastFailureTimes.delete(cam.id);
+                recordingFailureCounts.delete(cam.id);
+
+                // Extract snapshot in background without blocking
+                await execAsync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`, 6000).catch(() => {});
+
+                const hasThumb = fs.existsSync(thumbPath);
+                const thumbUrl = hasThumb
+                  ? `/recordings/${thumbFileName}`
+                  : (cam.thumbnailUrl && !cam.thumbnailUrl.includes('unsplash') ? cam.thumbnailUrl : `/api/cameras/${cam.id}/snapshot`);
+
+                const isFullSlice = realDurationSec >= 270;
+                const sliceTag = isFullSlice
+                  ? 'Bloco Completo (5 min)'
+                  : `Fatia (${Math.floor(realDurationSec / 60)}m${realDurationSec % 60}s)`;
+
+                const newRec: CloudRecording = {
+                  id: `rec-auto-${cam.id}-${timestamp}`,
+                  cameraId: cam.id,
+                  cameraName: cam.name,
+                  startTime: formatDateTime(now),
+                  endTime: formatDateTime(endTime),
+                  durationSeconds: realDurationSec,
+                  fileSizeMB,
+                  thumbnailUrl: thumbUrl,
+                  streamUrl: relativeUrl,
+                  isE2EELocked: cam.isE2EEEncrypted ?? true,
+                  tags: [sliceTag, 'Nuvem Real HD', cam.location || 'Central ITL'],
+                };
+
+                recordings.unshift(newRec);
+                if (recordings.length > 5000) recordings = recordings.slice(0, 5000);
+                reconciledDiskFiles.add(fileName);
+
+                syncRecordingToMysql(newRec);
+                pruneRecordingsFIFO();
+                saveToLocalFile();
+                saveSqliteFile();
               }
             } else {
               try { fs.unlinkSync(sourceFileToProcess); } catch (e) {}
+              // Transient failure (under 20KB), retry in 5s
+              recordingLastFailureTimes.set(cam.id, Date.now() + 5000);
             }
-          } catch (e) {}
+          } catch (e: any) {
+            console.warn(`[Auto Recording Error] Falha ao finalizar fatia de ${cam.name}:`, e.message || e);
+            recordingLastFailureTimes.set(cam.id, Date.now() + 5000);
+          }
+        } else {
+          // File was not generated (e.g. camera offline) -> retry in 5s
+          recordingLastFailureTimes.set(cam.id, Date.now() + 5000);
         }
 
         if (fs.existsSync(partPath)) {
           try { fs.unlinkSync(partPath); } catch (e) {}
-        }
-
-        const currentCam = cameras.find((c) => c.id === cam.id) || cam;
-
-        if (validFile) {
-          recordingLastFailureTimes.delete(cam.id);
-          recordingFailureCounts.delete(cam.id);
-
-          // Extract real snapshot image from the captured video
-          await execAsync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`, 8000).catch(() => {});
-
-          const hasThumb = fs.existsSync(thumbPath);
-          const thumbUrl = hasThumb
-            ? `/recordings/${thumbFileName}`
-            : (cam.thumbnailUrl && !cam.thumbnailUrl.includes('unsplash') ? cam.thumbnailUrl : `/api/cameras/${cam.id}/snapshot`);
-
-          const isFullSlice = realDurationSec >= 270;
-          const sliceTag = isFullSlice
-            ? 'Bloco Completo (5 min)'
-            : `Fatia (${Math.floor(realDurationSec / 60)}m${realDurationSec % 60}s)`;
-
-          const newRec: CloudRecording = {
-            id: `rec-auto-${cam.id}-${timestamp}`,
-            cameraId: cam.id,
-            cameraName: cam.name,
-            startTime: formatDateTime(now),
-            endTime: formatDateTime(endTime),
-            durationSeconds: realDurationSec,
-            fileSizeMB,
-            thumbnailUrl: thumbUrl,
-            streamUrl: relativeUrl,
-            isE2EELocked: cam.isE2EEEncrypted ?? true,
-            tags: [sliceTag, 'Nuvem Real HD', cam.location || 'Central ITL'],
-          };
-
-          recordings.unshift(newRec);
-          if (recordings.length > 5000) recordings = recordings.slice(0, 5000);
-          reconciledDiskFiles.add(fileName);
-          
-          syncRecordingToMysql(newRec);
-          pruneRecordingsFIFO();
-          saveToLocalFile();
-          saveSqliteFile();
-
-          // Start next recording slice cleanly after 2 seconds
-          if (currentCam && currentCam.cloudRecordingsActive !== false) {
-            setTimeout(() => {
-              startAutoRecordingForCamera(currentCam);
-            }, 2000);
-          }
-        } else {
-          // If slice was < 30s or failed, set exponential backoff to avoid hammering the CPU or camera
-          const failCount = (recordingFailureCounts.get(cam.id) || 0) + 1;
-          recordingFailureCounts.set(cam.id, failCount);
-          const backoffMs = Math.min(180000, 15000 * Math.pow(1.8, Math.min(failCount - 1, 5)));
-          recordingLastFailureTimes.set(cam.id, Date.now() + backoffMs);
-
-          if (currentCam && currentCam.cloudRecordingsActive !== false) {
-            setTimeout(() => {
-              startAutoRecordingForCamera(currentCam);
-            }, backoffMs);
-          }
         }
       };
 
@@ -3739,6 +3756,7 @@ async function startServer() {
   }
 
   function checkAndStartAllAutoRecordings() {
+    const now = Date.now();
     cameras.forEach((cam) => {
       // Ensure cloud recording is enabled by default
       if (cam.cloudRecordingsActive === undefined) {
@@ -3746,17 +3764,38 @@ async function startServer() {
       }
 
       if (cam.cloudRecordingsActive !== false) {
-        const lastFail = recordingLastFailureTimes.get(cam.id);
-        if (!activeAutoRecordingProcesses.has(cam.id) && (!lastFail || Date.now() >= lastFail)) {
-          startAutoRecordingForCamera(cam);
+        const proc = activeAutoRecordingProcesses.get(cam.id);
+        const startTime = activeAutoRecordingStartTimes.get(cam.id);
+
+        // Watchdog: If a process has been running for longer than 310 seconds (5 min + 10s), force-flush it
+        if (proc && startTime && (now - startTime > (autoRecordingDurationSec + 10) * 1000)) {
+          console.warn(`[Auto Recording Watchdog] Processo da câmera ${cam.name || cam.id} gravando há mais de ${Math.round((now - startTime)/1000)}s. Encerrando fatia para iniciar novo bloco.`);
+          try {
+            if (proc.stdin && proc.stdin.writable) proc.stdin.write('q\n');
+            proc.kill('SIGINT');
+          } catch (e) {}
+          setTimeout(() => {
+            if (proc && proc.exitCode === null && !proc.killed) {
+              try { proc.kill('SIGKILL'); } catch (e) {}
+            }
+          }, 1200);
+          return;
+        }
+
+        // If no process is running, verify cooldown and launch
+        if (!proc) {
+          const lastFail = recordingLastFailureTimes.get(cam.id) || 0;
+          if (now >= lastFail) {
+            startAutoRecordingForCamera(cam);
+          }
         }
       }
     });
   }
 
-  // Start continuous 24/7 background recording for all cameras gently
-  setTimeout(checkAndStartAllAutoRecordings, 3000);
-  setInterval(checkAndStartAllAutoRecordings, 60000);
+  // Supervisor runs every 5 seconds to ensure no camera is ever left unrecorded
+  setTimeout(checkAndStartAllAutoRecordings, 2000);
+  setInterval(checkAndStartAllAutoRecordings, 5000);
 
   // Background disk reconciliation (runs once at boot and gently every 10 minutes)
   setTimeout(() => {
