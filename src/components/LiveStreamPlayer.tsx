@@ -116,6 +116,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
   const rawStreamUrl = camera.rtspUrl || camera.rtmpUrl || camera.fullRtmpUrl || videoUrl || '';
   const mjpegUrl = `/api/cameras/${camera.id}/stream?key=cam_${cleanKey}&url=${encodeURIComponent(rawStreamUrl)}&t=${retryCount}`;
   const consecutiveErrorsRef = useRef<number>(0);
+  const hasRenderedFrameRef = useRef<boolean>(false);
 
   // Active frame verification for MJPEG: dynamically check if <img> has valid rendered dimensions
   useEffect(() => {
@@ -128,6 +129,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           clearTimeout(loadingTimerRef.current);
           loadingTimerRef.current = null;
         }
+        hasRenderedFrameRef.current = true;
         consecutiveErrorsRef.current = 0;
         setConnectionState('ONLINE');
       }
@@ -135,6 +137,45 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
 
     return () => clearInterval(interval);
   }, [useMjpegStream, isVisible, streamMode, retryCount]);
+
+  // Enterprise Monitoring Auto-Recovery Watchdog (Somaseg Architecture)
+  // Constantly monitors video playback health, unfreezes stalled streams, and auto-recovers black screens
+  useEffect(() => {
+    let lastTime = -1;
+    let frozenCount = 0;
+
+    const watchdog = setInterval(() => {
+      const vid = videoRef.current;
+      if (!vid || streamMode !== 'VIDEO' || useMjpegStream) return;
+
+      if (connectionState === 'ONLINE' && !vid.paused) {
+        if (vid.currentTime === lastTime && vid.currentTime > 0) {
+          frozenCount++;
+          if (frozenCount >= 2) {
+            console.warn(`[Watchdog Somaseg] Fluxo de '${camera.name}' congelado na posição ${vid.currentTime}s. Recuperando ao vivo...`);
+            if (vid.buffered && vid.buffered.length > 0) {
+              try {
+                vid.currentTime = Math.max(0, vid.buffered.end(vid.buffered.length - 1) - 0.2);
+              } catch (e) {}
+            }
+          }
+          if (frozenCount >= 4) {
+            frozenCount = 0;
+            lastTime = -1;
+            setRetryCount((prev) => prev + 1);
+          }
+        } else {
+          lastTime = vid.currentTime;
+          frozenCount = 0;
+        }
+      } else if (connectionState === 'OFFLINE') {
+        // Auto-reconnect supervisor for monitoring wall screens
+        setRetryCount((prev) => prev + 1);
+      }
+    }, 3500);
+
+    return () => clearInterval(watchdog);
+  }, [connectionState, streamMode, useMjpegStream, camera.name, camera.id]);
 
   const displayStreamUrl = React.useMemo(() => {
     if (camera.protocol === 'RTSP') {
@@ -415,6 +456,10 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       }, 1500);
       return;
     }
+    // Automatically schedule auto-reconnection attempt so screen never stays dead
+    setTimeout(() => {
+      setRetryCount((prev) => prev + 1);
+    }, 3000);
     setConnectionState('OFFLINE');
   };
 
@@ -423,6 +468,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       clearTimeout(loadingTimerRef.current);
       loadingTimerRef.current = null;
     }
+    hasRenderedFrameRef.current = true;
     consecutiveErrorsRef.current = 0;
     setConnectionState('ONLINE');
   };
@@ -628,7 +674,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
               }}
               onError={handleVideoError}
               className={`w-full h-full ${isFullscreen ? 'object-contain max-h-screen' : 'object-cover'} transition duration-300 ${
-                connectionState === 'ONLINE' ? 'opacity-100' : 'opacity-0'
+                connectionState === 'ONLINE' ? 'opacity-100' : hasRenderedFrameRef.current ? 'opacity-80' : 'opacity-0'
               }`}
               style={{ transform: `scale(${zoomLevel})` }}
             />
@@ -643,14 +689,24 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
             muted={isMuted}
             crossOrigin="anonymous"
             className={`w-full h-full ${isFullscreen ? 'object-contain max-h-screen' : 'object-cover'} transition duration-300 ${
-              connectionState === 'ONLINE' ? 'opacity-100' : 'opacity-0'
+              connectionState === 'ONLINE' ? 'opacity-100' : hasRenderedFrameRef.current ? 'opacity-80' : 'opacity-0'
             }`}
             style={{ transform: `scale(${zoomLevel})` }}
           />
         )}
 
-        {/* LOADING STATE */}
-        {connectionState === 'LOADING' && (
+        {/* Somaseg Reconnecting Pill: When stream briefly renegotiates, maintains image visibility without turning black */}
+        {(connectionState === 'LOADING' || connectionState === 'OFFLINE') && hasRenderedFrameRef.current && (
+          <div className="absolute top-2 right-2 z-20 bg-slate-950/85 backdrop-blur-md border border-amber-500/50 px-2.5 py-1 rounded-full flex items-center space-x-1.5 shadow-xl animate-pulse pointer-events-none">
+            <RefreshCw className="w-3 h-3 text-amber-400 animate-spin" />
+            <span className="text-[10px] font-bold text-amber-300 tracking-wide">
+              {connectionState === 'LOADING' ? 'Sincronizando...' : 'Reconectando...'}
+            </span>
+          </div>
+        )}
+
+        {/* INITIAL LOADING STATE (Only if stream hasn't rendered yet) */}
+        {connectionState === 'LOADING' && !hasRenderedFrameRef.current && (
           <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-4 text-center z-20 space-y-2">
             <div className="relative flex items-center justify-center">
               <div className="w-10 h-10 rounded-full border-2 border-emerald-500/20 border-t-emerald-400 animate-spin" />
@@ -665,8 +721,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           </div>
         )}
 
-        {/* OFFLINE STATE */}
-        {connectionState === 'OFFLINE' && (
+        {/* INITIAL OFFLINE STATE (Only if camera never rendered yet or initial offline) */}
+        {connectionState === 'OFFLINE' && !hasRenderedFrameRef.current && (
           <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center p-4 text-center z-20 space-y-3">
             <div className="w-10 h-10 rounded-2xl bg-rose-950/80 border border-rose-800/80 flex items-center justify-center text-rose-500 shadow-lg">
               <WifiOff className="w-5 h-5 animate-pulse" />

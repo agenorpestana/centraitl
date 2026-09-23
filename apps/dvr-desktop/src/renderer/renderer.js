@@ -634,8 +634,14 @@
                 }
                 currentAttempt++;
                 if (currentAttempt > 3) {
-                  // If repeated network failures, declare offline and avoid spinning CPU
+                  // Keep probing quietly every 5s so wall monitors recover by themselves
                   handleOffline();
+                  if (retryTimer) clearTimeout(retryTimer);
+                  retryTimer = setTimeout(function() {
+                    if (isActive) {
+                      startHls(streamUrl);
+                    }
+                  }, 5000);
                   return;
                 }
                 const netDelay = Math.min(currentAttempt * 2000, 5000);
