@@ -30,11 +30,16 @@
   const btnRefresh = document.getElementById('btnRefresh');
   const btnLogout = document.getElementById('btnLogout');
   const layoutButtons = document.querySelectorAll('.layout-btn');
+  const btnPrevPage = document.getElementById('btnPrevPage');
+  const btnNextPage = document.getElementById('btnNextPage');
+  const pageIndicator = document.getElementById('pageIndicator');
+  const paginationContainer = document.getElementById('paginationContainer');
 
   // State
   let currentLayout = '2x2';
   let previousLayoutBeforeFocus = '2x2';
   let focusedCameraId = null;
+  let currentPage = 1;
   let currentCameras = [];
   let currentServerUrl = 'https://centralitl.unityautomacoes.com.br';
   let currentAuthToken = '';
@@ -561,12 +566,12 @@
       cleanupHls();
       isOnline = false;
 
-      // Fast offline detection: If manifest or media doesn't load within 12s, show offline
+      // Fast offline detection: If manifest or media doesn't load within 15s, show offline
       connectTimeout = setTimeout(function() {
         if (!isActive || isOnline) return;
         console.warn('[DVR HLS Timeout] Sem fluxo de pacotes RTMP/HLS (Off-line):', cam.name);
         handleOffline();
-      }, 12000);
+      }, 15000);
 
       const HlsClass = window.Hls;
       if (HlsClass && HlsClass.isSupported()) {
@@ -574,18 +579,18 @@
           enableWorker: true,
           lowLatencyMode: false,
           backBufferLength: 0,
-          maxBufferLength: 8,
-          maxMaxBufferLength: 16,
-          liveSyncDurationCount: 3,
-          liveMaxLatencyDurationCount: 6,
-          manifestLoadingTimeOut: 10000,
-          manifestLoadingMaxRetry: 3,
+          maxBufferLength: 4,
+          maxMaxBufferLength: 8,
+          liveSyncDurationCount: 2,
+          liveMaxLatencyDurationCount: 5,
+          manifestLoadingTimeOut: 15000,
+          manifestLoadingMaxRetry: 6,
           manifestLoadingRetryDelay: 1000,
-          levelLoadingTimeOut: 10000,
-          levelLoadingMaxRetry: 3,
+          levelLoadingTimeOut: 15000,
+          levelLoadingMaxRetry: 6,
           levelLoadingRetryDelay: 1000,
-          fragLoadingTimeOut: 15000,
-          fragLoadingMaxRetry: 3,
+          fragLoadingTimeOut: 20000,
+          fragLoadingMaxRetry: 6,
           fragLoadingRetryDelay: 1000,
           nudgeOffset: 0.2,
           nudgeMaxRetry: 5,
@@ -770,13 +775,34 @@
     });
   }
 
-  // Master stream dispatcher: RTSP defaults to MJPEG, RTMP defaults to HLS
-  function initCameraStream(cam, cell, index) {
-    if (isCameraRtsp(cam)) {
-      initMjpegStream(cam, cell, index);
-    } else {
-      initHlsStream(cam, cell, index);
+  // Layout capacity helper
+  function getLayoutCapacity() {
+    if (currentLayout === '1x1') return 1;
+    if (currentLayout === '2x2') return 4;
+    if (currentLayout === '3x3') return 9;
+    if (currentLayout === '4x4') return 16;
+    return 4;
+  }
+
+  // Update pagination indicator & button states
+  function updatePaginationUI(totalPages) {
+    if (pageIndicator) {
+      pageIndicator.textContent = 'Pág ' + currentPage + ' / ' + totalPages;
     }
+    if (btnPrevPage) {
+      btnPrevPage.disabled = (currentPage <= 1);
+    }
+    if (btnNextPage) {
+      btnNextPage.disabled = (currentPage >= totalPages);
+    }
+    if (paginationContainer) {
+      paginationContainer.style.display = totalPages > 1 || currentCameras.length > 0 ? 'flex' : 'none';
+    }
+  }
+
+  // Master stream dispatcher: Uses HLS hardware remux by default for all cameras
+  function initCameraStream(cam, cell, index) {
+    initHlsStream(cam, cell, index);
   }
 
   // Render Camera Grid
@@ -789,6 +815,7 @@
     videoGrid.className = 'camera-grid grid-' + currentLayout;
 
     if (!currentCameras || currentCameras.length === 0) {
+      if (paginationContainer) paginationContainer.style.display = 'none';
       videoGrid.innerHTML =
         '<div class="empty-cameras">' +
           '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.5">' +
@@ -801,37 +828,46 @@
       return;
     }
 
-    let capacity = 4;
-    if (currentLayout === '1x1') capacity = 1;
-    else if (currentLayout === '2x2') capacity = 4;
-    else if (currentLayout === '3x3') capacity = 9;
-    else if (currentLayout === '4x4') capacity = 16;
+    const capacity = getLayoutCapacity();
+    const totalPages = Math.max(1, Math.ceil(currentCameras.length / capacity));
+
+    if (currentPage > totalPages) {
+      currentPage = totalPages;
+    }
+    if (currentPage < 1) {
+      currentPage = 1;
+    }
+
+    updatePaginationUI(totalPages);
 
     let camerasToDisplay = currentCameras;
+    let startIndex = 0;
+
     if (focusedCameraId && currentLayout === '1x1') {
       const found = currentCameras.find(function(c) { return c.id === focusedCameraId; });
       camerasToDisplay = found ? [found] : currentCameras.slice(0, 1);
+      startIndex = currentCameras.findIndex(function(c) { return c.id === focusedCameraId; });
+      if (startIndex < 0) startIndex = 0;
     } else {
-      camerasToDisplay = currentCameras.slice(0, capacity);
+      startIndex = (currentPage - 1) * capacity;
+      camerasToDisplay = currentCameras.slice(startIndex, startIndex + capacity);
     }
 
     videoGrid.innerHTML = camerasToDisplay
       .map(function(cam, idx) {
         const isFocused = cam.id === focusedCameraId;
-        const camNumber = String(idx + 1).padStart(2, '0');
+        const globalIdx = startIndex + idx + 1;
+        const camNumber = String(globalIdx).padStart(2, '0');
         const camName = cam.name || ('CÂMERA ' + camNumber);
         const isRtsp = isCameraRtsp(cam);
         const protocol = (cam.protocol || (isRtsp ? 'RTSP' : 'RTMP')).toUpperCase();
-        const streamType = isRtsp ? 'MJPEG' : 'HLS';
+        const streamType = 'HLS';
         const location = cam.location || ((cam.city || 'Itamaraju') + ' - ' + (cam.stateUf || 'BA'));
 
         return (
           '<div class="cam-cell ' + (isFocused ? 'active-focus' : '') + '" data-camera-id="' + cam.id + '" title="Duplo clique para focar">' +
             '<div class="cam-video-container">' +
-              (isRtsp
-                ? '<img class="cam-video cam-mjpeg" alt="' + escapeHtml(camName) + '" />'
-                : '<video class="cam-video" autoplay playsinline muted></video>'
-              ) +
+              '<video class="cam-video" autoplay playsinline muted></video>' +
             '</div>' +
 
             '<!-- Channel Badge Top-Left -->' +
@@ -1110,10 +1146,50 @@
       if (target) {
         currentLayout = target;
         if (currentLayout !== '1x1') focusedCameraId = null;
+        currentPage = 1; // Reset to page 1 on layout change
         updateLayoutButtonsUI();
         renderCameraGrid();
       }
     });
+  });
+
+  // Pagination Events (Página Anterior / Próxima Página)
+  if (btnPrevPage) {
+    btnPrevPage.addEventListener('click', function() {
+      if (currentPage > 1) {
+        currentPage--;
+        renderCameraGrid();
+      }
+    });
+  }
+
+  if (btnNextPage) {
+    btnNextPage.addEventListener('click', function() {
+      const capacity = getLayoutCapacity();
+      const totalPages = Math.max(1, Math.ceil(currentCameras.length / capacity));
+      if (currentPage < totalPages) {
+        currentPage++;
+        renderCameraGrid();
+      }
+    });
+  }
+
+  // Keyboard navigation for pagination (ArrowLeft / ArrowRight / PageUp / PageDown)
+  window.addEventListener('keydown', function(e) {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+      if (currentPage > 1) {
+        currentPage--;
+        renderCameraGrid();
+      }
+    } else if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+      const capacity = getLayoutCapacity();
+      const totalPages = Math.max(1, Math.ceil(currentCameras.length / capacity));
+      if (currentPage < totalPages) {
+        currentPage++;
+        renderCameraGrid();
+      }
+    }
   });
 
   // Fullscreen Toggle

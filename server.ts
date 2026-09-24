@@ -792,6 +792,7 @@ async function startServer() {
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', '*');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Connection', 'close');
 
     const fileName = path.basename(req.path);
     const key = fileName.replace(/\.(m3u8|ts)$/, '');
