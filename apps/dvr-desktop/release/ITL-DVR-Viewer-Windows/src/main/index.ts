@@ -10,6 +10,12 @@ import { SecurityVault, UserSession } from './security-vault';
 app.commandLine.appendSwitch('ignore-certificate-errors');
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
+// Increase maximum concurrent connections per host from 6 to 64 for 16x16 / multi-camera CCTV monitoring
+app.commandLine.appendSwitch('max-connections-per-server', '64');
+app.commandLine.appendSwitch('max-sockets-per-group', '64');
+app.commandLine.appendSwitch('max-sockets-per-proxy-server', '64');
+app.commandLine.appendSwitch('disable-http-cache');
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;

@@ -848,6 +848,16 @@ async function startServer() {
       path.join(hlsServeDir, `${cleanKeyLower}${isSub ? '_sub' : ''}.${fileName.endsWith('.ts') ? 'ts' : 'm3u8'}`),
     ];
 
+    // If a sub-stream was requested but does not exist on disk, seamlessly fall back to the main stream file
+    if (isSub) {
+      candidateFiles.push(
+        path.join(hlsServeDir, `cam_${cleanKey}.${fileName.endsWith('.ts') ? 'ts' : 'm3u8'}`),
+        path.join(hlsServeDir, `cam_${cleanKeyLower}.${fileName.endsWith('.ts') ? 'ts' : 'm3u8'}`),
+        path.join(hlsServeDir, `${cleanKey}.${fileName.endsWith('.ts') ? 'ts' : 'm3u8'}`),
+        path.join(hlsServeDir, `${cleanKeyLower}.${fileName.endsWith('.ts') ? 'ts' : 'm3u8'}`)
+      );
+    }
+
     const findMatchingFile = () => {
       for (const candidate of candidateFiles) {
         if (fs.existsSync(candidate)) return candidate;
@@ -1078,7 +1088,11 @@ async function startServer() {
     return camList.map((c) => {
       const cleanKey = (c.streamKey || c.id || 'stream').replace(/^cam[-_]/i, '');
       const hlsPath = `/live/cam_${cleanKey}.m3u8`;
-      const subHlsPath = `/live/cam_${cleanKey}_sub.m3u8`;
+      const hasHardwareSub = (c.protocol === 'RTSP' || (c.rtspUrl && c.rtspUrl.includes('rtsp'))) &&
+        c.subStreamUrl &&
+        c.subStreamUrl.trim() !== '' &&
+        c.subStreamUrl.trim() !== c.rtspUrl;
+      const subHlsPath = hasHardwareSub ? `/live/cam_${cleanKey}_sub.m3u8` : hlsPath;
       const fullHls = origin ? `${origin}${hlsPath}` : hlsPath;
       const fullSubHls = origin ? `${origin}${subHlsPath}` : subHlsPath;
       const mjpegPath = `/api/cameras/${c.id}/stream`;

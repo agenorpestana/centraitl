@@ -179,25 +179,36 @@
   function getCameraHlsUrls(cam, isFocus) {
     const cleanServer = currentServerUrl.replace(/\/$/, '');
     const rawKey = cam.streamKey || cam.id || 'stream';
-    const cleanKey = String(rawKey).replace(/^cam[-_]/i, '');
+    const cleanKey = String(rawKey).replace(/^cam[-_]/i, '').replace(/[-_]sub$/i, '');
     
     // Use camera videoStreamUrl if valid, otherwise build standard live m3u8
     let mainUrl = cam.videoStreamUrl || cam.fullRtmpUrl || (cleanServer + '/live/cam_' + cleanKey + '.m3u8');
     if (mainUrl.startsWith('/')) {
       mainUrl = cleanServer + mainUrl;
     }
+    // Remove accidental _sub from mainUrl to ensure full stream validity
+    mainUrl = mainUrl.replace(/_sub\.m3u8/gi, '.m3u8');
     if (mainUrl.includes('/live/') && !mainUrl.endsWith('.m3u8')) {
       mainUrl = mainUrl.split('?')[0] + '.m3u8';
     }
 
-    // Only use sub-stream if explicitly configured on the camera object
-    let subUrl = cam.subStreamUrl || cam.subHlsUrl || null;
-    if (subUrl && subUrl.startsWith('/')) {
-      subUrl = cleanServer + subUrl;
+    // Only RTSP cameras with an explicit secondary RTSP sub-channel have a real sub-stream
+    const isRtsp = isCameraRtsp(cam);
+    const hasExplicitSub = isRtsp && cam.subStreamUrl &&
+      typeof cam.subStreamUrl === 'string' &&
+      cam.subStreamUrl.trim() !== '' &&
+      cam.subStreamUrl.trim() !== cam.rtspUrl &&
+      /sub|subtype=1|onvif2|stream2|ch0_1/i.test(cam.subStreamUrl);
+
+    let subUrl = null;
+    if (hasExplicitSub) {
+      subUrl = cleanServer + '/live/cam_' + cleanKey + '_sub.m3u8';
     }
 
+    // For all RTMP cameras and single-feed cameras, primary is ALWAYS mainUrl
+    // Even in multi-camera grid (2x2, 3x3, 4x4), mainUrl connects directly without waiting or 404 retries!
     return {
-      primary: (!isFocus && subUrl) ? subUrl : mainUrl,
+      primary: (subUrl && !isFocus) ? subUrl : mainUrl,
       fallback: mainUrl
     };
   }
@@ -487,17 +498,19 @@
 
     async function probeHlsOnline() {
       if (!isActive || isOnline) return;
-      console.log('[DVR Probe] Verificando se câmera RTMP retornou online:', cam.name);
+      const targetCheck = urls.fallback || urls.primary;
+      console.log('[DVR Probe] Verificando se câmera retornou online:', cam.name, targetCheck);
       try {
-        const resp = await fetch(urls.primary, { method: 'HEAD', cache: 'no-cache' });
+        const resp = await fetch(targetCheck, { method: 'HEAD', cache: 'no-cache' });
         if (resp && resp.ok) {
-          console.log('[DVR Probe] Câmera RTMP retornou com manifesto HLS! Conectando:', cam.name);
+          console.log('[DVR Probe] Câmera retornou com manifesto HLS! Conectando:', cam.name);
           if (probeTimer) {
             clearInterval(probeTimer);
             probeTimer = null;
           }
           currentAttempt = 0;
-          startHls(urls.primary);
+          isFallback = true;
+          startHls(targetCheck);
         }
       } catch (e) {}
     }
@@ -566,12 +579,18 @@
       cleanupHls();
       isOnline = false;
 
-      // Fast offline detection: If manifest or media doesn't load within 15s, show offline
+      // Fast offline detection: If manifest or media doesn't load within 12s, try fallback first
       connectTimeout = setTimeout(function() {
         if (!isActive || isOnline) return;
+        if (!isFallback && urls.fallback && streamUrl !== urls.fallback) {
+          console.warn('[DVR HLS Timeout] Timeout no fluxo inicial, alternando para fluxo principal:', cam.name);
+          isFallback = true;
+          startHls(urls.fallback);
+          return;
+        }
         console.warn('[DVR HLS Timeout] Sem fluxo de pacotes RTMP/HLS (Off-line):', cam.name);
         handleOffline();
-      }, 15000);
+      }, 12000);
 
       const HlsClass = window.Hls;
       if (HlsClass && HlsClass.isSupported()) {
@@ -583,15 +602,15 @@
           maxMaxBufferLength: 8,
           liveSyncDurationCount: 2,
           liveMaxLatencyDurationCount: 5,
-          manifestLoadingTimeOut: 15000,
-          manifestLoadingMaxRetry: 6,
-          manifestLoadingRetryDelay: 1000,
-          levelLoadingTimeOut: 15000,
-          levelLoadingMaxRetry: 6,
-          levelLoadingRetryDelay: 1000,
-          fragLoadingTimeOut: 20000,
-          fragLoadingMaxRetry: 6,
-          fragLoadingRetryDelay: 1000,
+          manifestLoadingTimeOut: 6000,
+          manifestLoadingMaxRetry: 2,
+          manifestLoadingRetryDelay: 500,
+          levelLoadingTimeOut: 8000,
+          levelLoadingMaxRetry: 2,
+          levelLoadingRetryDelay: 500,
+          fragLoadingTimeOut: 15000,
+          fragLoadingMaxRetry: 4,
+          fragLoadingRetryDelay: 800,
           nudgeOffset: 0.2,
           nudgeMaxRetry: 5,
           maxLoadingDelay: 4,
@@ -632,7 +651,8 @@
           if (data && data.fatal) {
             switch (data.type) {
               case HlsClass.ErrorTypes.NETWORK_ERROR:
-                if (!isFallback && streamUrl.includes('_sub.m3u8')) {
+                if (!isFallback && urls.fallback && streamUrl !== urls.fallback) {
+                  console.warn('[DVR HLS Fallback] Falha no fluxo atual, alternando imediatamente para fluxo principal:', cam.name, urls.fallback);
                   isFallback = true;
                   startHls(urls.fallback);
                   return;
@@ -644,7 +664,7 @@
                   if (retryTimer) clearTimeout(retryTimer);
                   retryTimer = setTimeout(function() {
                     if (isActive) {
-                      startHls(streamUrl);
+                      startHls(urls.fallback || streamUrl);
                     }
                   }, 5000);
                   return;
@@ -736,9 +756,9 @@
           clearInterval(probeTimer);
           probeTimer = null;
         }
-        isFallback = false;
+        isFallback = true;
         currentAttempt = 0;
-        startHls(urls.primary);
+        startHls(urls.fallback || urls.primary);
       });
     }
 

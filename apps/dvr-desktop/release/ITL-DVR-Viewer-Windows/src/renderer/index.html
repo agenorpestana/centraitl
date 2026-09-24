@@ -89,6 +89,51 @@
     .layout-btn:hover { color: #fff; background: rgba(255,255,255,0.06); }
     .layout-btn.active { color: #fff; background: var(--primary); }
 
+    /* Pagination Controls */
+    .pagination-container {
+      display: flex;
+      align-items: center;
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px 4px;
+      gap: 4px;
+    }
+    .btn-page {
+      background: #131d33;
+      border: 1px solid #1e293b;
+      color: #cbd5e1;
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+    }
+    .btn-page:hover:not(:disabled) {
+      color: #fff;
+      background: #1e293b;
+      border-color: #3b82f6;
+    }
+    .btn-page:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+      border-color: transparent;
+      background: transparent;
+    }
+    .page-indicator {
+      font-size: 11px;
+      font-weight: 800;
+      color: #38bdf8;
+      padding: 0 8px;
+      font-family: 'Consolas', 'Courier New', monospace;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+
     .btn-icon {
       background: var(--card);
       border: 1px solid var(--border);
@@ -635,6 +680,19 @@
     </div>
 
     <div class="header-right">
+      <!-- Pagination Controls (Página Anterior / Próxima Página) -->
+      <div id="paginationContainer" class="pagination-container">
+        <button id="btnPrevPage" class="btn-page" title="Página Anterior (Tecla Seta Esquerda ou PageUp)" disabled>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+          <span>Anterior</span>
+        </button>
+        <span id="pageIndicator" class="page-indicator">Pág 1 / 1</span>
+        <button id="btnNextPage" class="btn-page" title="Próxima Página (Tecla Seta Direita ou PageDown)">
+          <span>Próxima</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+      </div>
+
       <!-- Layout Switcher -->
       <div class="layout-switcher">
         <button class="layout-btn" data-layout="1x1" title="Visualização 1 Câmera em Destaque">1x1</button>
