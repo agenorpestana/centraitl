@@ -1,5 +1,41 @@
 [
   {
+    "id": "log-1790965564436-655",
+    "userName": "ITL Admin",
+    "action": "Usuário removido: user-8108",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:26:04"
+  },
+  {
+    "id": "log-1790965558220-138",
+    "userName": "ITL Admin",
+    "action": "Permissões/dados do usuário Carlos Gerente Atualizado atualizados",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:25:58"
+  },
+  {
+    "id": "log-1790965540983-269",
+    "userName": "ITL Admin",
+    "action": "Novo usuário cadastrado: Carlos Gerente (COMPANY_ADMIN)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:25:40"
+  },
+  {
+    "id": "log-1790965068112-885",
+    "userName": "ITL Admin",
+    "action": "Novo usuário cadastrado: Teste Usuario (RESIDENT)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:17:48"
+  },
+  {
     "id": "log-1789425586595-704",
     "userName": "Super Admin Unity",
     "action": "Login efetuado com sucesso (ADMIN)",

@@ -726,9 +726,32 @@ async function startServer() {
     }
   }
 
+  // Parse --port CLI flag if passed by dev server runner
+  const portArgIndex = process.argv.indexOf('--port');
+  if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
+    const parsed = parseInt(process.argv[portArgIndex + 1], 10);
+    if (!isNaN(parsed) && parsed > 0) {
+      PORT = parsed;
+    }
+  }
+
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+  // Immediate fast health check for platform readiness probes
+  app.get(['/api/health', '/healthz'], (req, res) => {
+    res.json({
+      status: 'ok',
+      systemName: 'Central ITL de Câmeras & Segurança',
+      version: '2.5.0',
+      uptimeSeconds: Math.round(process.uptime()),
+      databaseType: 'JSON Persistence Store',
+      camerasCount: cameras ? cameras.length : 0,
+      usersCount: users ? users.length : 0,
+      port: PORT,
+    });
+  });
 
   // Setup directory for real recorded video streams (stored OUTSIDE public/ to avoid Vite build file-copy conflicts)
   const recordingsDir = path.join(process.cwd(), 'recordings');
@@ -1444,11 +1467,23 @@ async function startServer() {
             chosenDueDay: getVal(row, 'chosen_due_day') ? Number(getVal(row, 'chosen_due_day')) : undefined,
             financialStatus: (getVal(row, 'financial_status') || 'OK') as any,
             daysOverdue: Number(getVal(row, 'days_overdue') || 0),
+            companyId: getVal(row, 'company_id') ? String(getVal(row, 'company_id')) : undefined,
+            companyName: getVal(row, 'company_name') ? String(getVal(row, 'company_name')) : undefined,
+            isCompanyAdmin: Boolean(getVal(row, 'is_company_admin')),
             lastActive: String(getVal(row, 'last_active') || 'Agora'),
             createdAt: String(getVal(row, 'created_at') || '2026-01-01'),
           };
         });
-        if (loadedUsers.length > 0) users = loadedUsers;
+
+        // Merge SQLite users with in-memory users, respecting deletions
+        const userMap = new Map<string, User>();
+        loadedUsers.forEach((u) => {
+          if (!deletedUserIds.has(u.id)) userMap.set(u.id, u);
+        });
+        users.forEach((u) => {
+          if (u.id && !deletedUserIds.has(u.id)) userMap.set(u.id, u);
+        });
+        users = Array.from(userMap.values()).filter((u) => !deletedUserIds.has(u.id));
       }
 
     } catch (e: any) {
@@ -1535,10 +1570,17 @@ async function startServer() {
           chosen_due_day INTEGER DEFAULT 5,
           financial_status TEXT DEFAULT 'OK',
           days_overdue INTEGER DEFAULT 0,
+          company_id TEXT,
+          company_name TEXT,
+          is_company_admin INTEGER DEFAULT 0,
           last_active TEXT,
           created_at TEXT
         );
       `);
+
+      try { sqliteDb.run('ALTER TABLE users ADD COLUMN company_id TEXT;'); } catch (e) {}
+      try { sqliteDb.run('ALTER TABLE users ADD COLUMN company_name TEXT;'); } catch (e) {}
+      try { sqliteDb.run('ALTER TABLE users ADD COLUMN is_company_admin INTEGER DEFAULT 0;'); } catch (e) {}
 
       sqliteDb.run(`
         CREATE TABLE IF NOT EXISTS cloud_recordings (
@@ -1776,8 +1818,8 @@ async function startServer() {
       const uHash = (u as any).password_hash || (u as any).passwordHash || (u.password ? hashPasswordPBKDF2(u.password) : '$2b$10$itlpasswordhash2026');
       sqliteDb.run(
         `INSERT OR REPLACE INTO users (
-          id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, last_active, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, company_id, company_name, is_company_admin, last_active, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           u.id,
           u.name,
@@ -1796,6 +1838,9 @@ async function startServer() {
           u.chosenDueDay || 5,
           u.financialStatus || 'OK',
           u.daysOverdue || 0,
+          u.companyId || '',
+          u.companyName || '',
+          u.isCompanyAdmin ? 1 : 0,
           u.lastActive || 'Agora',
           u.createdAt || new Date().toISOString().split('T')[0],
         ]
@@ -3353,7 +3398,7 @@ async function startServer() {
               let parsedCamId = '';
               let timestamp = Math.round(stats.birthtimeMs || stats.mtimeMs || Date.now());
 
-              const match = file.match(/^rec(?:_auto|_real)?_([a-zA-Z0-9_-]+)_(\d{10,13})\.mp4$/i);
+              const match = file.match(/^rec(?:_auto|_real)?_([a-zA-Z0-9_-]+)_(\d{10,14})\.mp4$/i);
               if (match) {
                 parsedCamId = match[1];
                 timestamp = parseInt(match[2], 10);
@@ -3378,14 +3423,14 @@ async function startServer() {
                 realDurationSec = Math.max(5, Math.min(300, Math.round(fileSizeMB * 8)));
               }
 
-              // If file was written to in the last 10 seconds and duration is not yet near 5 minutes, it is actively receiving live stream chunks
-              const isActivelyWriting = (Date.now() - (stats.mtimeMs || stats.birthtimeMs)) < 10000 && realDurationSec < 270;
+              // If file was written to in the last 6 seconds and duration is not yet near 5 minutes, it is actively receiving live stream chunks
+              const isActivelyWriting = (Date.now() - (stats.mtimeMs || stats.birthtimeMs)) < 6000 && realDurationSec < 295;
               if (isActivelyWriting) {
                 continue;
               }
 
-              // Discard broken micro slices under 30s
-              if (realDurationSec < 30) {
+              // Discard broken micro slices under 5s or under 10KB
+              if (realDurationSec < 5 && stats.size < 10000) {
                 try { fs.unlinkSync(targetPath); } catch (e) {}
                 continue;
               }
@@ -3545,13 +3590,13 @@ async function startServer() {
       if (effectiveInputSource.startsWith('rtsp://')) {
         ffmpegArgs.push(
           '-rtsp_transport', 'tcp',
-          '-stimeout', '8000000', // 8s socket timeout
+          '-stimeout', '15000000', // 15s socket timeout
           '-analyzeduration', '1000000',
           '-probesize', '1000000'
         );
       } else if (effectiveInputSource.startsWith('rtmp://')) {
         ffmpegArgs.push(
-          '-rw_timeout', '8000000',
+          '-rw_timeout', '15000000',
           '-analyzeduration', '1000000',
           '-probesize', '1000000'
         );
@@ -3560,19 +3605,26 @@ async function startServer() {
           '-reconnect', '1',
           '-reconnect_at_eof', '1',
           '-reconnect_streamed', '1',
-          '-reconnect_delay_max', '3'
+          '-reconnect_delay_max', '5'
         );
       }
 
+      // Continuous 24/7 segment recorder (Somaseg/ITL zero-gap standard):
+      // Slices stream into continuous 5-minute blocks aligned to clock boundaries (%s)
+      // Keeps single persistent connection to camera without socket disconnects between segments!
       ffmpegArgs.push(
         '-i', effectiveInputSource,
         '-map', '0:v:0',
         '-c:v', 'copy',
         '-an',
-        '-max_muxing_queue_size', '4096',
-        '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
-        '-t', autoRecordingDurationSec.toString(),
-        partPath
+        '-f', 'segment',
+        '-segment_time', '300',
+        '-segment_atclocktime', '1',
+        '-reset_timestamps', '1',
+        '-strftime', '1',
+        '-segment_format', 'mp4',
+        '-segment_format_options', 'movflags=+frag_keyframe+empty_moov+default_base_moof',
+        path.join(recordingsDir, `rec_auto_${cleanCamId}_%s.mp4`)
       );
 
       let proc: ReturnType<typeof spawn> | null = null;
@@ -3589,134 +3641,22 @@ async function startServer() {
         return;
       }
 
-      // Hard wall-clock timer for 5-minute slice (300s):
-      // Ensures that even on variable network packet pacing, each block rotates exactly every 5 minutes!
-      const sliceTimer = setTimeout(() => {
-        if (proc && proc.exitCode === null && !proc.killed) {
-          console.log(`[Auto Recording] Bloco de 5 min atingido para [${cam.name || cam.id}]. Rotacionando para próximo bloco imediatamente...`);
-          try {
-            if (proc.stdin && proc.stdin.writable) proc.stdin.write('q\n');
-            proc.kill('SIGINT');
-          } catch (e) {}
-          setTimeout(() => {
-            if (proc && proc.exitCode === null && !proc.killed) {
-              try { proc.kill('SIGKILL'); } catch (e) {}
-            }
-          }, 1200);
-        }
-      }, autoRecordingDurationSec * 1000);
-
-      let isFinalized = false;
-      const finalizeSlice = async () => {
-        if (isFinalized) return;
-        isFinalized = true;
-        clearTimeout(sliceTimer);
-
+      const onStreamTerminated = () => {
         activeAutoRecordingProcesses.delete(cam.id);
         activeAutoRecordingStartTimes.delete(cam.id);
 
-        const currentCam = cameras.find((c) => c.id === cam.id) || cam;
+        // Immediately reconcile disk recordings for completed blocks
+        scanAndReconcileRecordingsFromDisk().catch(() => {});
 
-        // CRITICAL ZERO-GAP LOGIC:
-        // Immediately start the NEXT 5-minute recording slice without waiting for background disk/db operations!
-        if (currentCam && currentCam.cloudRecordingsActive !== false) {
-          startAutoRecordingForCamera(currentCam);
-        }
-
-        // Process completed slice asynchronously in background
-        const endTime = new Date();
-        let sourceFileToProcess = partPath;
-        if (!fs.existsSync(partPath) && fs.existsSync(outputPath)) {
-          sourceFileToProcess = outputPath;
-        }
-
-        if (fs.existsSync(sourceFileToProcess)) {
-          try {
-            const stats = fs.statSync(sourceFileToProcess);
-            // If file contains valid video payload (> 20KB)
-            if (stats.size > 20000) {
-              // Move part file to final output path atomically (takes < 1ms)
-              if (sourceFileToProcess !== outputPath) {
-                try {
-                  fs.renameSync(sourceFileToProcess, outputPath);
-                } catch (e) {
-                  try {
-                    fs.copyFileSync(sourceFileToProcess, outputPath);
-                    fs.unlinkSync(sourceFileToProcess);
-                  } catch (e2) {}
-                }
-              }
-
-              if (fs.existsSync(outputPath)) {
-                const finalStats = fs.statSync(outputPath);
-                const fileSizeMB = Math.max(0.1, +(finalStats.size / (1024 * 1024)).toFixed(1));
-                let realDurationSec = Math.max(1, Math.round((endTime.getTime() - now.getTime()) / 1000));
-
-                try {
-                  const probedDur = await getMp4Duration(outputPath);
-                  if (probedDur > 0) realDurationSec = probedDur;
-                } catch (e) {}
-
-                recordingLastFailureTimes.delete(cam.id);
-                recordingFailureCounts.delete(cam.id);
-
-                // Extract snapshot in background without blocking
-                await execAsync(`ffmpeg -y -ss 00:00:01 -i "${outputPath}" -vframes 1 -q:v 2 "${thumbPath}"`, 6000).catch(() => {});
-
-                const hasThumb = fs.existsSync(thumbPath);
-                const thumbUrl = hasThumb
-                  ? `/recordings/${thumbFileName}`
-                  : (cam.thumbnailUrl && !cam.thumbnailUrl.includes('unsplash') ? cam.thumbnailUrl : `/api/cameras/${cam.id}/snapshot`);
-
-                const isFullSlice = realDurationSec >= 270;
-                const sliceTag = isFullSlice
-                  ? 'Bloco Completo (5 min)'
-                  : `Fatia (${Math.floor(realDurationSec / 60)}m${realDurationSec % 60}s)`;
-
-                const newRec: CloudRecording = {
-                  id: `rec-auto-${cam.id}-${timestamp}`,
-                  cameraId: cam.id,
-                  cameraName: cam.name,
-                  startTime: formatDateTime(now),
-                  endTime: formatDateTime(endTime),
-                  durationSeconds: realDurationSec,
-                  fileSizeMB,
-                  thumbnailUrl: thumbUrl,
-                  streamUrl: relativeUrl,
-                  isE2EELocked: cam.isE2EEEncrypted ?? true,
-                  tags: [sliceTag, 'Nuvem Real HD', cam.location || 'Central ITL'],
-                };
-
-                recordings.unshift(newRec);
-                if (recordings.length > 5000) recordings = recordings.slice(0, 5000);
-                reconciledDiskFiles.add(fileName);
-
-                syncRecordingToMysql(newRec);
-                pruneRecordingsFIFO();
-                saveToLocalFile();
-                saveSqliteFile();
-              }
-            } else {
-              try { fs.unlinkSync(sourceFileToProcess); } catch (e) {}
-              // Transient failure (under 20KB), retry in 5s
-              recordingLastFailureTimes.set(cam.id, Date.now() + 5000);
-            }
-          } catch (e: any) {
-            console.warn(`[Auto Recording Error] Falha ao finalizar fatia de ${cam.name}:`, e.message || e);
-            recordingLastFailureTimes.set(cam.id, Date.now() + 5000);
-          }
-        } else {
-          // File was not generated (e.g. camera offline) -> retry in 5s
-          recordingLastFailureTimes.set(cam.id, Date.now() + 5000);
-        }
-
-        if (fs.existsSync(partPath)) {
-          try { fs.unlinkSync(partPath); } catch (e) {}
-        }
+        const fails = (recordingFailureCounts.get(cam.id) || 0) + 1;
+        recordingFailureCounts.set(cam.id, fails);
+        // Short cooldown to allow camera socket to reset before reconnecting
+        const backoff = Math.min(30000, 3000 * Math.pow(1.3, Math.min(fails, 5)));
+        recordingLastFailureTimes.set(cam.id, Date.now() + backoff);
       };
 
-      proc.on('close', () => { finalizeSlice(); });
-      proc.on('error', () => { finalizeSlice(); });
+      proc.on('close', onStreamTerminated);
+      proc.on('error', onStreamTerminated);
     } finally {
       isStartingAutoRecording.delete(cam.id);
     }
@@ -3732,25 +3672,14 @@ async function startServer() {
 
       if (cam.cloudRecordingsActive !== false) {
         const proc = activeAutoRecordingProcesses.get(cam.id);
-        const startTime = activeAutoRecordingStartTimes.get(cam.id);
 
-        // Watchdog: If a process has been running for longer than 310 seconds (5 min + 10s), force-flush it
-        if (proc && startTime && (now - startTime > (autoRecordingDurationSec + 10) * 1000)) {
-          console.warn(`[Auto Recording Watchdog] Processo da câmera ${cam.name || cam.id} gravando há mais de ${Math.round((now - startTime)/1000)}s. Encerrando fatia para iniciar novo bloco.`);
-          try {
-            if (proc.stdin && proc.stdin.writable) proc.stdin.write('q\n');
-            proc.kill('SIGINT');
-          } catch (e) {}
-          setTimeout(() => {
-            if (proc && proc.exitCode === null && !proc.killed) {
-              try { proc.kill('SIGKILL'); } catch (e) {}
-            }
-          }, 1200);
-          return;
+        if (proc && (proc.exitCode !== null || proc.killed)) {
+          activeAutoRecordingProcesses.delete(cam.id);
+          activeAutoRecordingStartTimes.delete(cam.id);
         }
 
-        // If no process is running, verify cooldown and launch
-        if (!proc) {
+        const activeProc = activeAutoRecordingProcesses.get(cam.id);
+        if (!activeProc) {
           const lastFail = recordingLastFailureTimes.get(cam.id) || 0;
           if (now >= lastFail) {
             startAutoRecordingForCamera(cam);
@@ -3760,17 +3689,17 @@ async function startServer() {
     });
   }
 
-  // Supervisor runs every 5 seconds to ensure no camera is ever left unrecorded
+  // Supervisor runs every 5 seconds to ensure cameras are continuously recording
   setTimeout(checkAndStartAllAutoRecordings, 2000);
   setInterval(checkAndStartAllAutoRecordings, 5000);
 
-  // Background disk reconciliation (runs once at boot and gently every 10 minutes)
+  // Background disk reconciliation (indexes completed 5-min segment blocks every 15s)
   setTimeout(() => {
     scanAndReconcileRecordingsFromDisk().catch(() => {});
   }, 5000);
   setInterval(() => {
     scanAndReconcileRecordingsFromDisk().catch(() => {});
-  }, 600000);
+  }, 15000);
 
   // Helper log function (saved exclusively to local file itl_logs.json)
   const addLog = (userName: string, action: string, category: ActivityLog['category'], details?: string) => {
@@ -5925,6 +5854,7 @@ async function startServer() {
   app.post('/api/users', async (req, res) => {
     try {
       const {
+        id,
         name,
         email,
         password,
@@ -5940,13 +5870,54 @@ async function startServer() {
       } = req.body;
       if (!name || !email) return res.status(400).json({ error: 'Nome e email são obrigatórios' });
 
+      const cleanEmail = String(email).trim().toLowerCase();
+      const cleanName = String(name).trim();
+      const reqUser = getUserFromReq(req);
+
+      const effectiveCompanyId = companyId || (reqUser && reqUser.companyId ? reqUser.companyId : undefined);
+      const effectiveCompanyName = companyName || (reqUser && reqUser.companyName ? reqUser.companyName : undefined);
+
+      // Check if user already exists by ID or Email
+      const existingIdx = users.findIndex(
+        (u) => (id && u.id === id) || u.email.trim().toLowerCase() === cleanEmail
+      );
+
+      if (existingIdx !== -1) {
+        // Update existing user (Upsert)
+        const existing = users[existingIdx];
+        existing.name = cleanName;
+        existing.email = cleanEmail;
+        if (password && password.toString().trim()) {
+          existing.password = password.toString().trim();
+          existing.passwordHash = hashPasswordPBKDF2(existing.password);
+          (existing as any).password_hash = existing.passwordHash;
+        }
+        if (role) existing.role = role;
+        if (phone !== undefined) existing.phone = phone;
+        if (stateUf !== undefined) existing.stateUf = stateUf;
+        if (city !== undefined) existing.city = city;
+        if (allowedCameraIds) existing.allowedCameraIds = allowedCameraIds;
+        if (customPermissions) existing.customPermissions = customPermissions;
+        if (effectiveCompanyId) existing.companyId = effectiveCompanyId;
+        if (effectiveCompanyName) existing.companyName = effectiveCompanyName;
+        if (isCompanyAdmin !== undefined) existing.isCompanyAdmin = Boolean(isCompanyAdmin);
+
+        deletedUserIds.delete(existing.id);
+        try { syncUserToSqlite(existing); } catch (e) {}
+        saveToLocalFile();
+        syncUserToMysql(existing).catch(() => {});
+        addLog('ITL Admin', `Usuário atualizado com sucesso: ${existing.name} (${existing.role})`, 'AUTH');
+        return res.json(sanitizeUser(existing));
+      }
+
       const userPass = (password || '').toString().trim() || '123456';
       const passHash = hashPasswordPBKDF2(userPass);
+      const newUserId = id || `user-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
 
       const newUser: User = {
-        id: `user-${Date.now().toString().slice(-4)}`,
-        name,
-        email,
+        id: newUserId,
+        name: cleanName,
+        email: cleanEmail,
         password: userPass,
         passwordHash: passHash,
         role: role || 'RESIDENT',
@@ -5954,8 +5925,8 @@ async function startServer() {
         stateUf: stateUf || 'BA',
         city: city || 'Itamaraju',
         status: 'ACTIVE',
-        companyId,
-        companyName,
+        companyId: effectiveCompanyId,
+        companyName: effectiveCompanyName,
         isCompanyAdmin: Boolean(isCompanyAdmin),
         allowedCameraIds: allowedCameraIds && allowedCameraIds.length > 0 ? allowedCameraIds : ['ALL'],
         customPermissions: customPermissions || {
@@ -5994,14 +5965,17 @@ async function startServer() {
       if (index === -1) return res.status(404).json({ error: 'Usuário não encontrado' });
 
       const updatedUser = { ...users[index], ...req.body };
-      if (req.body.password && req.body.password.trim()) {
-        const p = req.body.password.trim();
+      if (req.body.name) updatedUser.name = req.body.name.trim();
+      if (req.body.email) updatedUser.email = req.body.email.trim().toLowerCase();
+      if (req.body.password && req.body.password.toString().trim()) {
+        const p = req.body.password.toString().trim();
         updatedUser.password = p;
         updatedUser.passwordHash = hashPasswordPBKDF2(p);
         (updatedUser as any).password_hash = updatedUser.passwordHash;
       }
 
       users[index] = updatedUser;
+      deletedUserIds.delete(id);
       try { syncUserToSqlite(users[index]); } catch (e) {}
       saveToLocalFile();
       syncUserToMysql(users[index]).catch((e) => console.error('[Pg Sync User Error]:', e));
@@ -6909,6 +6883,8 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
+        hmr: false,
+        watch: null,
         allowedHosts: ['.unityautomacoes.com.br', 'centralitl.unityautomacoes.com.br'],
       },
       appType: 'spa',
@@ -6922,8 +6898,16 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Central ITL] Servidor rodando na porta ${PORT}`);
+  });
+
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[Central ITL Warning] Porta ${PORT} já está em uso, aguardando liberação...`);
+    } else {
+      console.error('[Central ITL] Erro no servidor HTTP:', err);
+    }
   });
 }
 

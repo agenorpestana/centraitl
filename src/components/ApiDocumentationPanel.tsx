@@ -24,7 +24,7 @@ import {
 
 interface EndpointDefinition {
   id: string;
-  category: 'Autenticação' | 'Painel Admin' | 'Câmeras RTSP' | 'Mapa Vizinhança' | 'LPR / Placas' | 'Alertas' | 'Sistema & GPU';
+  category: 'Autenticação' | 'Painel Admin' | 'Câmeras RTSP' | 'Mapa Vizinhança' | 'Alertas' | 'Sistema & GPU';
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: string;
   title: string;
@@ -307,27 +307,6 @@ export const ApiDocumentationPanel: React.FC = () => {
       },
     },
     {
-      id: 'lpr-readings',
-      category: 'LPR / Placas',
-      method: 'GET',
-      path: '/api/v1/lpr',
-      title: 'Consultar Leituras LPR / Placas',
-      security: 'Bearer Token',
-      description: 'Consulta o histórico de placas veiculares identificadas pelo módulo de OCR/LPR em tempo real.',
-      headers: [
-        { name: 'Accept', value: 'application/json', description: 'JSON' },
-        { name: 'Authorization', value: 'Bearer <TOKEN_AQUI>', description: 'Bearer Token' },
-      ],
-      sampleResponse: {
-        success: true,
-        count: 2,
-        readings: [
-          { id: 'lpr-01', plate: 'ABC-1234', cameraName: 'Cancela Entrada', confidence: 98.4, timestamp: new Date().toISOString() },
-          { id: 'lpr-02', plate: 'XYZ-9876', cameraName: 'Cancela Saída', confidence: 96.1, timestamp: new Date().toISOString() },
-        ],
-      },
-    },
-    {
       id: 'system-status',
       category: 'Sistema & GPU',
       method: 'GET',
@@ -520,7 +499,7 @@ export const ApiDocumentationPanel: React.FC = () => {
   }, [selectedEndpointId]);
 
   // Categories list
-  const categories = ['Todos', 'Autenticação', 'Painel Admin', 'Câmeras RTSP', 'Mapa Vizinhança', 'LPR / Placas', 'Alertas', 'Sistema & GPU'];
+  const categories = ['Todos', 'Autenticação', 'Painel Admin', 'Câmeras RTSP', 'Mapa Vizinhança', 'Alertas', 'Sistema & GPU'];
 
   const filteredEndpoints = endpoints.filter((ep) => {
     const matchesCategory = selectedCategory === 'Todos' || ep.category === selectedCategory;

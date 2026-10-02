@@ -8,11 +8,7 @@ import {
   Users,
   FileText,
   Database,
-  Smartphone,
-  Lock,
   DollarSign,
-  Network,
-  MapPin,
   Server,
   Code,
   ChevronLeft,
@@ -50,11 +46,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const rawNavItems = [
     { id: 'dashboard', label: 'Dashboard Monitoramento', icon: LayoutDashboard },
     { id: 'live-grid', label: 'Câmeras ao Vivo', icon: Grid, badge: totalCameras },
-    { id: 'event-map', label: 'Mapa de Ocorrências (GIS)', icon: MapPin },
     { id: 'camera-map', label: 'Mapa Vizinhança', icon: Map },
     { id: 'white-label-admin', label: 'Empresas & White Label', icon: Building2, superAdminOnly: true },
     { id: 'company-clients', label: 'Meus Clientes & Câmeras', icon: Briefcase, companyAdminOnly: true },
-    { id: 'architecture-config', label: 'Arquitetura Fibra & Topology', icon: Network },
     { id: 'cloud-recordings', label: 'Gravações na Nuvem', icon: Film },
     { id: 'dvr-agents', label: 'DVR Agent Desktop', icon: Server },
     { id: 'camera-admin', label: 'Adicionar / RTSP', icon: PlusCircle },
@@ -64,8 +58,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'activity-reports', label: 'Relatórios Diários', icon: FileText },
     { id: 'backup-manager', label: 'Backup Automático', icon: Database },
     { id: 'db-diagnostics', label: 'Teste & Diagnóstico BD', icon: Server },
-    { id: 'push-notifications', label: 'Notificações Push', icon: Smartphone },
-    { id: 'e2ee-vault', label: 'Criptografia E2EE', icon: Lock },
   ];
 
   const navItems = rawNavItems.filter((item) => {

@@ -9,17 +9,13 @@ import { CameraAdminPanel } from './components/CameraAdminPanel';
 import { UserManagement } from './components/UserManagement';
 import { ActivityReports } from './components/ActivityReports';
 import { BackupManager } from './components/BackupManager';
-import { PushNotificationSettings } from './components/PushNotificationSettings';
 import { CameraDetailModal } from './components/CameraDetailModal';
-import { E2EEVaultModal } from './components/E2EEVaultModal';
 import { AdminLoginModal } from './components/AdminLoginModal';
 import { LandingPage } from './components/LandingPage';
 import { FinancialManagement } from './components/FinancialManagement';
 import { SystemBlockedOverlay } from './components/SystemBlockedOverlay';
 import { FinancialAlertBanner } from './components/FinancialAlertBanner';
 import { MercadoPagoSettingsModal } from './components/MercadoPagoSettingsModal';
-import { ArchitectureConfigPanel } from './components/ArchitectureConfigPanel';
-import { EventMapPanel } from './components/EventMapPanel';
 import { DatabaseDiagnosticsPanel } from './components/DatabaseDiagnosticsPanel';
 import { ApiDocumentationPanel } from './components/ApiDocumentationPanel';
 import { WhiteLabelAdminPanel } from './components/WhiteLabelAdminPanel';
@@ -99,7 +95,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>(() => {
     try {
       const stored = localStorage.getItem('itl_active_tab');
-      if (stored && stored !== 'lpr-recognition' && stored !== 'facial-recognition' && stored !== 'ai-hub' && stored !== 'motion-alerts' && stored !== 'lgpd-audit') {
+      const disabledTabs = ['event-map', 'architecture-config', 'push-notifications', 'e2ee-vault', 'lpr-recognition', 'facial-recognition', 'ai-hub', 'motion-alerts', 'lgpd-audit'];
+      if (stored && !disabledTabs.includes(stored)) {
         return stored;
       }
     } catch {}
@@ -591,62 +588,84 @@ export default function App() {
     } catch (e) {}
   };
 
+  const getUserAuthHeaders = (): Record<string, string> => {
+    if (!activeUser) return {};
+    return {
+      'x-user-id': activeUser.id,
+      'x-user-email': activeUser.email,
+      'Authorization': `Bearer ${activeUser.id}`,
+    };
+  };
+
   const handleAddUser = async (userData: Partial<User>) => {
     try {
       const res = await fetch('/api/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getUserAuthHeaders(),
+        },
         body: JSON.stringify(userData),
       });
-      const newUser = await res.json();
-      if (newUser && newUser.id) {
-        setUsers((prev) => [...prev, newUser]);
-        return;
+      const data = await res.json();
+      if (res.ok && data && data.id) {
+        setUsers((prev) => {
+          const next = [...prev.filter((u) => u.id !== data.id), data];
+          try { localStorage.setItem('itl_users', JSON.stringify(next)); } catch {}
+          return next;
+        });
+        return data;
+      } else {
+        alert(data.error || 'Erro ao cadastrar usuário no banco de dados.');
       }
-    } catch (e) {}
-    const fallback: User = {
-      id: `user-${Date.now()}`,
-      name: userData.name || 'Novo Usuário',
-      email: userData.email || 'usuario@itl.com.br',
-      role: userData.role || 'RESIDENT',
-      status: 'ACTIVE',
-      customPermissions: userData.customPermissions || {
-        canViewLive: true,
-        canViewRecordings: true,
-        canControlPTZ: false,
-        canUseTwoWayAudio: false,
-        canManageCameras: false,
-        canDeleteRecordings: false,
-        canAccessAuditLogs: false,
-        canManageUsers: false,
-        canExportReports: false,
-      },
-      allowedCameraIds: userData.allowedCameraIds || ['ALL'],
-      lastActive: 'Nunca',
-      createdAt: new Date().toISOString().split('T')[0],
-    };
-    setUsers((prev) => [...prev, fallback]);
+    } catch (e: any) {
+      alert(`Falha de conexão ao cadastrar usuário: ${e.message || e}`);
+    }
   };
 
   const handleUpdateUser = async (id: string, updatedData: Partial<User>) => {
     try {
-      await fetch(`/api/users/${id}`, {
+      const res = await fetch(`/api/users/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getUserAuthHeaders(),
+        },
         body: JSON.stringify(updatedData),
       });
-    } catch (e) {}
-    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...updatedData } : u)));
-    if (activeUser.id === id) {
-      setActiveUser((prev) => ({ ...prev, ...updatedData }));
+      const data = await res.json();
+      if (res.ok && data && data.id) {
+        setUsers((prev) => {
+          const next = prev.map((u) => (u.id === id ? { ...u, ...data } : u));
+          try { localStorage.setItem('itl_users', JSON.stringify(next)); } catch {}
+          return next;
+        });
+        if (activeUser.id === id) {
+          setActiveUser((prev) => ({ ...prev, ...data }));
+        }
+        return data;
+      } else {
+        alert(data.error || 'Erro ao atualizar dados do usuário.');
+      }
+    } catch (e: any) {
+      alert(`Falha de conexão ao atualizar usuário: ${e.message || e}`);
     }
   };
 
   const handleDeleteUser = async (id: string) => {
     try {
-      await fetch(`/api/users/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/users/${id}`, {
+        method: 'DELETE',
+        headers: getUserAuthHeaders(),
+      });
+      if (res.ok) {
+        setUsers((prev) => {
+          const next = prev.filter((u) => u.id !== id);
+          try { localStorage.setItem('itl_users', JSON.stringify(next)); } catch {}
+          return next;
+        });
+      }
     } catch (e) {}
-    setUsers((prev) => prev.filter((u) => u.id !== id));
   };
 
   // Financial status calculation for active user
@@ -890,18 +909,6 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'event-map' && (
-            <EventMapPanel cameras={cameras} />
-          )}
-
-          {activeTab === 'architecture-config' && (
-            <ArchitectureConfigPanel
-              config={architectureConfig}
-              streams={streams}
-              onUpdateConfig={handleUpdateArchitectureConfig}
-            />
-          )}
-
           {activeTab === 'camera-map' && (
             <CameraMap cameras={cameras} onSelectCamera={setInspectingCamera} isLoggedIn={isLoggedIn} currentUser={activeUser} />
           )}
@@ -913,8 +920,8 @@ export default function App() {
               activeUser={activeUser}
               onDeleteRecording={handleDeleteRecording}
               onDeleteRecordingsBatch={handleDeleteRecordingsBatch}
-              isVaultUnlocked={e2eeSettings.isVaultUnlocked}
-              onUnlockVault={() => setIsE2EEModalOpen(true)}
+              isVaultUnlocked={true}
+              onUnlockVault={() => {}}
             />
           )}
 
@@ -990,15 +997,6 @@ export default function App() {
             <DatabaseDiagnosticsPanel activeUser={activeUser} />
           )}
 
-          {activeTab === 'push-notifications' && (
-            <PushNotificationSettings
-              config={notificationConfig}
-              activeUser={activeUser}
-              onUpdateConfig={(newCfg) => setNotificationConfig((prev) => ({ ...prev, ...newCfg }))}
-              onTestPush={() => {}}
-            />
-          )}
-
           {activeTab === 'white-label-admin' && (
             <WhiteLabelAdminPanel
               companies={companies}
@@ -1029,27 +1027,18 @@ export default function App() {
                   company={userCompany}
                   cameras={cameras}
                   users={users}
-                  onSaveUser={handleAddUser}
+                  onSaveUser={(u) => {
+                    if (users.some((existing) => existing.id === u.id)) {
+                      handleUpdateUser(u.id, u);
+                    } else {
+                      handleAddUser(u);
+                    }
+                  }}
                   onDeleteUser={handleDeleteUser}
                   currentUser={activeUser}
                 />
               );
             })()
-          )}
-
-          {activeTab === 'e2ee-vault' && (
-            <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl mx-auto space-y-4">
-              <h2 className="text-base font-bold text-white">Central de Gerenciamento de Criptografia E2EE</h2>
-              <p className="text-xs text-slate-400">
-                Garantia de total privacidade dos dados dos usuários com chaves de criptografia geradas localmente.
-              </p>
-              <button
-                onClick={() => setIsE2EEModalOpen(true)}
-                className="px-4 py-2 bg-emerald-500 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-400"
-              >
-                Abrir Configurações do Cofre
-              </button>
-            </div>
           )}
         </main>
       </div>
@@ -1064,14 +1053,6 @@ export default function App() {
           onUpdateCamera={handleUpdateCamera}
         />
       )}
-
-      {/* E2EE Vault Modal */}
-      <E2EEVaultModal
-        settings={e2eeSettings}
-        isOpen={isE2EEModalOpen}
-        onClose={() => setIsE2EEModalOpen(false)}
-        onToggleVault={(unlocked) => setE2eesettings((prev) => ({ ...prev, isVaultUnlocked: unlocked }))}
-      />
 
       {/* Admin Login Modal */}
       <AdminLoginModal
