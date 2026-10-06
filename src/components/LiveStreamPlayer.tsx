@@ -88,9 +88,9 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
     camera.isLiveWebcam ? 'WEBCAM' : 'VIDEO'
   );
 
-  // As requested: RTSP cameras default to MJPEG, RTMP cameras default to HLS
+  // Standardized unified HLS stream for both RTMP and RTSP cameras (low memory, hardware decoded)
   const isRtsp = isRtspCameraSource(camera);
-  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(() => isRtsp);
+  const [useMjpegStream, setUseMjpegStream] = useState<boolean>(false);
 
   const [retryCount, setRetryCount] = useState<number>(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('LOADING');

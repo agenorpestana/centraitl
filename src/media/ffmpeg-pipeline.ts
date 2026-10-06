@@ -286,7 +286,17 @@ export function buildRecordingArgs(
     '-i', streamSource,
     '-map', '0:v:0',
     '-c:v', 'copy',
-    '-an',
+    '-an'
+  );
+
+  if (streamSource.startsWith('rtsp://')) {
+    args.push(
+      '-bsf:v', 'dump_extra,h264_mp4toannexb',
+      '-avoid_negative_ts', 'make_zero'
+    );
+  }
+
+  args.push(
     '-max_muxing_queue_size', '4096',
     '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
     '-t', durationSec.toString(),

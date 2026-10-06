@@ -418,7 +418,7 @@ export default function App() {
         ] = await Promise.all([
           fetch('/api/cameras', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/recordings', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
-          fetch('/api/users').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/users', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/logs').then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/backup').then((r) => r.ok ? r.json() : null).catch(() => null),
           fetch('/api/notifications').then((r) => r.ok ? r.json() : null).catch(() => null),
@@ -597,7 +597,7 @@ export default function App() {
     };
   };
 
-  const handleAddUser = async (userData: Partial<User>) => {
+  const handleAddUser = async (userData: Partial<User>): Promise<User | null> => {
     try {
       const res = await fetch('/api/users', {
         method: 'POST',
@@ -607,23 +607,43 @@ export default function App() {
         },
         body: JSON.stringify(userData),
       });
-      const data = await res.json();
+
+      let data: any = null;
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        throw new Error(
+          res.status === 502
+            ? 'Erro 502: O servidor está reiniciando ou indisponível. Aguarde alguns instantes e tente novamente.'
+            : res.ok
+            ? 'Resposta inesperada do servidor'
+            : `Erro ${res.status}: Servidor temporariamente indisponível`
+        );
+      }
+
       if (res.ok && data && data.id) {
+        const fullSavedUser: User = {
+          ...data,
+          ...(userData.password ? { password: userData.password } : {}),
+        };
         setUsers((prev) => {
-          const next = [...prev.filter((u) => u.id !== data.id), data];
+          const next = [...prev.filter((u) => u.id !== fullSavedUser.id && u.email?.toLowerCase() !== fullSavedUser.email?.toLowerCase()), fullSavedUser];
           try { localStorage.setItem('itl_users', JSON.stringify(next)); } catch {}
           return next;
         });
-        return data;
+        return fullSavedUser;
       } else {
-        alert(data.error || 'Erro ao cadastrar usuário no banco de dados.');
+        alert(data?.error || 'Erro ao cadastrar usuário no banco de dados.');
+        return null;
       }
     } catch (e: any) {
       alert(`Falha de conexão ao cadastrar usuário: ${e.message || e}`);
+      return null;
     }
   };
 
-  const handleUpdateUser = async (id: string, updatedData: Partial<User>) => {
+  const handleUpdateUser = async (id: string, updatedData: Partial<User>): Promise<User | null> => {
     try {
       const res = await fetch(`/api/users/${id}`, {
         method: 'PUT',
@@ -633,22 +653,43 @@ export default function App() {
         },
         body: JSON.stringify(updatedData),
       });
-      const data = await res.json();
+
+      let data: any = null;
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        throw new Error(
+          res.status === 502
+            ? 'Erro 502: O servidor está reiniciando ou indisponível. Aguarde alguns instantes e tente novamente.'
+            : res.ok
+            ? 'Resposta inesperada do servidor'
+            : `Erro ${res.status}: Servidor temporariamente indisponível`
+        );
+      }
+
       if (res.ok && data && data.id) {
+        const fullUpdatedUser: User = {
+          ...data,
+          ...updatedData,
+          id: data.id,
+        };
         setUsers((prev) => {
-          const next = prev.map((u) => (u.id === id ? { ...u, ...data } : u));
+          const next = prev.map((u) => (u.id === id || u.id === data.id ? { ...u, ...fullUpdatedUser } : u));
           try { localStorage.setItem('itl_users', JSON.stringify(next)); } catch {}
           return next;
         });
-        if (activeUser.id === id) {
-          setActiveUser((prev) => ({ ...prev, ...data }));
+        if (activeUser.id === id || activeUser.id === data.id) {
+          setActiveUser((prev) => ({ ...prev, ...fullUpdatedUser }));
         }
-        return data;
+        return fullUpdatedUser;
       } else {
-        alert(data.error || 'Erro ao atualizar dados do usuário.');
+        alert(data?.error || 'Erro ao atualizar dados do usuário.');
+        return null;
       }
     } catch (e: any) {
       alert(`Falha de conexão ao atualizar usuário: ${e.message || e}`);
+      return null;
     }
   };
 

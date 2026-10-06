@@ -1,5 +1,41 @@
 [
   {
+    "id": "log-1790967194772-765",
+    "userName": "ITL Admin",
+    "action": "Permissões/dados do usuário Maria Silva Editada atualizados",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:53:14"
+  },
+  {
+    "id": "log-1790967189975-219",
+    "userName": "ITL Admin",
+    "action": "Novo usuário cadastrado: Maria Silva (OPERATOR)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:53:09"
+  },
+  {
+    "id": "log-1790966885271-369",
+    "userName": "ITL Admin",
+    "action": "Permissões/dados do usuário Usuario Teste Local Editado atualizados",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:48:05"
+  },
+  {
+    "id": "log-1790966881897-751",
+    "userName": "ITL Admin",
+    "action": "Novo usuário cadastrado: Usuario Teste Local (RESIDENT)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:48:01"
+  },
+  {
     "id": "log-1790965564436-655",
     "userName": "ITL Admin",
     "action": "Usuário removido: user-8108",

@@ -115,6 +115,66 @@
       "lastActive": "Nunca",
       "createdAt": "2026-10-02",
       "password_hash": "8e935d43942a5ea6c8005c341de3c0b56ad7fd732699778c09995a3a3d3fe2be"
+    },
+    {
+      "id": "user-murbfucm-jt2q",
+      "name": "Usuario Teste Local Editado",
+      "email": "testelocal@unity.com.br",
+      "password": "123456",
+      "passwordHash": "8e935d43942a5ea6c8005c341de3c0b56ad7fd732699778c09995a3a3d3fe2be",
+      "role": "RESIDENT",
+      "phone": "73999998888",
+      "stateUf": "BA",
+      "city": "Itamaraju",
+      "status": "ACTIVE",
+      "isCompanyAdmin": false,
+      "allowedCameraIds": [
+        "ALL"
+      ],
+      "customPermissions": {
+        "canViewLive": true,
+        "canViewRecordings": true,
+        "canControlPTZ": false,
+        "canUseTwoWayAudio": false,
+        "canManageCameras": false,
+        "canDeleteRecordings": false,
+        "canAccessAuditLogs": false,
+        "canManageUsers": false,
+        "canExportReports": false
+      },
+      "lastActive": "Nunca",
+      "createdAt": "2026-10-02",
+      "password_hash": "8e935d43942a5ea6c8005c341de3c0b56ad7fd732699778c09995a3a3d3fe2be"
+    },
+    {
+      "id": "user-murbmg2c-ay16",
+      "name": "Maria Silva Editada",
+      "email": "maria@provedor.com.br",
+      "password": "novaSenha2026!",
+      "passwordHash": "c9a10c091a90866ab2a224661a1a2d4d1ee75c21e8727c5a8d75bf182300e14c",
+      "role": "GUARD",
+      "phone": "73999995555",
+      "stateUf": "BA",
+      "city": "Teixeira de Freitas",
+      "status": "ACTIVE",
+      "isCompanyAdmin": false,
+      "allowedCameraIds": [
+        "ALL"
+      ],
+      "customPermissions": {
+        "canViewLive": true,
+        "canViewRecordings": true,
+        "canControlPTZ": false,
+        "canUseTwoWayAudio": false,
+        "canManageCameras": false,
+        "canDeleteRecordings": false,
+        "canAccessAuditLogs": false,
+        "canManageUsers": false,
+        "canExportReports": false
+      },
+      "lastActive": "Nunca",
+      "createdAt": "2026-10-02",
+      "password_hash": "c9a10c091a90866ab2a224661a1a2d4d1ee75c21e8727c5a8d75bf182300e14c"
     }
   ],
   "companies": [

@@ -22,9 +22,9 @@ interface UserManagementProps {
   users: User[];
   cameras: Camera[];
   activeUser: User;
-  onAddUser: (userData: Partial<User>) => void;
-  onUpdateUser: (id: string, userData: Partial<User>) => void;
-  onDeleteUser: (id: string) => void;
+  onAddUser: (userData: Partial<User>) => Promise<any> | any;
+  onUpdateUser: (id: string, userData: Partial<User>) => Promise<any> | any;
+  onDeleteUser: (id: string) => Promise<any> | any;
 }
 
 interface IbgeUF {
@@ -63,6 +63,8 @@ export const UserManagement: React.FC<UserManagementProps> = ({
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editingCameraAccessUser, setEditingCameraAccessUser] = useState<User | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   const [ufs, setUfs] = useState<IbgeUF[]>(FALLBACK_UFS);
   const [formCities, setFormCities] = useState<IbgeCity[]>([]);
@@ -137,9 +139,9 @@ export const UserManagement: React.FC<UserManagementProps> = ({
       .catch(() => setLoadingEditCities(false));
   }, [editingUser?.stateUf]);
 
-  const handleCreate = (e: React.FormEvent) => {
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeUser.customPermissions.canManageUsers) {
+    if (!activeUser.customPermissions?.canManageUsers && activeUser.role !== 'ADMIN') {
       alert('Sua conta não tem permissão para gerenciar usuários.');
       return;
     }
@@ -148,36 +150,43 @@ export const UserManagement: React.FC<UserManagementProps> = ({
       return;
     }
 
-    onAddUser({
-      ...formState,
-      allowedCameraIds: formState.allowedCameraIds.length === 0 ? ['ALL'] : formState.allowedCameraIds,
-    });
+    try {
+      setIsSubmitting(true);
+      const res = await onAddUser({
+        ...formState,
+        allowedCameraIds: formState.allowedCameraIds.length === 0 ? ['ALL'] : formState.allowedCameraIds,
+      });
 
-    setShowAddModal(false);
-    setFormState({
-      name: '',
-      email: '',
-      password: '',
-      role: 'RESIDENT',
-      phone: '',
-      stateUf: 'BA',
-      city: 'Itamaraju',
-      allowedCameraIds: ['ALL'],
-      customPermissions: {
-        canViewLive: true,
-        canViewRecordings: true,
-        canControlPTZ: false,
-        canUseTwoWayAudio: false,
-        canManageCameras: false,
-        canDeleteRecordings: false,
-        canAccessAuditLogs: false,
-        canManageUsers: false,
-        canExportReports: false,
-      },
-    });
+      if (res) {
+        setShowAddModal(false);
+        setFormState({
+          name: '',
+          email: '',
+          password: '',
+          role: 'RESIDENT',
+          phone: '',
+          stateUf: 'BA',
+          city: 'Itamaraju',
+          allowedCameraIds: ['ALL'],
+          customPermissions: {
+            canViewLive: true,
+            canViewRecordings: true,
+            canControlPTZ: false,
+            canUseTwoWayAudio: false,
+            canManageCameras: false,
+            canDeleteRecordings: false,
+            canAccessAuditLogs: false,
+            canManageUsers: false,
+            canExportReports: false,
+          },
+        });
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleUpdateEditUserSubmit = (e: React.FormEvent) => {
+  const handleUpdateEditUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
     if (!editingUser.name || !editingUser.email) {
@@ -185,18 +194,34 @@ export const UserManagement: React.FC<UserManagementProps> = ({
       return;
     }
 
-    onUpdateUser(editingUser.id, {
-      name: editingUser.name,
-      email: editingUser.email,
-      role: editingUser.role,
-      phone: editingUser.phone,
-      stateUf: editingUser.stateUf || 'BA',
-      city: editingUser.city || 'Itamaraju',
-      allowedCameraIds: (editingUser.allowedCameraIds || []).length === 0 ? ['ALL'] : editingUser.allowedCameraIds,
-      customPermissions: editingUser.customPermissions,
-    });
+    try {
+      setIsUpdating(true);
+      const updatePayload: Partial<User> = {
+        name: editingUser.name.trim(),
+        email: editingUser.email.trim(),
+        role: editingUser.role,
+        phone: editingUser.phone,
+        stateUf: editingUser.stateUf || 'BA',
+        city: editingUser.city || 'Itamaraju',
+        allowedCameraIds: (editingUser.allowedCameraIds || []).length === 0 ? ['ALL'] : editingUser.allowedCameraIds,
+        customPermissions: editingUser.customPermissions,
+        status: editingUser.status || 'ACTIVE',
+        isCompanyAdmin: editingUser.isCompanyAdmin,
+        companyId: editingUser.companyId,
+        companyName: editingUser.companyName,
+      };
 
-    setEditingUser(null);
+      if (editingUser.password && editingUser.password.trim()) {
+        updatePayload.password = editingUser.password.trim();
+      }
+
+      const res = await onUpdateUser(editingUser.id, updatePayload);
+      if (res) {
+        setEditingUser(null);
+      }
+    } finally {
+      setIsUpdating(false);
+    }
   };
 
   const handleTogglePermission = (key: keyof CustomPermissions, targetUser?: User) => {
@@ -517,15 +542,17 @@ export const UserManagement: React.FC<UserManagementProps> = ({
             <button
               type="button"
               onClick={() => setShowAddModal(false)}
-              className="px-4 py-2 bg-slate-800 text-slate-300 text-xs rounded-xl"
+              disabled={isSubmitting}
+              className="px-4 py-2 bg-slate-800 text-slate-300 text-xs rounded-xl disabled:opacity-50"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="px-5 py-2 bg-emerald-500 text-slate-950 font-bold text-xs rounded-xl shadow-lg hover:bg-emerald-400"
+              disabled={isSubmitting}
+              className="px-5 py-2 bg-emerald-500 text-slate-950 font-bold text-xs rounded-xl shadow-lg hover:bg-emerald-400 disabled:opacity-50 flex items-center gap-1.5"
             >
-              Salvar Usuário
+              {isSubmitting ? 'Salvando...' : 'Salvar Usuário'}
             </button>
           </div>
         </form>
@@ -934,15 +961,17 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                 <button
                   type="button"
                   onClick={() => setEditingUser(null)}
-                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl hover:bg-slate-700"
+                  disabled={isUpdating}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl hover:bg-slate-700 disabled:opacity-50"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-emerald-500 text-slate-950 font-bold rounded-xl shadow-lg hover:bg-emerald-400"
+                  disabled={isUpdating}
+                  className="px-5 py-2 bg-emerald-500 text-slate-950 font-bold rounded-xl shadow-lg hover:bg-emerald-400 disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  Salvar Alterações
+                  {isUpdating ? 'Salvando...' : 'Salvar Alterações'}
                 </button>
               </div>
             </form>

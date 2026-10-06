@@ -79,33 +79,53 @@ function testTcpPortReachable(host: string, port: number, timeoutMs = 2500): Pro
   });
 }
 
+const mp4DurationCache = new Map<string, { mtime: number; size: number; duration: number }>();
+
 async function getMp4Duration(filePath: string): Promise<number> {
   if (!fs.existsSync(filePath)) return 0;
   try {
-    const res = await execWithOutput(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`, 8000);
-    const parsed = parseFloat((res.stdout || '').trim());
-    if (!isNaN(parsed) && parsed > 0) {
-      return Math.round(parsed);
+    const stats = fs.statSync(filePath);
+    const cached = mp4DurationCache.get(filePath);
+    if (cached && cached.mtime === stats.mtimeMs && cached.size === stats.size && cached.duration > 0) {
+      return cached.duration;
     }
-  } catch (e) {}
 
-  try {
-    const res = await execWithOutput(`ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`, 8000);
-    const parsed = parseFloat((res.stdout || '').trim());
-    if (!isNaN(parsed) && parsed > 0) {
-      return Math.round(parsed);
+    let detectedDuration = 0;
+    try {
+      const res = await execWithOutput(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`, 2500);
+      const parsed = parseFloat((res.stdout || '').trim());
+      if (!isNaN(parsed) && parsed > 0) {
+        detectedDuration = Math.round(parsed);
+      }
+    } catch (e) {}
+
+    if (detectedDuration <= 0) {
+      try {
+        const res = await execWithOutput(`ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`, 2500);
+        const parsed = parseFloat((res.stdout || '').trim());
+        if (!isNaN(parsed) && parsed > 0) {
+          detectedDuration = Math.round(parsed);
+        }
+      } catch (e) {}
     }
-  } catch (e) {}
 
-  try {
-    const res = await execWithOutput(`ffmpeg -i "${filePath}" 2>&1`, 8000);
-    const match = (res.stderr || res.stdout || '').match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
-    if (match) {
-      const hours = parseInt(match[1], 10);
-      const minutes = parseInt(match[2], 10);
-      const seconds = parseFloat(match[3]);
-      const totalSec = Math.round(hours * 3600 + minutes * 60 + seconds);
-      if (totalSec > 0) return totalSec;
+    if (detectedDuration <= 0) {
+      try {
+        const res = await execWithOutput(`ffmpeg -i "${filePath}" 2>&1`, 2500);
+        const match = (res.stderr || res.stdout || '').match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
+        if (match) {
+          const hours = parseInt(match[1], 10);
+          const minutes = parseInt(match[2], 10);
+          const seconds = parseFloat(match[3]);
+          const totalSec = Math.round(hours * 3600 + minutes * 60 + seconds);
+          if (totalSec > 0) detectedDuration = totalSec;
+        }
+      } catch (e) {}
+    }
+
+    if (detectedDuration > 0) {
+      mp4DurationCache.set(filePath, { mtime: stats.mtimeMs, size: stats.size, duration: detectedDuration });
+      return detectedDuration;
     }
   } catch (e) {}
 
@@ -532,10 +552,20 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
 
   // Somaseg / Enterprise Surveillance Standard:
   // Direct zero-transcoding passthrough (-c:v copy) consumes <0.1% CPU per camera instead of 30-35% CPU!
-  // Both RTSP and RTMP camera streams are already H.264/H.265.
-  // Using -c:v copy enables 50-100+ live cameras to run simultaneously with < 5% total CPU on the host!
+  // Both RTSP and RTMP camera streams are standardized with Annex-B SPS/PPS injection for RTSP.
+  if (streamSource.startsWith('rtsp://')) {
+    ffmpegArgs.push(
+      '-c:v', 'copy',
+      '-bsf:v', 'dump_extra,h264_mp4toannexb',
+      '-avoid_negative_ts', 'make_zero'
+    );
+  } else {
+    ffmpegArgs.push(
+      '-c:v', 'copy'
+    );
+  }
+
   ffmpegArgs.push(
-    '-c:v', 'copy',
     '-an',
     '-f', 'hls',
     '-hls_time', '2',
@@ -577,20 +607,20 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
       // Auto-reconnect supervisor only if there is an active viewer currently watching
       if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
         const lastAccess = lastViewerAccessMap.get(key) || lastViewerAccessMap.get(cleanKey) || 0;
-        const hasRecentViewer = (Date.now() - lastAccess) < 60000;
+        const hasRecentViewer = (Date.now() - lastAccess) < 180000;
 
-        // If no active viewer is watching, do not restart (saves 100% CPU on idle cameras)
+        // If no active viewer is watching, do not restart (saves CPU on idle cameras)
         if (!hasRecentViewer) {
           return;
         }
 
         const failCount = cameraReconnectFailures.get(key) || 0;
-        const delay = failCount <= 1 ? 2000 : Math.min(60000, 3000 * Math.pow(1.5, Math.min(failCount - 1, 4)));
+        const delay = Math.min(3000, 1000 + failCount * 500);
 
         setTimeout(() => {
           if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
           const currentViewerAccess = lastViewerAccessMap.get(key) || lastViewerAccessMap.get(cleanKey) || 0;
-          if ((Date.now() - currentViewerAccess) > 60000) return;
+          if ((Date.now() - currentViewerAccess) > 180000) return;
           const currentProc = activeFfmpegProcesses.get(key);
           if (!currentProc || currentProc.exitCode !== null || currentProc.killed) {
             startCameraRtspStream(cam, false, isSubStream);
@@ -609,13 +639,13 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
 
       if (cam && cam.id && !deletedCameraIds.has(cam.id) && !deletedCameraIds.has(key)) {
         const lastAccess = lastViewerAccessMap.get(key) || lastViewerAccessMap.get(cleanKey) || 0;
-        if ((Date.now() - lastAccess) > 60000) return;
+        if ((Date.now() - lastAccess) > 180000) return;
 
-        const delay = Math.min(60000, 4000 * Math.pow(1.5, Math.min(fails - 1, 4)));
+        const delay = Math.min(3000, 1500 + fails * 500);
         setTimeout(() => {
           if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
           const currentViewerAccess = lastViewerAccessMap.get(key) || lastViewerAccessMap.get(cleanKey) || 0;
-          if ((Date.now() - currentViewerAccess) > 60000) return;
+          if ((Date.now() - currentViewerAccess) > 180000) return;
           startCameraRtspStream(cam, false, isSubStream);
         }, delay);
       }
@@ -652,8 +682,8 @@ setInterval(() => {
   const now = Date.now();
   for (const [key, proc] of activeFfmpegProcesses.entries()) {
     const lastAccess = lastViewerAccessMap.get(key) || lastViewerAccessMap.get(key.replace(/[-_]sub$/, '')) || 0;
-    // If not viewed for over 45s, terminate inactive process to keep CPU near 0%
-    if (now - lastAccess > 45000) {
+    // If not viewed for over 4 minutes (240s), terminate inactive process to keep CPU near 0%
+    if (now - lastAccess > 240000) {
       console.log(`[FFmpeg ITL Idle Reaper] Economizando CPU: pausando transmissão inativa '${key}' (sem espectadores).`);
       stopCameraRtspStream(key);
     }
@@ -958,10 +988,13 @@ async function startServer() {
     try {
       let paramIndex = 1;
       const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
-      const res = await pool.query(pgSql, params);
+      const queryPromise = pool.query(pgSql, params);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('PostgreSQL Query Timeout (2500ms)')), 2500)
+      );
+      const res = await Promise.race([queryPromise, timeoutPromise]);
       return res.rows || [];
     } catch (err: any) {
-      console.error('[PostgreSQL Query Error]', err.message || err);
       if (err.code === 'ECONNREFUSED' || err.code === '57P01' || (err.message && err.message.includes('closed'))) {
         isPgActive = false;
       }
@@ -1215,34 +1248,87 @@ async function startServer() {
     }
   };
 
-  // Helper function to save snapshot to local file store
-  const saveToLocalFile = () => {
-    try {
-      const data = {
-        cameras: cameras.filter((c) => c.id && !deletedCameraIds.has(c.id)),
-        recordings: recordings.filter((r) => r.id && !deletedRecordingIds.has(r.id)),
-        users: users.filter((u) => u.id && !deletedUserIds.has(u.id)),
-        companies: companies.filter((c) => c.id && !deletedCompanyIds.has(c.id)),
-        whitelabelConfig,
-        backupConfig,
-        notificationConfig,
-        plans: plans.filter((p) => p.id && !deletedPlanIds.has(p.id)),
-        invoices: invoices.filter((i) => i.id && !deletedInvoiceIds.has(i.id)),
-        mpConfig,
-        architectureConfig,
-        dvrAgents,
-        dbConfig,
-        deletedCameraIds: Array.from(deletedCameraIds),
-        deletedRecordingIds: Array.from(deletedRecordingIds),
-        deletedUserIds: Array.from(deletedUserIds),
-        deletedPlanIds: Array.from(deletedPlanIds),
-        deletedInvoiceIds: Array.from(deletedInvoiceIds),
-        deletedCompanyIds: Array.from(deletedCompanyIds),
-      };
-      fs.writeFileSync(LOCAL_STORE_FILE, JSON.stringify(data, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('[ITL Storage] Erro ao salvar arquivo JSON local:', err);
+  // SQLite Database File & Engine Reference
+  const SQLITE_DB_FILE = path.join(process.cwd(), 'itl_database.sqlite');
+  let sqliteDb: any = null;
+
+  let saveDebounceTimer: NodeJS.Timeout | null = null;
+  let isFlushingDisk = false;
+  let hasPendingDiskFlush = false;
+
+  const flushPersistenceToDisk = async () => {
+    if (isFlushingDisk) {
+      hasPendingDiskFlush = true;
+      return;
     }
+    isFlushingDisk = true;
+    try {
+      // 1. Export and save SQLite atomically in background
+      if (sqliteDb) {
+        try {
+          const data = sqliteDb.export();
+          const buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+          const tmpSqlite = `${SQLITE_DB_FILE}.tmp`;
+          await fs.promises.writeFile(tmpSqlite, buffer);
+          await fs.promises.rename(tmpSqlite, SQLITE_DB_FILE);
+        } catch (e: any) {
+          console.error('[SQLite Flush Error]:', e.message || e);
+        }
+      }
+
+      // 2. Export and save JSON store atomically in background
+      try {
+        const data = {
+          cameras: cameras.filter((c) => c.id && !deletedCameraIds.has(c.id)),
+          recordings: recordings.filter((r) => r.id && !deletedRecordingIds.has(r.id)).slice(0, 1500),
+          users: users.filter((u) => u.id && !deletedUserIds.has(u.id)),
+          companies: companies.filter((c) => c.id && !deletedCompanyIds.has(c.id)),
+          whitelabelConfig,
+          backupConfig,
+          notificationConfig,
+          plans: plans.filter((p) => p.id && !deletedPlanIds.has(p.id)),
+          invoices: invoices.filter((i) => i.id && !deletedInvoiceIds.has(i.id)),
+          mpConfig,
+          architectureConfig,
+          dvrAgents,
+          dbConfig,
+          deletedCameraIds: Array.from(deletedCameraIds),
+          deletedRecordingIds: Array.from(deletedRecordingIds),
+          deletedUserIds: Array.from(deletedUserIds),
+          deletedPlanIds: Array.from(deletedPlanIds),
+          deletedInvoiceIds: Array.from(deletedInvoiceIds),
+          deletedCompanyIds: Array.from(deletedCompanyIds),
+        };
+        const tmpJson = `${LOCAL_STORE_FILE}.tmp`;
+        await fs.promises.writeFile(tmpJson, JSON.stringify(data, null, 2), 'utf-8');
+        await fs.promises.rename(tmpJson, LOCAL_STORE_FILE);
+      } catch (e: any) {
+        console.error('[JSON Flush Error]:', e.message || e);
+      }
+    } finally {
+      isFlushingDisk = false;
+      if (hasPendingDiskFlush) {
+        hasPendingDiskFlush = false;
+        schedulePersistence(100);
+      }
+    }
+  };
+
+  const schedulePersistence = (delayMs = 150) => {
+    if (saveDebounceTimer) return;
+    saveDebounceTimer = setTimeout(() => {
+      saveDebounceTimer = null;
+      flushPersistenceToDisk().catch(() => {});
+    }, delayMs);
+  };
+
+  // Ultra-fast non-blocking persistence triggers (returns immediately, disk I/O debounced)
+  const saveToLocalFile = () => {
+    schedulePersistence();
+  };
+
+  const saveSqliteFile = () => {
+    schedulePersistence();
   };
 
   // Helper function to load snapshot from local file store
@@ -1339,21 +1425,7 @@ async function startServer() {
     return false;
   };
 
-  // SQLite Database Engine Integration (WebAssembly SQL)
-  const SQLITE_DB_FILE = path.join(process.cwd(), 'itl_database.sqlite');
-  let sqliteDb: any = null;
-
-  const saveSqliteFile = () => {
-    if (!sqliteDb) return;
-    try {
-      const data = sqliteDb.export();
-      const buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-      fs.writeFileSync(SQLITE_DB_FILE, buffer);
-      saveToLocalFile();
-    } catch (err) {
-      console.error('[SQLite ITL Error] Erro ao gravar itl_database.sqlite:', err);
-    }
-  };
+  // SQLite Database Engine Data Loader
 
   const loadDataFromSqlite = () => {
     if (!sqliteDb) return;
@@ -1816,6 +1888,13 @@ async function startServer() {
     if (!sqliteDb) return;
     try {
       const uHash = (u as any).password_hash || (u as any).passwordHash || (u.password ? hashPasswordPBKDF2(u.password) : '$2b$10$itlpasswordhash2026');
+      const safeCustomPerms = typeof u.customPermissions === 'string'
+        ? u.customPermissions
+        : JSON.stringify(u.customPermissions || {});
+      const safeAllowedCams = typeof u.allowedCameraIds === 'string'
+        ? u.allowedCameraIds
+        : JSON.stringify(u.allowedCameraIds || ['ALL']);
+
       sqliteDb.run(
         `INSERT OR REPLACE INTO users (
           id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, company_id, company_name, is_company_admin, last_active, created_at
@@ -1830,8 +1909,8 @@ async function startServer() {
           u.stateUf || '',
           u.city || '',
           u.status || 'ACTIVE',
-          JSON.stringify(u.customPermissions || {}),
-          JSON.stringify(u.allowedCameraIds || ['ALL']),
+          safeCustomPerms,
+          safeAllowedCams,
           u.planId || '',
           u.planName || '',
           u.monthlyFee || 0,
@@ -3536,24 +3615,12 @@ async function startServer() {
 
     if (activeAutoRecordingProcesses.has(cam.id)) {
       const proc = activeAutoRecordingProcesses.get(cam.id);
-      const startTime = activeAutoRecordingStartTimes.get(cam.id) || Date.now();
       
-      // Watchdog check: If process actively running and hasn't exceeded 5 minutes, keep recording current slice
-      if (proc && proc.exitCode === null && !proc.killed && (Date.now() - startTime < autoRecordingDurationSec * 1000)) {
-        return; // Already actively recording a slice
+      // Watchdog check: If process actively running, keep recording continuous rolling slices
+      if (proc && proc.exitCode === null && !proc.killed) {
+        return; // Already actively recording slices continuously
       }
 
-      if (proc) {
-        try {
-          if (proc.stdin && proc.stdin.writable) proc.stdin.write('q\n');
-          proc.kill('SIGINT');
-        } catch (e) {}
-        setTimeout(() => {
-          if (proc && proc.exitCode === null && !proc.killed) {
-            try { proc.kill('SIGKILL'); } catch (e) {}
-          }
-        }, 800);
-      }
       activeAutoRecordingProcesses.delete(cam.id);
       activeAutoRecordingStartTimes.delete(cam.id);
     }
@@ -3616,7 +3683,17 @@ async function startServer() {
         '-i', effectiveInputSource,
         '-map', '0:v:0',
         '-c:v', 'copy',
-        '-an',
+        '-an'
+      );
+
+      if (effectiveInputSource.startsWith('rtsp://')) {
+        ffmpegArgs.push(
+          '-bsf:v', 'dump_extra,h264_mp4toannexb',
+          '-avoid_negative_ts', 'make_zero'
+        );
+      }
+
+      ffmpegArgs.push(
         '-f', 'segment',
         '-segment_time', '300',
         '-segment_atclocktime', '1',
@@ -5961,26 +6038,64 @@ async function startServer() {
   app.put('/api/users/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      const index = users.findIndex((u) => u.id === id);
+      const cleanId = String(id || '').trim();
+      let index = users.findIndex((u) => u.id === cleanId);
+      if (index === -1 && req.body.email) {
+        const checkEmail = String(req.body.email).trim().toLowerCase();
+        index = users.findIndex((u) => u.email.trim().toLowerCase() === checkEmail);
+      }
+      if (index === -1 && sqliteDb) {
+        try {
+          const rows = sqliteDb.exec('SELECT * FROM users WHERE id = ?', [cleanId]);
+          if (rows && rows.length > 0 && rows[0].values.length > 0) {
+            loadDataFromSqlite();
+            index = users.findIndex((u) => u.id === cleanId);
+          }
+        } catch (e) {}
+      }
+
       if (index === -1) return res.status(404).json({ error: 'Usuário não encontrado' });
 
-      const updatedUser = { ...users[index], ...req.body };
-      if (req.body.name) updatedUser.name = req.body.name.trim();
-      if (req.body.email) updatedUser.email = req.body.email.trim().toLowerCase();
+      const currentUser = users[index];
+      const updatedUser: User = {
+        ...currentUser,
+        ...req.body,
+        id: currentUser.id,
+      };
+
+      if (req.body.name) updatedUser.name = String(req.body.name).trim();
+      if (req.body.email) updatedUser.email = String(req.body.email).trim().toLowerCase();
       if (req.body.password && req.body.password.toString().trim()) {
         const p = req.body.password.toString().trim();
         updatedUser.password = p;
         updatedUser.passwordHash = hashPasswordPBKDF2(p);
         (updatedUser as any).password_hash = updatedUser.passwordHash;
       }
+      if (req.body.role) updatedUser.role = req.body.role;
+      if (req.body.phone !== undefined) updatedUser.phone = req.body.phone;
+      if (req.body.stateUf !== undefined) updatedUser.stateUf = req.body.stateUf;
+      if (req.body.city !== undefined) updatedUser.city = req.body.city;
+      if (req.body.allowedCameraIds) updatedUser.allowedCameraIds = req.body.allowedCameraIds;
+      if (req.body.customPermissions) {
+        updatedUser.customPermissions = {
+          ...currentUser.customPermissions,
+          ...req.body.customPermissions,
+        };
+      }
+      if (req.body.status !== undefined) updatedUser.status = req.body.status;
+      if (req.body.isCompanyAdmin !== undefined) updatedUser.isCompanyAdmin = Boolean(req.body.isCompanyAdmin);
+      if (req.body.companyId !== undefined) updatedUser.companyId = req.body.companyId;
+      if (req.body.companyName !== undefined) updatedUser.companyName = req.body.companyName;
 
       users[index] = updatedUser;
-      deletedUserIds.delete(id);
-      try { syncUserToSqlite(users[index]); } catch (e) {}
+      deletedUserIds.delete(updatedUser.id);
+      try { syncUserToSqlite(updatedUser); } catch (e) {
+        console.error('[SQLite Sync User Error]:', e);
+      }
       saveToLocalFile();
-      syncUserToMysql(users[index]).catch((e) => console.error('[Pg Sync User Error]:', e));
-      addLog('ITL Admin', `Permissões/dados do usuário ${users[index].name} atualizados`, 'AUTH');
-      return res.json(sanitizeUser(users[index]));
+      syncUserToMysql(updatedUser).catch((e) => console.error('[Pg Sync User Error]:', e));
+      addLog('ITL Admin', `Permissões/dados do usuário ${updatedUser.name} atualizados`, 'AUTH');
+      return res.json(sanitizeUser(updatedUser));
     } catch (err: any) {
       console.error('[PUT /api/users/:id Error]:', err);
       return res.status(500).json({ error: `Erro ao atualizar usuário: ${err.message || err}` });
