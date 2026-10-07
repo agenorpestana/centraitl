@@ -509,18 +509,18 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           const HlsClass = (window as any).Hls;
           hlsInstance = new HlsClass({
             enableWorker: true,
-            lowLatencyMode: true,
-            backBufferLength: 4,
-            maxBufferLength: 4,
-            maxMaxBufferLength: 8,
-            liveSyncDurationCount: 1,
-            liveMaxLatencyDurationCount: 3,
-            manifestLoadingTimeOut: 8000,
-            manifestLoadingMaxRetry: 6,
-            levelLoadingTimeOut: 8000,
-            levelLoadingMaxRetry: 6,
-            fragLoadingTimeOut: 10000,
-            fragLoadingMaxRetry: 6,
+            lowLatencyMode: false, // Estabilidade máxima: prioriza fluidez contínua sem travamentos
+            backBufferLength: 30,
+            maxBufferLength: 25,
+            maxMaxBufferLength: 50,
+            liveSyncDurationCount: 3, // Mantém margem segura de 3 segmentos para eliminar buffer underrun
+            liveMaxLatencyDurationCount: 8,
+            manifestLoadingTimeOut: 10000,
+            manifestLoadingMaxRetry: 10,
+            levelLoadingTimeOut: 10000,
+            levelLoadingMaxRetry: 10,
+            fragLoadingTimeOut: 15000,
+            fragLoadingMaxRetry: 10,
           });
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);

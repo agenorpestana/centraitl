@@ -518,60 +518,93 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   cameraProcessStartTimes.set(key, Date.now());
 
   const ffmpegArgs: string[] = [];
-  ffmpegArgs.push(
-    '-fflags', '+nobuffer+discardcorrupt+genpts',
-    '-flags', 'low_delay'
-  );
 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
-      '-stimeout', '8000000',
-      '-analyzeduration', '1000000',
-      '-probesize', '1000000'
+      '-stimeout', '10000000',
+      '-analyzeduration', '2000000',
+      '-probesize', '2000000'
     );
   } else if (streamSource.startsWith('rtmp://')) {
+    // RTMP: Estabilização de fluxo de rede com buffer adequado para prevenir travamentos
     ffmpegArgs.push(
-      '-rw_timeout', '8000000',
-      '-analyzeduration', '1000000',
-      '-probesize', '1000000'
+      '-rw_timeout', '15000000',
+      '-analyzeduration', '2000000',
+      '-probesize', '2000000'
     );
   } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
     ffmpegArgs.push(
       '-reconnect', '1',
       '-reconnect_at_eof', '1',
       '-reconnect_streamed', '1',
-      '-reconnect_delay_max', '3'
+      '-reconnect_delay_max', '5'
     );
   }
 
   ffmpegArgs.push(
+    '-fflags', '+genpts+discardcorrupt',
     '-i', streamSource,
     '-map', '0:v:0?'
   );
 
-  // Somaseg / Enterprise Surveillance Standard:
-  // Direct zero-transcoding passthrough (-c:v copy) consumes <0.1% CPU per camera instead of 30-35% CPU!
-  // Both RTSP and RTMP camera streams are standardized with Annex-B SPS/PPS injection for RTSP.
   if (streamSource.startsWith('rtsp://')) {
-    ffmpegArgs.push(
-      '-c:v', 'copy',
-      '-bsf:v', 'dump_extra,h264_mp4toannexb',
-      '-avoid_negative_ts', 'make_zero'
-    );
+    // Estratégia de conversão RTSP -> Padrão Único (equivalente a RTMP H.264):
+    // Converte qualquer codec RTSP (H.264, H.265/HEVC, MJPEG) para H.264 padrão com GOP exato de 2s (60 quadros a 30fps).
+    // Garante compatibilidade 100% universal e estabilidade ininterrupta em todos os navegadores.
+    if (isSubStream) {
+      ffmpegArgs.push(
+        '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-profile:v', 'baseline',
+        '-level', '3.1',
+        '-pix_fmt', 'yuv420p',
+        '-r', '30',
+        '-g', '60',
+        '-keyint_min', '60',
+        '-sc_threshold', '0',
+        '-b:v', '500k',
+        '-maxrate', '700k',
+        '-bufsize', '1000k'
+      );
+    } else {
+      ffmpegArgs.push(
+        '-vf', 'format=yuv420p',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-profile:v', 'main',
+        '-level', '4.1',
+        '-pix_fmt', 'yuv420p',
+        '-r', '30',
+        '-g', '60',
+        '-keyint_min', '60',
+        '-sc_threshold', '0',
+        '-b:v', '1800k',
+        '-maxrate', '2200k',
+        '-bufsize', '3500k'
+      );
+    }
   } else {
+    // Fluxo RTMP: Passthrough H.264 ultra-estável
     ffmpegArgs.push(
       '-c:v', 'copy'
     );
   }
 
+  const hlsSegmentDuration = streamSource.startsWith('rtsp://') ? '2' : '3';
+  const hlsListSize = streamSource.startsWith('rtsp://') ? '8' : '10';
+  const hlsDeleteThreshold = streamSource.startsWith('rtsp://') ? '3' : '4';
+
   ffmpegArgs.push(
     '-an',
     '-f', 'hls',
-    '-hls_time', '2',
-    '-hls_list_size', '6',
+    '-hls_time', hlsSegmentDuration,
+    '-hls_list_size', hlsListSize,
     '-hls_flags', 'delete_segments+omit_endlist+temp_file',
-    '-hls_delete_threshold', '2',
+    '-hls_delete_threshold', hlsDeleteThreshold,
     '-hls_segment_type', 'mpegts',
     '-hls_segment_filename', path.join(hlsDir, `${key}_%05d.ts`),
     '-y',
@@ -3134,128 +3167,96 @@ async function startServer() {
     if (!id) return;
     const rawId = String(id).trim();
 
-    // Clean prefix/extension to match all naming representations
-    const cleanNoExt = rawId
-      .replace(/^rec-disk-/, '')
-      .replace(/^rec_disk_/, '')
-      .replace(/^rec-auto-/, '')
-      .replace(/^rec_auto_/, '')
-      .replace(/^rec-real-/, '')
-      .replace(/^rec_real_/, '')
-      .replace(/_(mp4|jpg|part)$/i, '')
-      .replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/i, '');
-
-    const dashId = cleanNoExt.replace(/_/g, '-');
-    const underscoreId = cleanNoExt.replace(/-/g, '_');
-    const alphaNumericOnly = cleanNoExt.replace(/[^a-zA-Z0-9]/g, '');
-
-    // Collect all matching recording targets in memory
-    const targets = recordings.filter((r) => {
+    // 1. Localizar registros correspondentes na memória
+    const matchedRecs = recordings.filter((r) => {
       if (!r) return false;
-      if (r.id === rawId || r.id === cleanNoExt || r.id === dashId || r.id === underscoreId) return true;
-      if (r.id === `rec-disk-${underscoreId}_mp4` || r.id === `rec-disk-${dashId}_mp4`) return true;
-      if (r.streamUrl) {
-        const streamBase = path.basename(r.streamUrl);
-        if (
-          r.streamUrl === rawId ||
-          streamBase === rawId ||
-          r.streamUrl.includes(cleanNoExt) ||
-          r.streamUrl.includes(dashId) ||
-          r.streamUrl.includes(underscoreId) ||
-          (alphaNumericOnly.length >= 8 && r.streamUrl.replace(/[^a-zA-Z0-9]/g, '').includes(alphaNumericOnly))
-        ) {
-          return true;
-        }
-      }
+      if (r.id === rawId) return true;
+      if (r.streamUrl && (r.streamUrl === rawId || path.basename(r.streamUrl) === rawId)) return true;
       return false;
     });
 
-    // Mark as deleted in global exclusion sets so disk scanner never revives it
-    deletedRecordingIds.add(rawId);
-    deletedRecordingIds.add(cleanNoExt);
-    deletedRecordingIds.add(dashId);
-    deletedRecordingIds.add(underscoreId);
-    if (alphaNumericOnly.length >= 8) deletedRecordingIds.add(alphaNumericOnly);
-    deletedRecordingIds.add(`rec-disk-${underscoreId}_mp4`);
-    deletedRecordingIds.add(`rec-disk-${dashId}_mp4`);
-    deletedRecordingIds.add(`rec_auto_${underscoreId}.mp4`);
-    deletedRecordingIds.add(`rec_auto_${dashId}.mp4`);
-    deletedRecordingIds.add(`rec_auto_${cleanNoExt}.mp4`);
-    deletedRecordingIds.add(`rec_real_${underscoreId}.mp4`);
-    deletedRecordingIds.add(`rec_real_${dashId}.mp4`);
-    deletedRecordingIds.add(`rec_real_${cleanNoExt}.mp4`);
-    deletedRecordingIds.add(`${rawId}.mp4`);
-    deletedRecordingIds.add(`${cleanNoExt}.mp4`);
-    deletedRecordingIds.add(`${dashId}.mp4`);
-    deletedRecordingIds.add(`${underscoreId}.mp4`);
-    deletedRecordingIds.add(`/recordings/${rawId}`);
-    deletedRecordingIds.add(`/recordings/${cleanNoExt}.mp4`);
+    // 2. Localizar registros correspondentes no SQLite diretamente
+    const sqliteTargetUrls: string[] = [];
+    if (sqliteDb) {
+      try {
+        const queryRes = sqliteDb.exec('SELECT id, stream_url FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
+        if (queryRes && queryRes.length > 0 && queryRes[0].values) {
+          queryRes[0].values.forEach((row: any[]) => {
+            if (row[0]) matchedRecs.push({ id: String(row[0]), streamUrl: String(row[1] || '') } as any);
+            if (row[1]) sqliteTargetUrls.push(String(row[1]));
+          });
+        }
+      } catch (e) {}
+    }
 
     const filesToDelete = new Set<string>();
-    filesToDelete.add(rawId);
-    if (rawId.endsWith('.mp4')) filesToDelete.add(rawId);
-    else filesToDelete.add(`${rawId}.mp4`);
+    const baseNames = new Set<string>();
+    const timestamps = new Set<string>();
 
-    filesToDelete.add(`${cleanNoExt}.mp4`);
-    filesToDelete.add(`${cleanNoExt}.part.mp4`);
-    filesToDelete.add(`${cleanNoExt}.tmp_fixed.mp4`);
-    filesToDelete.add(`${dashId}.mp4`);
-    filesToDelete.add(`${dashId}.part.mp4`);
-    filesToDelete.add(`${dashId}.tmp_fixed.mp4`);
-    filesToDelete.add(`${underscoreId}.mp4`);
-    filesToDelete.add(`${underscoreId}.part.mp4`);
-    filesToDelete.add(`${underscoreId}.tmp_fixed.mp4`);
-    filesToDelete.add(`rec_auto_${underscoreId}.mp4`);
-    filesToDelete.add(`rec_auto_${dashId}.mp4`);
-    filesToDelete.add(`rec_auto_${cleanNoExt}.mp4`);
-    filesToDelete.add(`rec_real_${underscoreId}.mp4`);
-    filesToDelete.add(`rec_real_${dashId}.mp4`);
-    filesToDelete.add(`rec_real_${cleanNoExt}.mp4`);
+    const registerCandidate = (val: string) => {
+      if (!val) return;
+      const base = path.basename(val);
+      const noExt = base.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/i, '');
+      filesToDelete.add(base);
+      filesToDelete.add(noExt);
+      filesToDelete.add(`${noExt}.mp4`);
+      filesToDelete.add(`${noExt}.part.mp4`);
+      filesToDelete.add(`${noExt}.tmp_fixed.mp4`);
+      filesToDelete.add(`thumb_disk_${noExt}.jpg`);
+      filesToDelete.add(`thumb_auto_${noExt}.jpg`);
+      filesToDelete.add(`thumb_real_${noExt}.jpg`);
+      filesToDelete.add(`${base.replace('.mp4', '.jpg')}`);
+      baseNames.add(noExt);
 
-    // Add thumbnails
-    filesToDelete.add(`thumb_auto_${underscoreId}.jpg`);
-    filesToDelete.add(`thumb_auto_${dashId}.jpg`);
-    filesToDelete.add(`thumb_auto_${cleanNoExt}.jpg`);
-    filesToDelete.add(`thumb_disk_${underscoreId}.jpg`);
-    filesToDelete.add(`thumb_disk_${dashId}.jpg`);
-    filesToDelete.add(`thumb_disk_${cleanNoExt}.jpg`);
-    filesToDelete.add(`thumb_real_${underscoreId}.jpg`);
-    filesToDelete.add(`thumb_real_${dashId}.jpg`);
-    filesToDelete.add(`thumb_real_${cleanNoExt}.jpg`);
+      const cleanNoPrefix = noExt
+        .replace(/^rec-disk-/, '')
+        .replace(/^rec_disk_/, '')
+        .replace(/^rec-auto-/, '')
+        .replace(/^rec_auto_/, '')
+        .replace(/^rec-real-/, '')
+        .replace(/^rec_real_/, '')
+        .replace(/_(mp4|jpg|part)$/i, '');
 
-    for (const target of targets) {
-      deletedRecordingIds.add(target.id);
-      if (target.streamUrl) {
-        const fileName = path.basename(target.streamUrl);
-        const baseName = fileName.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4)$/, '');
-        filesToDelete.add(fileName);
-        filesToDelete.add(`${baseName}.mp4`);
-        filesToDelete.add(`${baseName}.part.mp4`);
-        filesToDelete.add(`${baseName}.tmp_fixed.mp4`);
-        filesToDelete.add(`thumb_disk_${fileName.replace('.mp4', '.jpg')}`);
-        filesToDelete.add(`thumb_auto_${fileName.replace('.mp4', '.jpg')}`);
-        filesToDelete.add(`thumb_real_${fileName.replace('.mp4', '.jpg')}`);
-        filesToDelete.add(`thumb_disk_${baseName}.jpg`);
-        filesToDelete.add(`thumb_auto_${baseName}.jpg`);
-        filesToDelete.add(`thumb_real_${baseName}.jpg`);
-        deletedRecordingIds.add(target.streamUrl);
-        deletedRecordingIds.add(fileName);
-        deletedRecordingIds.add(baseName);
+      if (cleanNoPrefix) {
+        baseNames.add(cleanNoPrefix);
+        baseNames.add(cleanNoPrefix.replace(/_/g, '-'));
+        baseNames.add(cleanNoPrefix.replace(/-/g, '_'));
+        filesToDelete.add(`${cleanNoPrefix}.mp4`);
+        filesToDelete.add(`rec_auto_${cleanNoPrefix}.mp4`);
+        filesToDelete.add(`rec_real_${cleanNoPrefix}.mp4`);
+        filesToDelete.add(`rec_auto_${cleanNoPrefix.replace(/-/g, '_')}.mp4`);
+        filesToDelete.add(`rec_auto_${cleanNoPrefix.replace(/_/g, '-')}.mp4`);
       }
-      if (target.thumbnailUrl && target.thumbnailUrl.startsWith('/recordings/')) {
-        const thumbFile = path.basename(target.thumbnailUrl);
-        filesToDelete.add(thumbFile);
-        deletedRecordingIds.add(thumbFile);
-      }
-    }
 
-    // Clear from reconciled disk tracker
-    for (const f of filesToDelete) {
+      const tsMatch = base.match(/(\d{10,14})/);
+      if (tsMatch) {
+        timestamps.add(tsMatch[1]);
+      }
+    };
+
+    registerCandidate(rawId);
+    matchedRecs.forEach((r) => {
+      registerCandidate(r.id);
+      if (r.streamUrl) registerCandidate(r.streamUrl);
+      if (r.thumbnailUrl) registerCandidate(r.thumbnailUrl);
+    });
+    sqliteTargetUrls.forEach(registerCandidate);
+
+    // Marcar em todas as formas no conjunto global de exclusões para nunca ser re-adicionado
+    deletedRecordingIds.add(rawId);
+    baseNames.forEach((bn) => {
+      deletedRecordingIds.add(bn);
+      deletedRecordingIds.add(`${bn}.mp4`);
+      deletedRecordingIds.add(`/recordings/${bn}.mp4`);
+    });
+    filesToDelete.forEach((f) => {
+      deletedRecordingIds.add(f);
+      deletedRecordingIds.add(`/recordings/${f}`);
       reconciledDiskFiles.delete(f);
       reconciledDiskFiles.delete(`/recordings/${f}`);
-    }
+    });
 
-    // Clean physical files from disk across all storage directories
+    // 1. Excluir fisicamente os arquivos do disco em todas as pastas de armazenamento
     const dirsToClean = [
       recordingsDir,
       '/var/www/centralitl.unityautomacoes.com.br/recordings',
@@ -3269,13 +3270,12 @@ async function startServer() {
       try {
         const dirFiles = fs.readdirSync(dir);
         for (const df of dirFiles) {
-          const dfNoExt = df.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/, '');
-          const dfAlpha = dfNoExt.replace(/[^a-zA-Z0-9]/g, '');
+          const dfNoExt = df.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/i, '');
           const isDirectMatch = filesToDelete.has(df) || filesToDelete.has(dfNoExt);
-          const isAlphaMatch = alphaNumericOnly.length >= 8 && (dfAlpha.includes(alphaNumericOnly) || alphaNumericOnly.includes(dfAlpha));
-          const isCleanMatch = cleanNoExt.length >= 8 && (df.includes(cleanNoExt) || dfNoExt.includes(cleanNoExt));
+          const isBaseMatch = Array.from(baseNames).some((bn) => bn && bn.length >= 6 && (df.includes(bn) || dfNoExt.includes(bn)));
+          const isTimestampMatch = Array.from(timestamps).some((ts) => ts && ts.length >= 8 && df.includes(ts));
 
-          if (isDirectMatch || isAlphaMatch || isCleanMatch) {
+          if (isDirectMatch || isBaseMatch || isTimestampMatch) {
             const fullPath = path.join(dir, df);
             try {
               if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
@@ -3287,7 +3287,6 @@ async function startServer() {
             deletedRecordingIds.add(dfNoExt);
             deletedRecordingIds.add(`/recordings/${df}`);
 
-            // Also remove matching thumbnail if this was a video
             if (df.endsWith('.mp4')) {
               const th1 = path.join(dir, `thumb_disk_${df.replace('.mp4', '.jpg')}`);
               const th2 = path.join(dir, `thumb_auto_${df.replace('.mp4', '.jpg')}`);
@@ -3301,47 +3300,55 @@ async function startServer() {
       } catch (e) {}
     }
 
-    // Delete permanently from SQLite Database
+    // 2. Excluir permanentemente do Banco SQLite
     if (sqliteDb) {
       try {
         sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
-        if (cleanNoExt.length >= 6) {
-          sqliteDb.run('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${cleanNoExt}%`, `%${cleanNoExt}%`]);
+        for (const bn of baseNames) {
+          if (bn.length >= 6) {
+            sqliteDb.run('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${bn}%`, `%${bn}%`]);
+          }
         }
-        for (const target of targets) {
-          sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [target.id, target.streamUrl]);
+        for (const ts of timestamps) {
+          if (ts.length >= 8) {
+            sqliteDb.run('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${ts}%`, `%${ts}%`]);
+          }
         }
         saveSqliteFile();
       } catch (e) {}
     }
 
-    // Delete permanently from PostgreSQL (if active)
+    // 3. Excluir permanentemente do PostgreSQL (se ativo)
     if (isPgActive && pool) {
       try {
         await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
-        if (cleanNoExt.length >= 6) {
-          await queryPg('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${cleanNoExt}%`, `%${cleanNoExt}%`]);
+        for (const bn of baseNames) {
+          if (bn.length >= 6) {
+            await queryPg('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${bn}%`, `%${bn}%`]);
+          }
         }
-        for (const target of targets) {
-          await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [target.id, target.streamUrl]);
+        for (const ts of timestamps) {
+          if (ts.length >= 8) {
+            await queryPg('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${ts}%`, `%${ts}%`]);
+          }
         }
       } catch (e) {}
     }
 
-    // Filter from memory recordings
+    // 4. Filtrar permanentemente da memória
     recordings = recordings.filter((r) => {
-      if (r.id === rawId || r.id === cleanNoExt || r.id === dashId || r.id === underscoreId) return false;
-      if (deletedRecordingIds.has(r.id)) return false;
-      if (targets.some((t) => t.id === r.id)) return false;
+      if (!r || !r.id) return false;
+      if (r.id === rawId || deletedRecordingIds.has(r.id)) return false;
+      if (matchedRecs.some((m) => m.id === r.id)) return false;
       const recBase = path.basename(r.streamUrl || '');
       if (filesToDelete.has(recBase)) return false;
-      const recAlpha = (r.id + '_' + recBase).replace(/[^a-zA-Z0-9]/g, '');
-      if (alphaNumericOnly.length >= 8 && recAlpha.includes(alphaNumericOnly)) return false;
-      if (cleanNoExt.length >= 8 && recBase.includes(cleanNoExt)) return false;
+      if (Array.from(baseNames).some((bn) => bn.length >= 6 && (r.id.includes(bn) || recBase.includes(bn)))) return false;
+      if (Array.from(timestamps).some((ts) => ts.length >= 8 && (r.id.includes(ts) || recBase.includes(ts)))) return false;
       return true;
     });
 
     saveToLocalFile();
+    await flushPersistenceToDisk();
   }
 
   async function pruneRecordingsFIFO(customLimitGB?: number): Promise<{ prunedCount: number; currentGB: number; limitGB: number }> {
@@ -3357,14 +3364,24 @@ async function startServer() {
     }
     const maxBytes = maxGB * 1024 * 1024 * 1024;
 
-    // 1. Measure true disk space consumed on physical drive
+    // 1. Medir espaço real consumido no disco em todas as pastas de gravações
     let totalDiskBytes = 0;
     const diskFiles: Array<{ name: string; fullPath: string; size: number; mtime: number }> = [];
-    if (fs.existsSync(recordingsDir)) {
+    const checkDirs = [
+      recordingsDir,
+      '/var/www/centralitl.unityautomacoes.com.br/recordings',
+      '/var/www/itl-recordings',
+      '/tmp/recordings',
+      path.join(process.cwd(), 'public', 'recordings'),
+    ];
+
+    for (const dir of checkDirs) {
+      if (!fs.existsSync(dir)) continue;
       try {
-        const entries = fs.readdirSync(recordingsDir);
+        const entries = fs.readdirSync(dir);
         for (const entry of entries) {
-          const fp = path.join(recordingsDir, entry);
+          if (!entry.toLowerCase().endsWith('.mp4')) continue;
+          const fp = path.join(dir, entry);
           try {
             const st = fs.statSync(fp);
             totalDiskBytes += st.size;
@@ -3381,20 +3398,19 @@ async function startServer() {
       return { prunedCount: 0, currentGB: currentUsageBytes / (1024 * 1024 * 1024), limitGB: maxGB };
     }
 
-    // 2. Sort recordings chronologically (oldest first for FIFO pruning)
+    // 2. Ordenar cronologicamente as gravações (mais antigas primeiro - FIFO)
     const sorted = [...recordings].sort((a, b) => {
       const tA = new Date((a.startTime || '').replace(' ', 'T')).getTime() || 0;
       const tB = new Date((b.startTime || '').replace(' ', 'T')).getTime() || 0;
       return tA - tB;
     });
 
-    // Also sort disk files oldest first
     diskFiles.sort((a, b) => a.mtime - b.mtime);
 
     let prunedCount = 0;
-    const targetCapBytes = maxBytes * 0.95; // Prune to 95% of quota to maintain a healthy operating buffer
+    const targetCapBytes = maxBytes * 0.95; // Prune até 95% da cota para manter margem de operação
 
-    // Prune registered recordings in FIFO order
+    // Limpar gravações registradas em ordem FIFO
     for (const rec of sorted) {
       if (currentUsageBytes > targetCapBytes) {
         await permanentlyDeleteRecording(rec.id);
@@ -3406,7 +3422,7 @@ async function startServer() {
       }
     }
 
-    // If still above quota due to unregistered disk files, delete oldest files directly
+    // Se ainda exceder por arquivos órfãos não cadastrados no banco, excluir os mais antigos diretamente
     if (currentUsageBytes > targetCapBytes) {
       for (const df of diskFiles) {
         if (currentUsageBytes <= targetCapBytes) break;
@@ -3425,6 +3441,7 @@ async function startServer() {
     if (prunedCount > 0) {
       saveToLocalFile();
       saveSqliteFile();
+      await flushPersistenceToDisk();
       console.log(`[FIFO Pruner] Limpeza executada! Removidas ${prunedCount} gravação(ões) mais antigas. Novo uso: ${(currentUsageBytes / (1024 * 1024 * 1024)).toFixed(2)} GB (limite configurado: ${maxGB} GB).`);
       addLog('ITL Storage', `Limpeza automática FIFO executada: ${prunedCount} gravação(ões) antigas removidas. Uso atual: ${(currentUsageBytes / (1024 * 1024 * 1024)).toFixed(2)} GB / ${maxGB} GB`, 'RECORDING');
     }
@@ -3641,10 +3658,10 @@ async function startServer() {
         } catch (e) {}
       }
 
-      // Prune any records whose physical file is completely gone from disk or micro slices (<30s)
+      // Prune any records whose physical file is completely gone from disk or corrupted 0-byte items
       recordings = recordings.filter((r) => {
         if (deletedRecordingIds.has(r.id)) return false;
-        if ((r.durationSeconds || 0) < 30) return false;
+        if ((r.durationSeconds || 0) <= 0 && (r.fileSizeMB || 0) < 0.05) return false;
         if (r.streamUrl && r.streamUrl.startsWith('/recordings/')) {
           const fName = path.basename(r.streamUrl);
           const fPath = path.join(recordingsDir, fName);
@@ -3759,15 +3776,28 @@ async function startServer() {
       // Keeps single persistent connection to camera without socket disconnects between segments!
       ffmpegArgs.push(
         '-i', effectiveInputSource,
-        '-map', '0:v:0',
-        '-c:v', 'copy',
-        '-an'
+        '-map', '0:v:0'
       );
 
       if (effectiveInputSource.startsWith('rtsp://')) {
+        // Conversão uniforme de RTSP para MP4 H.264 padrão com GOP estável
         ffmpegArgs.push(
-          '-bsf:v', 'dump_extra,h264_mp4toannexb',
-          '-avoid_negative_ts', 'make_zero'
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-tune', 'zerolatency',
+          '-profile:v', 'main',
+          '-pix_fmt', 'yuv420p',
+          '-r', '30',
+          '-g', '60',
+          '-b:v', '1500k',
+          '-maxrate', '1800k',
+          '-bufsize', '3000k',
+          '-an'
+        );
+      } else {
+        ffmpegArgs.push(
+          '-c:v', 'copy',
+          '-an'
         );
       }
 
