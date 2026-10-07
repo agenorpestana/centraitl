@@ -569,7 +569,10 @@ export default function App() {
       return next;
     });
     try {
-      await fetch(`/api/recordings/${id}`, { method: 'DELETE' });
+      await fetch(`/api/recordings/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: getUserAuthHeaders(),
+      });
     } catch (e) {}
   };
 
@@ -582,7 +585,7 @@ export default function App() {
     try {
       await fetch('/api/recordings/batch-delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getUserAuthHeaders() },
         body: JSON.stringify({ ids }),
       });
     } catch (e) {}

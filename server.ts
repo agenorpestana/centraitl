@@ -3133,6 +3133,8 @@ async function startServer() {
   async function permanentlyDeleteRecording(id: string) {
     if (!id) return;
     const rawId = String(id).trim();
+
+    // Clean prefix/extension to match all naming representations
     const cleanNoExt = rawId
       .replace(/^rec-disk-/, '')
       .replace(/^rec_disk_/, '')
@@ -3147,41 +3149,53 @@ async function startServer() {
     const underscoreId = cleanNoExt.replace(/-/g, '_');
     const alphaNumericOnly = cleanNoExt.replace(/[^a-zA-Z0-9]/g, '');
 
-    deletedRecordingIds.add(rawId);
-    deletedRecordingIds.add(cleanNoExt);
-    deletedRecordingIds.add(dashId);
-    deletedRecordingIds.add(underscoreId);
-    deletedRecordingIds.add(alphaNumericOnly);
-    deletedRecordingIds.add(`rec-disk-${underscoreId}_mp4`);
-    deletedRecordingIds.add(`rec-disk-${dashId}_mp4`);
-    deletedRecordingIds.add(`rec_auto_${underscoreId}`);
-    deletedRecordingIds.add(`rec-auto-${dashId}`);
-    deletedRecordingIds.add(`${cleanNoExt}.mp4`);
-    deletedRecordingIds.add(`${dashId}.mp4`);
-    deletedRecordingIds.add(`${underscoreId}.mp4`);
-    deletedRecordingIds.add(`/recordings/${underscoreId}.mp4`);
-    deletedRecordingIds.add(`/recordings/${dashId}.mp4`);
-    deletedRecordingIds.add(`/recordings/rec_auto_${underscoreId}.mp4`);
-    deletedRecordingIds.add(`/recordings/rec-auto-${dashId}.mp4`);
-
-    const targets = recordings.filter(
-      (r) =>
-        r.id === rawId ||
-        r.id === cleanNoExt ||
-        r.id === dashId ||
-        r.id === underscoreId ||
-        r.id === `rec-disk-${underscoreId}_mp4` ||
-        (r.streamUrl && (
+    // Collect all matching recording targets in memory
+    const targets = recordings.filter((r) => {
+      if (!r) return false;
+      if (r.id === rawId || r.id === cleanNoExt || r.id === dashId || r.id === underscoreId) return true;
+      if (r.id === `rec-disk-${underscoreId}_mp4` || r.id === `rec-disk-${dashId}_mp4`) return true;
+      if (r.streamUrl) {
+        const streamBase = path.basename(r.streamUrl);
+        if (
+          r.streamUrl === rawId ||
+          streamBase === rawId ||
           r.streamUrl.includes(cleanNoExt) ||
           r.streamUrl.includes(dashId) ||
           r.streamUrl.includes(underscoreId) ||
           (alphaNumericOnly.length >= 8 && r.streamUrl.replace(/[^a-zA-Z0-9]/g, '').includes(alphaNumericOnly))
-        ))
-    );
+        ) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+    // Mark as deleted in global exclusion sets so disk scanner never revives it
+    deletedRecordingIds.add(rawId);
+    deletedRecordingIds.add(cleanNoExt);
+    deletedRecordingIds.add(dashId);
+    deletedRecordingIds.add(underscoreId);
+    if (alphaNumericOnly.length >= 8) deletedRecordingIds.add(alphaNumericOnly);
+    deletedRecordingIds.add(`rec-disk-${underscoreId}_mp4`);
+    deletedRecordingIds.add(`rec-disk-${dashId}_mp4`);
+    deletedRecordingIds.add(`rec_auto_${underscoreId}.mp4`);
+    deletedRecordingIds.add(`rec_auto_${dashId}.mp4`);
+    deletedRecordingIds.add(`rec_auto_${cleanNoExt}.mp4`);
+    deletedRecordingIds.add(`rec_real_${underscoreId}.mp4`);
+    deletedRecordingIds.add(`rec_real_${dashId}.mp4`);
+    deletedRecordingIds.add(`rec_real_${cleanNoExt}.mp4`);
+    deletedRecordingIds.add(`${rawId}.mp4`);
+    deletedRecordingIds.add(`${cleanNoExt}.mp4`);
+    deletedRecordingIds.add(`${dashId}.mp4`);
+    deletedRecordingIds.add(`${underscoreId}.mp4`);
+    deletedRecordingIds.add(`/recordings/${rawId}`);
+    deletedRecordingIds.add(`/recordings/${cleanNoExt}.mp4`);
 
     const filesToDelete = new Set<string>();
     filesToDelete.add(rawId);
-    filesToDelete.add(`${rawId}.mp4`);
+    if (rawId.endsWith('.mp4')) filesToDelete.add(rawId);
+    else filesToDelete.add(`${rawId}.mp4`);
+
     filesToDelete.add(`${cleanNoExt}.mp4`);
     filesToDelete.add(`${cleanNoExt}.part.mp4`);
     filesToDelete.add(`${cleanNoExt}.tmp_fixed.mp4`);
@@ -3192,14 +3206,21 @@ async function startServer() {
     filesToDelete.add(`${underscoreId}.part.mp4`);
     filesToDelete.add(`${underscoreId}.tmp_fixed.mp4`);
     filesToDelete.add(`rec_auto_${underscoreId}.mp4`);
-    filesToDelete.add(`rec_auto_${underscoreId}.part.mp4`);
-    filesToDelete.add(`rec-auto-${dashId}.mp4`);
+    filesToDelete.add(`rec_auto_${dashId}.mp4`);
+    filesToDelete.add(`rec_auto_${cleanNoExt}.mp4`);
     filesToDelete.add(`rec_real_${underscoreId}.mp4`);
+    filesToDelete.add(`rec_real_${dashId}.mp4`);
+    filesToDelete.add(`rec_real_${cleanNoExt}.mp4`);
+
+    // Add thumbnails
     filesToDelete.add(`thumb_auto_${underscoreId}.jpg`);
-    filesToDelete.add(`thumb_disk_${underscoreId}.jpg`);
-    filesToDelete.add(`thumb_real_${underscoreId}.jpg`);
+    filesToDelete.add(`thumb_auto_${dashId}.jpg`);
     filesToDelete.add(`thumb_auto_${cleanNoExt}.jpg`);
+    filesToDelete.add(`thumb_disk_${underscoreId}.jpg`);
+    filesToDelete.add(`thumb_disk_${dashId}.jpg`);
     filesToDelete.add(`thumb_disk_${cleanNoExt}.jpg`);
+    filesToDelete.add(`thumb_real_${underscoreId}.jpg`);
+    filesToDelete.add(`thumb_real_${dashId}.jpg`);
     filesToDelete.add(`thumb_real_${cleanNoExt}.jpg`);
 
     for (const target of targets) {
@@ -3211,12 +3232,12 @@ async function startServer() {
         filesToDelete.add(`${baseName}.mp4`);
         filesToDelete.add(`${baseName}.part.mp4`);
         filesToDelete.add(`${baseName}.tmp_fixed.mp4`);
-        filesToDelete.add(`thumb_auto_${baseName}.jpg`);
+        filesToDelete.add(`thumb_disk_${fileName.replace('.mp4', '.jpg')}`);
+        filesToDelete.add(`thumb_auto_${fileName.replace('.mp4', '.jpg')}`);
+        filesToDelete.add(`thumb_real_${fileName.replace('.mp4', '.jpg')}`);
         filesToDelete.add(`thumb_disk_${baseName}.jpg`);
+        filesToDelete.add(`thumb_auto_${baseName}.jpg`);
         filesToDelete.add(`thumb_real_${baseName}.jpg`);
-        filesToDelete.add(`thumb_auto_${baseName.replace(/^rec_auto_/, '')}.jpg`);
-        filesToDelete.add(`thumb_disk_${baseName.replace(/^rec_auto_/, '')}.jpg`);
-        filesToDelete.add(`thumb_real_${baseName.replace(/^rec_real_/, '')}.jpg`);
         deletedRecordingIds.add(target.streamUrl);
         deletedRecordingIds.add(fileName);
         deletedRecordingIds.add(baseName);
@@ -3234,7 +3255,7 @@ async function startServer() {
       reconciledDiskFiles.delete(`/recordings/${f}`);
     }
 
-    // Unlink files from all recording dirs
+    // Clean physical files from disk across all storage directories
     const dirsToClean = [
       recordingsDir,
       '/var/www/centralitl.unityautomacoes.com.br/recordings',
@@ -3250,31 +3271,43 @@ async function startServer() {
         for (const df of dirFiles) {
           const dfNoExt = df.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/, '');
           const dfAlpha = dfNoExt.replace(/[^a-zA-Z0-9]/g, '');
-          if (
-            filesToDelete.has(df) ||
-            filesToDelete.has(dfNoExt) ||
-            (alphaNumericOnly.length >= 8 && (dfAlpha.includes(alphaNumericOnly) || alphaNumericOnly.includes(dfAlpha)))
-          ) {
+          const isDirectMatch = filesToDelete.has(df) || filesToDelete.has(dfNoExt);
+          const isAlphaMatch = alphaNumericOnly.length >= 8 && (dfAlpha.includes(alphaNumericOnly) || alphaNumericOnly.includes(dfAlpha));
+          const isCleanMatch = cleanNoExt.length >= 8 && (df.includes(cleanNoExt) || dfNoExt.includes(cleanNoExt));
+
+          if (isDirectMatch || isAlphaMatch || isCleanMatch) {
             const fullPath = path.join(dir, df);
             try {
               if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
-            } catch (e) {}
+            } catch (unlinkErr) {
+              try { fs.rmSync(fullPath, { force: true }); } catch (e) {}
+            }
             reconciledDiskFiles.delete(df);
+            deletedRecordingIds.add(df);
+            deletedRecordingIds.add(dfNoExt);
+            deletedRecordingIds.add(`/recordings/${df}`);
+
+            // Also remove matching thumbnail if this was a video
+            if (df.endsWith('.mp4')) {
+              const th1 = path.join(dir, `thumb_disk_${df.replace('.mp4', '.jpg')}`);
+              const th2 = path.join(dir, `thumb_auto_${df.replace('.mp4', '.jpg')}`);
+              const th3 = path.join(dir, `thumb_real_${df.replace('.mp4', '.jpg')}`);
+              try { if (fs.existsSync(th1)) fs.unlinkSync(th1); } catch (e) {}
+              try { if (fs.existsSync(th2)) fs.unlinkSync(th2); } catch (e) {}
+              try { if (fs.existsSync(th3)) fs.unlinkSync(th3); } catch (e) {}
+            }
           }
         }
       } catch (e) {}
     }
 
-    // Delete from SQLite
+    // Delete permanently from SQLite Database
     if (sqliteDb) {
       try {
-        sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR id = ? OR id = ? OR id LIKE ? OR stream_url LIKE ?', [
-          rawId,
-          dashId,
-          underscoreId,
-          `%${cleanNoExt}%`,
-          `%${cleanNoExt}%`
-        ]);
+        sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
+        if (cleanNoExt.length >= 6) {
+          sqliteDb.run('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${cleanNoExt}%`, `%${cleanNoExt}%`]);
+        }
         for (const target of targets) {
           sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [target.id, target.streamUrl]);
         }
@@ -3282,80 +3315,121 @@ async function startServer() {
       } catch (e) {}
     }
 
-    // Delete from PostgreSQL
+    // Delete permanently from PostgreSQL (if active)
     if (isPgActive && pool) {
       try {
-        await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR id = ? OR id = ? OR id LIKE ? OR stream_url LIKE ?', [
-          rawId,
-          dashId,
-          underscoreId,
-          `%${cleanNoExt}%`,
-          `%${cleanNoExt}%`
-        ]);
+        await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
+        if (cleanNoExt.length >= 6) {
+          await queryPg('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${cleanNoExt}%`, `%${cleanNoExt}%`]);
+        }
         for (const target of targets) {
           await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [target.id, target.streamUrl]);
         }
       } catch (e) {}
     }
 
-    // Filter memory recordings
+    // Filter from memory recordings
     recordings = recordings.filter((r) => {
       if (r.id === rawId || r.id === cleanNoExt || r.id === dashId || r.id === underscoreId) return false;
       if (deletedRecordingIds.has(r.id)) return false;
+      if (targets.some((t) => t.id === r.id)) return false;
       const recBase = path.basename(r.streamUrl || '');
       if (filesToDelete.has(recBase)) return false;
       const recAlpha = (r.id + '_' + recBase).replace(/[^a-zA-Z0-9]/g, '');
       if (alphaNumericOnly.length >= 8 && recAlpha.includes(alphaNumericOnly)) return false;
+      if (cleanNoExt.length >= 8 && recBase.includes(cleanNoExt)) return false;
       return true;
     });
 
     saveToLocalFile();
   }
 
-  function pruneRecordingsFIFO(customLimitGB?: number) {
-    const maxGB = customLimitGB || backupConfig?.storageLimitGB || 40;
-    const maxMB = maxGB * 1024;
+  async function pruneRecordingsFIFO(customLimitGB?: number): Promise<{ prunedCount: number; currentGB: number; limitGB: number }> {
+    let maxGB = customLimitGB || backupConfig?.storageLimitGB || 100;
+    if (!customLimitGB && sqliteDb) {
+      try {
+        const storageRes = sqliteDb.exec("SELECT storage_limit_gb FROM storage_config WHERE id = 'default'");
+        if (storageRes && storageRes.length > 0 && storageRes[0].values.length > 0) {
+          const val = Number(storageRes[0].values[0][0]);
+          if (!isNaN(val) && val >= 10) maxGB = val;
+        }
+      } catch (e) {}
+    }
+    const maxBytes = maxGB * 1024 * 1024 * 1024;
 
-    let currentMB = recordings.reduce((acc, r) => acc + (r.fileSizeMB || 0), 0);
-    if (currentMB <= maxMB) return { prunedCount: 0, currentGB: currentMB / 1024 };
+    // 1. Measure true disk space consumed on physical drive
+    let totalDiskBytes = 0;
+    const diskFiles: Array<{ name: string; fullPath: string; size: number; mtime: number }> = [];
+    if (fs.existsSync(recordingsDir)) {
+      try {
+        const entries = fs.readdirSync(recordingsDir);
+        for (const entry of entries) {
+          const fp = path.join(recordingsDir, entry);
+          try {
+            const st = fs.statSync(fp);
+            totalDiskBytes += st.size;
+            diskFiles.push({ name: entry, fullPath: fp, size: st.size, mtime: st.mtimeMs || st.birthtimeMs || 0 });
+          } catch (e) {}
+        }
+      } catch (e) {}
+    }
 
-    // Sort recordings from oldest to newest by startTime
+    const memBytes = recordings.reduce((acc, r) => acc + ((r.fileSizeMB || 0) * 1024 * 1024), 0);
+    let currentUsageBytes = Math.max(totalDiskBytes, memBytes);
+
+    if (currentUsageBytes <= maxBytes) {
+      return { prunedCount: 0, currentGB: currentUsageBytes / (1024 * 1024 * 1024), limitGB: maxGB };
+    }
+
+    // 2. Sort recordings chronologically (oldest first for FIFO pruning)
     const sorted = [...recordings].sort((a, b) => {
-      const tA = new Date(a.startTime.replace(' ', 'T')).getTime();
-      const tB = new Date(b.startTime.replace(' ', 'T')).getTime();
+      const tA = new Date((a.startTime || '').replace(' ', 'T')).getTime() || 0;
+      const tB = new Date((b.startTime || '').replace(' ', 'T')).getTime() || 0;
       return tA - tB;
     });
 
+    // Also sort disk files oldest first
+    diskFiles.sort((a, b) => a.mtime - b.mtime);
+
     let prunedCount = 0;
+    const targetCapBytes = maxBytes * 0.95; // Prune to 95% of quota to maintain a healthy operating buffer
+
+    // Prune registered recordings in FIFO order
     for (const rec of sorted) {
-      if (currentMB > maxMB) {
-        deletedRecordingIds.add(rec.id);
-        if (rec.streamUrl && rec.streamUrl.startsWith('/recordings/')) {
-          const fileName = path.basename(rec.streamUrl);
-          const fullPath = path.join(recordingsDir, fileName);
-          if (fs.existsSync(fullPath)) {
-            try { fs.unlinkSync(fullPath); } catch (e) {}
-          } else {
-            const legacyPath = path.join(process.cwd(), 'public', rec.streamUrl);
-            if (fs.existsSync(legacyPath)) {
-              try { fs.unlinkSync(legacyPath); } catch (e) {}
-            }
-          }
-        }
-        currentMB -= (rec.fileSizeMB || 0);
+      if (currentUsageBytes > targetCapBytes) {
+        await permanentlyDeleteRecording(rec.id);
+        const freed = (rec.fileSizeMB || 30) * 1024 * 1024;
+        currentUsageBytes = Math.max(0, currentUsageBytes - freed);
         prunedCount++;
-        recordings = recordings.filter((r) => r.id !== rec.id);
       } else {
         break;
       }
     }
 
-    if (prunedCount > 0) {
-      saveToLocalFile();
-      console.log(`[FIFO Pruner] Limpeza executada! Removidas ${prunedCount} gravação(ões) mais antiga(s). Novo uso: ${(currentMB / 1024).toFixed(2)} GB (limite: ${maxGB} GB).`);
+    // If still above quota due to unregistered disk files, delete oldest files directly
+    if (currentUsageBytes > targetCapBytes) {
+      for (const df of diskFiles) {
+        if (currentUsageBytes <= targetCapBytes) break;
+        if (fs.existsSync(df.fullPath)) {
+          try {
+            fs.unlinkSync(df.fullPath);
+            currentUsageBytes = Math.max(0, currentUsageBytes - df.size);
+            reconciledDiskFiles.delete(df.name);
+            deletedRecordingIds.add(df.name);
+            prunedCount++;
+          } catch (e) {}
+        }
+      }
     }
 
-    return { prunedCount, currentGB: Math.max(0, currentMB / 1024) };
+    if (prunedCount > 0) {
+      saveToLocalFile();
+      saveSqliteFile();
+      console.log(`[FIFO Pruner] Limpeza executada! Removidas ${prunedCount} gravação(ões) mais antigas. Novo uso: ${(currentUsageBytes / (1024 * 1024 * 1024)).toFixed(2)} GB (limite configurado: ${maxGB} GB).`);
+      addLog('ITL Storage', `Limpeza automática FIFO executada: ${prunedCount} gravação(ões) antigas removidas. Uso atual: ${(currentUsageBytes / (1024 * 1024 * 1024)).toFixed(2)} GB / ${maxGB} GB`, 'RECORDING');
+    }
+
+    return { prunedCount, currentGB: currentUsageBytes / (1024 * 1024 * 1024), limitGB: maxGB };
   }
 
   const reconciledDiskFiles = new Set<string>();
@@ -3560,6 +3634,7 @@ async function startServer() {
                 addedCount++;
               }
               reconciledDiskFiles.add(file);
+              syncRecordingToSqlite(newRec);
               syncRecordingToMysql(newRec);
             } catch (e) {}
           }
@@ -3584,6 +3659,9 @@ async function startServer() {
         saveSqliteFile();
         console.log(`[Disk Scanner] ${addedCount} gravação(ões) do disco foram reconciliadas! Total: ${recordings.length}`);
       }
+
+      // Strictly enforce storage limit (e.g. 100GB) automatically upon every disk scan
+      await pruneRecordingsFIFO();
     } finally {
       isDiskScanActive = false;
     }
@@ -3777,6 +3855,11 @@ async function startServer() {
   setInterval(() => {
     scanAndReconcileRecordingsFromDisk().catch(() => {});
   }, 15000);
+
+  // Periodic FIFO retention cleaner (strictly enforces 100G or configured storage limit 24/7)
+  setInterval(() => {
+    pruneRecordingsFIFO().catch(() => {});
+  }, 30000);
 
   // Helper log function (saved exclusively to local file itl_logs.json)
   const addLog = (userName: string, action: string, category: ActivityLog['category'], details?: string) => {
@@ -5891,22 +5974,28 @@ async function startServer() {
       const reqUser = getUserFromReq(req);
       const userAccessible = filterRecordingsForUser(reqUser, recordings);
 
-      let toDelete = userAccessible;
-      if (Array.isArray(ids) && ids.length > 0 && !ids.includes('ALL')) {
-        const idSet = new Set(ids);
-        toDelete = userAccessible.filter((r) => idSet.has(r.id));
-      } else if (date || (cameraId && cameraId !== 'ALL')) {
-        toDelete = userAccessible.filter((r) => {
-          if (date && !r.startTime.includes(date)) return false;
-          if (cameraId && cameraId !== 'ALL' && r.cameraId !== cameraId) return false;
-          return true;
-        });
-      }
-
       let count = 0;
-      for (const rec of toDelete) {
-        await permanentlyDeleteRecording(rec.id);
-        count++;
+      if (Array.isArray(ids) && ids.length > 0 && !ids.includes('ALL')) {
+        for (const id of ids) {
+          if (id) {
+            await permanentlyDeleteRecording(id);
+            count++;
+          }
+        }
+      } else {
+        let toDelete = userAccessible;
+        if (date || (cameraId && cameraId !== 'ALL')) {
+          toDelete = userAccessible.filter((r) => {
+            if (date && !r.startTime.includes(date)) return false;
+            if (cameraId && cameraId !== 'ALL' && r.cameraId !== cameraId) return false;
+            return true;
+          });
+        }
+
+        for (const rec of toDelete) {
+          await permanentlyDeleteRecording(rec.id);
+          count++;
+        }
       }
 
       addLog('ITL Admin', `${count} gravações em nuvem excluídas permanentemente`, 'RECORDING');
@@ -6233,14 +6322,14 @@ async function startServer() {
     res.json({ storageLimitGB: limit });
   });
 
-  app.put('/api/storage-config', (req, res) => {
+  app.put('/api/storage-config', async (req, res) => {
     const { storageLimitGB } = req.body;
     const newLimit = Math.max(10, parseInt(storageLimitGB, 10) || 100);
     backupConfig.storageLimitGB = newLimit;
     saveStorageLimitToSqlite(newLimit);
 
     // Immediately prune recordings exceeding new storage limit
-    const pruneResult = pruneRecordingsFIFO(newLimit);
+    const pruneResult = await pruneRecordingsFIFO(newLimit);
 
     saveToLocalFile();
     addLog('ITL Admin', `Limite de armazenamento de gravações alterado para ${newLimit} GB (${pruneResult.prunedCount} fatias removidas)`, 'SYSTEM');
@@ -6254,9 +6343,9 @@ async function startServer() {
   });
 
   // Manual Storage FIFO Pruning Trigger Endpoint
-  app.post('/api/recordings/prune', (req, res) => {
-    const limitGB = req.body.limitGB ? parseInt(req.body.limitGB, 10) : backupConfig.storageLimitGB || 40;
-    const result = pruneRecordingsFIFO(limitGB);
+  app.post('/api/recordings/prune', async (req, res) => {
+    const limitGB = req.body.limitGB ? parseInt(req.body.limitGB, 10) : backupConfig.storageLimitGB || 100;
+    const result = await pruneRecordingsFIFO(limitGB);
     res.json({
       success: true,
       prunedCount: result.prunedCount,

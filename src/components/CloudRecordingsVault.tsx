@@ -473,14 +473,14 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
       onDeleteRecordingsBatch(idsToDelete);
     } else {
       idsToDelete.forEach((id) => onDeleteRecording(id));
+      try {
+        await fetch('/api/recordings/delete-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: idsToDelete, date: selectedDate, cameraId: selectedCameraId }),
+        });
+      } catch (e) {}
     }
-    try {
-      await fetch('/api/recordings/delete-all', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: idsToDelete, date: selectedDate, cameraId: selectedCameraId }),
-      });
-    } catch (e) {}
   };
 
   const resetFilters = () => {
