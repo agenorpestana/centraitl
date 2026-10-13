@@ -15,6 +15,7 @@ import {
   Edit2,
   MapPin,
   DollarSign,
+  UserCheck,
 } from 'lucide-react';
 import { User, UserRole, CustomPermissions, Camera } from '../types';
 
@@ -25,6 +26,7 @@ interface UserManagementProps {
   onAddUser: (userData: Partial<User>) => Promise<any> | any;
   onUpdateUser: (id: string, userData: Partial<User>) => Promise<any> | any;
   onDeleteUser: (id: string) => Promise<any> | any;
+  onSelectUser?: (user: User) => void;
 }
 
 interface IbgeUF {
@@ -52,6 +54,37 @@ const FALLBACK_UFS: IbgeUF[] = [
   { sigla: 'GO', nome: 'Goiás' },
 ];
 
+export const ALL_SYSTEM_TABS: Array<{ id: string; label: string }> = [
+  { id: 'dashboard', label: 'Dashboard Monitoramento' },
+  { id: 'live-grid', label: 'Câmeras ao Vivo' },
+  { id: 'camera-map', label: 'Mapa Vizinhança' },
+  { id: 'cloud-recordings', label: 'Gravações na Nuvem' },
+  { id: 'dvr-agents', label: 'DVR Agent Desktop' },
+  { id: 'camera-admin', label: 'Adicionar Câmeras / RTSP' },
+  { id: 'user-management', label: 'Acesso Multiusuário' },
+  { id: 'api-docs', label: 'Documentação API REST' },
+  { id: 'financial-management', label: 'Financeiro & Planos' },
+  { id: 'activity-reports', label: 'Relatórios Diários' },
+  { id: 'backup-manager', label: 'Backup Automático' },
+  { id: 'db-diagnostics', label: 'Teste & Diagnóstico BD' },
+];
+
+export const getDefaultTabsForRole = (role: UserRole): string[] => {
+  switch (role) {
+    case 'VIEWER':
+      return ['live-grid'];
+    case 'RESIDENT':
+      return ['live-grid', 'camera-map', 'cloud-recordings'];
+    case 'OPERATOR':
+      return ['dashboard', 'live-grid', 'camera-map', 'cloud-recordings', 'activity-reports'];
+    case 'GUARD':
+      return ['dashboard', 'live-grid', 'camera-map', 'cloud-recordings'];
+    case 'ADMIN':
+    default:
+      return ['dashboard', 'live-grid', 'camera-map', 'cloud-recordings', 'dvr-agents', 'camera-admin', 'user-management', 'api-docs', 'financial-management', 'activity-reports', 'backup-manager', 'db-diagnostics'];
+  }
+};
+
 export const UserManagement: React.FC<UserManagementProps> = ({
   users,
   cameras,
@@ -59,6 +92,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
   onAddUser,
   onUpdateUser,
   onDeleteUser,
+  onSelectUser,
 }) => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -84,6 +118,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
     stateUf: 'BA',
     city: 'Itamaraju',
     allowedCameraIds: ['ALL'] as string[],
+    allowedTabs: ['live-grid', 'camera-map', 'cloud-recordings'] as string[],
     customPermissions: {
       canViewLive: true,
       canViewRecordings: true,
@@ -152,8 +187,15 @@ export const UserManagement: React.FC<UserManagementProps> = ({
 
     try {
       setIsSubmitting(true);
+      const isRestrictedRole = formState.role === 'VIEWER' || formState.role === 'RESIDENT';
+      const cleanPermissions: CustomPermissions = {
+        ...formState.customPermissions,
+        canDeleteRecordings: isRestrictedRole ? false : Boolean(formState.customPermissions.canDeleteRecordings),
+      };
       const res = await onAddUser({
         ...formState,
+        customPermissions: cleanPermissions,
+        allowedTabs: formState.allowedTabs || getDefaultTabsForRole(formState.role),
         allowedCameraIds: formState.allowedCameraIds.length === 0 ? ['ALL'] : formState.allowedCameraIds,
       });
 
@@ -168,6 +210,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
           stateUf: 'BA',
           city: 'Itamaraju',
           allowedCameraIds: ['ALL'],
+          allowedTabs: ['live-grid', 'camera-map', 'cloud-recordings'],
           customPermissions: {
             canViewLive: true,
             canViewRecordings: true,
@@ -196,6 +239,11 @@ export const UserManagement: React.FC<UserManagementProps> = ({
 
     try {
       setIsUpdating(true);
+      const isRestrictedRole = editingUser.role === 'VIEWER' || editingUser.role === 'RESIDENT';
+      const cleanPermissions: CustomPermissions = {
+        ...editingUser.customPermissions,
+        canDeleteRecordings: isRestrictedRole ? false : Boolean(editingUser.customPermissions?.canDeleteRecordings),
+      };
       const updatePayload: Partial<User> = {
         name: editingUser.name.trim(),
         email: editingUser.email.trim(),
@@ -204,7 +252,8 @@ export const UserManagement: React.FC<UserManagementProps> = ({
         stateUf: editingUser.stateUf || 'BA',
         city: editingUser.city || 'Itamaraju',
         allowedCameraIds: (editingUser.allowedCameraIds || []).length === 0 ? ['ALL'] : editingUser.allowedCameraIds,
-        customPermissions: editingUser.customPermissions,
+        allowedTabs: editingUser.allowedTabs || getDefaultTabsForRole(editingUser.role),
+        customPermissions: cleanPermissions,
         status: editingUser.status || 'ACTIVE',
         isCompanyAdmin: editingUser.isCompanyAdmin,
         companyId: editingUser.companyId,
@@ -225,6 +274,13 @@ export const UserManagement: React.FC<UserManagementProps> = ({
   };
 
   const handleTogglePermission = (key: keyof CustomPermissions, targetUser?: User) => {
+    if (key === 'canDeleteRecordings') {
+      const roleToCheck = targetUser ? targetUser.role : formState.role;
+      if (roleToCheck === 'VIEWER' || roleToCheck === 'RESIDENT') {
+        alert('Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.');
+        return;
+      }
+    }
     if (targetUser) {
       const updatedPermissions = {
         ...targetUser.customPermissions,
@@ -403,14 +459,28 @@ export const UserManagement: React.FC<UserManagementProps> = ({
               <label className="block text-slate-300 font-medium mb-1">Perfil de Acesso (Função):</label>
               <select
                 value={formState.role}
-                onChange={(e) => setFormState({ ...formState, role: e.target.value as UserRole })}
+                onChange={(e) => {
+                  const newRole = e.target.value as UserRole;
+                  const isRestricted = newRole === 'VIEWER' || newRole === 'RESIDENT';
+                  setFormState({
+                    ...formState,
+                    role: newRole,
+                    allowedTabs: getDefaultTabsForRole(newRole),
+                    customPermissions: {
+                      ...formState.customPermissions,
+                      canDeleteRecordings: isRestricted ? false : formState.customPermissions.canDeleteRecordings,
+                      canManageCameras: isRestricted ? false : formState.customPermissions.canManageCameras,
+                      canManageUsers: isRestricted ? false : formState.customPermissions.canManageUsers,
+                    },
+                  });
+                }}
                 className="w-full bg-slate-950 border border-slate-800 text-slate-100 px-3 py-2 rounded-xl outline-none focus:border-emerald-500"
               >
                 <option value="ADMIN">ADMINISTRADOR (Acesso Total)</option>
                 <option value="OPERATOR">OPERADOR (Portaria/Central)</option>
                 <option value="GUARD">RONDA / SEGURANÇA</option>
-                <option value="RESIDENT">MORADOR / VIZINHO</option>
-                <option value="VIEWER">VISUALIZADOR</option>
+                <option value="RESIDENT">MORADOR / VIZINHO (Restrito)</option>
+                <option value="VIEWER">VISUALIZADOR (Somente Câmeras)</option>
               </select>
             </div>
 
@@ -524,17 +594,99 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                 canAccessAuditLogs: 'Acessar Logs de Auditoria',
                 canManageUsers: 'Gerenciar Usuários',
                 canExportReports: 'Exportar Relatórios',
-              }).map(([key, label]) => (
-                <label key={key} className="flex items-center space-x-2 cursor-pointer bg-slate-900 p-2 rounded-lg border border-slate-800">
-                  <input
-                    type="checkbox"
-                    checked={(formState.customPermissions as any)[key]}
-                    onChange={() => handleTogglePermission(key as any)}
-                    className="accent-emerald-500 rounded"
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
+              }).map(([key, label]) => {
+                const isBlockedDelete = key === 'canDeleteRecordings' && (formState.role === 'VIEWER' || formState.role === 'RESIDENT');
+                return (
+                  <label
+                    key={key}
+                    className={`flex items-center space-x-2 p-2 rounded-lg border ${
+                      isBlockedDelete ? 'opacity-50 cursor-not-allowed bg-slate-950 border-slate-900' : 'cursor-pointer bg-slate-900 border-slate-800'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isBlockedDelete ? false : (formState.customPermissions as any)[key]}
+                      disabled={isBlockedDelete}
+                      onChange={() => handleTogglePermission(key as any)}
+                      className="accent-emerald-500 rounded"
+                    />
+                    <div className="flex flex-col">
+                      <span>{label}</span>
+                      {isBlockedDelete && (
+                        <span className="text-[9px] text-amber-400 font-bold">Bloqueado p/ Visualizador/Vizinho</span>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Abas Permitidas no Menu Lateral (Restrição Estrita de Telas) */}
+          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+              <div>
+                <p className="text-xs font-bold text-slate-200">Abas Permitidas no Menu Lateral:</p>
+                <p className="text-[10px] text-slate-400">Restringe exatamente quais telas aparecem para este usuário</p>
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setFormState({ ...formState, allowedTabs: ALL_SYSTEM_TABS.map((t) => t.id) })}
+                  className="text-[10px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                >
+                  Marcar Todas
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormState({ ...formState, allowedTabs: ['live-grid'] })}
+                  className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                >
+                  Só Câmeras
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormState({ ...formState, allowedTabs: ['live-grid', 'camera-map', 'cloud-recordings'] })}
+                  className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
+                >
+                  Padrão Vizinho
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormState({ ...formState, allowedTabs: [] })}
+                  className="text-[10px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-rose-400"
+                >
+                  Desmarcar
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs text-slate-300">
+              {ALL_SYSTEM_TABS.map((tab) => {
+                const isChecked = formState.allowedTabs?.includes(tab.id);
+                return (
+                  <label
+                    key={tab.id}
+                    className={`flex items-center space-x-2 cursor-pointer p-2 rounded-lg border transition ${
+                      isChecked
+                        ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                        : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-400'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => {
+                        const current = formState.allowedTabs || [];
+                        const nextTabs = isChecked ? current.filter((id) => id !== tab.id) : [...current, tab.id];
+                        setFormState({ ...formState, allowedTabs: nextTabs });
+                      }}
+                      className="accent-emerald-500 rounded"
+                    />
+                    <span className="truncate text-[11px]">{tab.label}</span>
+                  </label>
+                );
+              })}
             </div>
           </div>
 
@@ -629,10 +781,22 @@ export const UserManagement: React.FC<UserManagementProps> = ({
 
                     <span>Ativo: {user.lastActive}</span>
 
+                    {onSelectUser && activeUser.id !== user.id && (
+                      <button
+                        type="button"
+                        onClick={() => onSelectUser(user)}
+                        className="px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-lg flex items-center space-x-1 transition text-[11px]"
+                        title={`Simular e acessar a visão exata de ${user.name}`}
+                      >
+                        <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Acessar Perfil</span>
+                      </button>
+                    )}
+
                     {/* Hide Edit & Delete for Super User */}
                     {!isSuperUser && activeUser.customPermissions.canManageUsers && (
                       <button
-                        onClick={() => setEditingUser(user)}
+                        onClick={() => setEditingUser({ ...user, allowedTabs: user.allowedTabs || getDefaultTabsForRole(user.role) })}
                         className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 rounded-lg flex items-center space-x-1 transition"
                         title="Editar Dados do Usuário"
                       >
@@ -804,10 +968,25 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                   <label className="block text-slate-300 font-medium mb-1">Função (Role):</label>
                   <select
                     value={editingUser.role}
-                    onChange={(e) => setEditingUser({ ...editingUser, role: e.target.value as UserRole })}
+                    onChange={(e) => {
+                      const newRole = e.target.value as UserRole;
+                      const isRestricted = newRole === 'VIEWER' || newRole === 'RESIDENT';
+                      setEditingUser({
+                        ...editingUser,
+                        role: newRole,
+                        allowedTabs: editingUser.allowedTabs && editingUser.allowedTabs.length > 0 ? editingUser.allowedTabs : getDefaultTabsForRole(newRole),
+                        customPermissions: {
+                          ...editingUser.customPermissions,
+                          canDeleteRecordings: isRestricted ? false : editingUser.customPermissions?.canDeleteRecordings,
+                          canManageCameras: isRestricted ? false : editingUser.customPermissions?.canManageCameras,
+                          canManageUsers: isRestricted ? false : editingUser.customPermissions?.canManageUsers,
+                        },
+                      });
+                    }}
                     className="w-full bg-slate-950 border border-slate-800 text-slate-100 p-2.5 rounded-xl outline-none focus:border-emerald-500"
                   >
-                    <option value="RESIDENT">Morador / Cliente (Padrão)</option>
+                    <option value="RESIDENT">Morador / Vizinho (Restrito)</option>
+                    <option value="VIEWER">Visualizador (Somente Câmeras)</option>
                     <option value="OPERATOR">Operador de Monitoramento</option>
                     <option value="GUARD">Guarda de Segurança / Vigilante</option>
                     <option value="ADMIN">Administrador Geral</option>
@@ -926,19 +1105,23 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                     canManageUsers: 'Gerenciar Usuários',
                     canExportReports: 'Exportar Relatórios PDF',
                   }).map(([key, label]) => {
-                    const checked = (editingUser.customPermissions as any)?.[key] || false;
+                    const isBlockedDelete = key === 'canDeleteRecordings' && (editingUser.role === 'VIEWER' || editingUser.role === 'RESIDENT');
+                    const checked = isBlockedDelete ? false : ((editingUser.customPermissions as any)?.[key] || false);
                     return (
                       <label
                         key={key}
-                        className={`flex items-center space-x-2 p-2 rounded-lg border cursor-pointer transition ${
-                          checked
-                            ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
-                            : 'bg-slate-950 border-slate-800 text-slate-500'
+                        className={`flex items-center space-x-2 p-2 rounded-lg border ${
+                          isBlockedDelete
+                            ? 'opacity-50 cursor-not-allowed bg-slate-950 border-slate-900'
+                            : checked
+                            ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300 cursor-pointer'
+                            : 'bg-slate-950 border-slate-800 text-slate-500 cursor-pointer'
                         }`}
                       >
                         <input
                           type="checkbox"
                           checked={checked}
+                          disabled={isBlockedDelete}
                           onChange={() =>
                             setEditingUser({
                               ...editingUser,
@@ -950,7 +1133,80 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                           }
                           className="accent-emerald-500 rounded"
                         />
-                        <span className="text-[10px] leading-tight">{label}</span>
+                        <div className="flex flex-col">
+                          <span className="text-[10px] leading-tight">{label}</span>
+                          {isBlockedDelete && (
+                            <span className="text-[8px] text-amber-400 font-bold">Bloqueado p/ Visualizador/Vizinho</span>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Abas Permitidas no Menu Lateral (Edit Modal) */}
+              <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                  <div>
+                    <label className="text-xs font-bold text-slate-200 block">Abas Permitidas no Menu Lateral:</label>
+                    <span className="text-[10px] text-slate-400">Marque apenas as abas que este usuário deve visualizar</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setEditingUser({ ...editingUser, allowedTabs: ALL_SYSTEM_TABS.map((t) => t.id) })}
+                      className="text-[10px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                    >
+                      Todas
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingUser({ ...editingUser, allowedTabs: ['live-grid'] })}
+                      className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                    >
+                      Só Câmeras
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingUser({ ...editingUser, allowedTabs: ['live-grid', 'camera-map', 'cloud-recordings'] })}
+                      className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
+                    >
+                      Padrão Vizinho
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingUser({ ...editingUser, allowedTabs: [] })}
+                      className="text-[10px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-rose-400"
+                    >
+                      Limpar
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {ALL_SYSTEM_TABS.map((tab) => {
+                    const isTabChecked = (editingUser.allowedTabs || []).includes(tab.id);
+                    return (
+                      <label
+                        key={tab.id}
+                        className={`flex items-center space-x-2 p-2 rounded-lg border cursor-pointer transition ${
+                          isTabChecked
+                            ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                            : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-400'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isTabChecked}
+                          onChange={() => {
+                            const current = editingUser.allowedTabs || [];
+                            const next = isTabChecked ? current.filter((id) => id !== tab.id) : [...current, tab.id];
+                            setEditingUser({ ...editingUser, allowedTabs: next });
+                          }}
+                          className="accent-emerald-500 rounded"
+                        />
+                        <span className="text-[10px] truncate">{tab.label}</span>
                       </label>
                     );
                   })}

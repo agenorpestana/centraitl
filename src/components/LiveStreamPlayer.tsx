@@ -460,11 +460,17 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
       }, 1500);
       return;
     }
-    // Automatically schedule auto-reconnection attempt so screen never stays dead
+    if (consecutiveErrorsRef.current <= 3) {
+      setTimeout(() => {
+        setRetryCount((prev) => prev + 1);
+      }, 2500);
+      return;
+    }
+    // Marca OFFLINE somente após falhas repetidas para evitar reconexões frenéticas na interface
+    setConnectionState('OFFLINE');
     setTimeout(() => {
       setRetryCount((prev) => prev + 1);
-    }, 3000);
-    setConnectionState('OFFLINE');
+    }, 5000);
   };
 
   const handleVideoCanPlay = () => {
@@ -510,17 +516,17 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           hlsInstance = new HlsClass({
             enableWorker: true,
             lowLatencyMode: false, // Estabilidade máxima: prioriza fluidez contínua sem travamentos
-            backBufferLength: 30,
-            maxBufferLength: 25,
-            maxMaxBufferLength: 50,
-            liveSyncDurationCount: 3, // Mantém margem segura de 3 segmentos para eliminar buffer underrun
-            liveMaxLatencyDurationCount: 8,
-            manifestLoadingTimeOut: 10000,
-            manifestLoadingMaxRetry: 10,
-            levelLoadingTimeOut: 10000,
-            levelLoadingMaxRetry: 10,
-            fragLoadingTimeOut: 15000,
-            fragLoadingMaxRetry: 10,
+            backBufferLength: 60,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+            liveSyncDurationCount: 3, // Mantém margem segura de 3 segmentos (~12s) para eliminar buffer underrun
+            liveMaxLatencyDurationCount: 10,
+            manifestLoadingTimeOut: 15000,
+            manifestLoadingMaxRetry: 12,
+            levelLoadingTimeOut: 15000,
+            levelLoadingMaxRetry: 12,
+            fragLoadingTimeOut: 20000,
+            fragLoadingMaxRetry: 15,
           });
           hlsInstance.loadSource(videoUrl);
           hlsInstance.attachMedia(videoElement);

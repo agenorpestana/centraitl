@@ -72,6 +72,50 @@ import {
   getAuthHeaders,
 } from './lib/security';
 
+export function isTabPermitted(tabId: string, user: User | null | undefined): boolean {
+  if (!user) return false;
+  if (user.role === 'ADMIN') return true;
+
+  if (user.role === 'VIEWER' || user.role === 'RESIDENT') {
+    const forbiddenTabs = [
+      'dashboard',
+      'white-label-admin',
+      'company-clients',
+      'dvr-agents',
+      'camera-admin',
+      'user-management',
+      'api-docs',
+      'financial-management',
+      'activity-reports',
+      'backup-manager',
+      'db-diagnostics',
+    ];
+    if (forbiddenTabs.includes(tabId)) return false;
+
+    if (Array.isArray(user.allowedTabs)) {
+      return user.allowedTabs.includes(tabId);
+    }
+    if (user.role === 'VIEWER') {
+      return tabId === 'live-grid' || (tabId === 'cloud-recordings' && Boolean(user.customPermissions?.canViewRecordings));
+    }
+    if (user.role === 'RESIDENT') {
+      return tabId === 'live-grid' || tabId === 'camera-map' || (tabId === 'cloud-recordings' && Boolean(user.customPermissions?.canViewRecordings));
+    }
+  }
+
+  if (Array.isArray(user.allowedTabs) && user.allowedTabs.length > 0) {
+    return user.allowedTabs.includes(tabId);
+  }
+
+  if (tabId === 'cloud-recordings') return Boolean(user.customPermissions?.canViewRecordings);
+  if (tabId === 'camera-admin' || tabId === 'dvr-agents') return Boolean(user.customPermissions?.canManageCameras);
+  if (tabId === 'financial-management') return Boolean(user.customPermissions?.canManageFinancial);
+  if (tabId === 'activity-reports') return Boolean(user.customPermissions?.canExportReports);
+  if (['backup-manager', 'db-diagnostics', 'api-docs', 'user-management', 'white-label-admin'].includes(tabId)) return false;
+
+  return true;
+}
+
 export default function App() {
   // Authentication State with LocalStorage Persistence
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
@@ -113,9 +157,19 @@ export default function App() {
     try {
       if (activeUser) {
         localStorage.setItem('itl_active_user', JSON.stringify(activeUser));
+
+        // Validação estrita de abas para o usuário ativo: redirecionar se estiver em aba não permitida
+        if (!isTabPermitted(activeTab, activeUser)) {
+          let fallbackTab = 'live-grid';
+          if (Array.isArray(activeUser.allowedTabs) && activeUser.allowedTabs.length > 0) {
+            const firstValid = activeUser.allowedTabs.find((t) => isTabPermitted(t, activeUser));
+            if (firstValid) fallbackTab = firstValid;
+          }
+          setActiveTab(fallbackTab);
+        }
       }
     } catch {}
-  }, [activeUser]);
+  }, [activeUser, activeTab]);
 
   useEffect(() => {
     try {
@@ -563,32 +617,71 @@ export default function App() {
   };
 
   const handleDeleteRecording = async (id: string) => {
+    if (activeUser.role === 'VIEWER' || activeUser.role === 'RESIDENT' || !activeUser.customPermissions?.canDeleteRecordings) {
+      alert('Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.');
+      return;
+    }
     setRecordings((prev) => {
       const next = prev.filter((r) => r.id !== id);
       try { localStorage.setItem('itl_recordings', JSON.stringify(next)); } catch {}
       return next;
     });
     try {
-      await fetch(`/api/recordings/${encodeURIComponent(id)}`, {
+      const res = await fetch(`/api/recordings/${encodeURIComponent(id)}`, {
         method: 'DELETE',
         headers: getUserAuthHeaders(),
       });
+      const data = await res.json();
+      if (data && Array.isArray(data.remainingRecordings)) {
+        setRecordings(data.remainingRecordings);
+        try { localStorage.setItem('itl_recordings', JSON.stringify(data.remainingRecordings)); } catch {}
+      }
     } catch (e) {}
   };
 
   const handleDeleteRecordingsBatch = async (ids: string[]) => {
+    if (activeUser.role === 'VIEWER' || activeUser.role === 'RESIDENT' || !activeUser.customPermissions?.canDeleteRecordings) {
+      alert('Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.');
+      return;
+    }
     setRecordings((prev) => {
       const next = prev.filter((r) => !ids.includes(r.id));
       try { localStorage.setItem('itl_recordings', JSON.stringify(next)); } catch {}
       return next;
     });
     try {
-      await fetch('/api/recordings/batch-delete', {
+      const res = await fetch('/api/recordings/batch-delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getUserAuthHeaders() },
         body: JSON.stringify({ ids }),
       });
+      const data = await res.json();
+      if (data && Array.isArray(data.remainingRecordings)) {
+        setRecordings(data.remainingRecordings);
+        try { localStorage.setItem('itl_recordings', JSON.stringify(data.remainingRecordings)); } catch {}
+      }
     } catch (e) {}
+  };
+
+  const handleDeleteAllRecordings = async (options?: { ids?: string[]; date?: string; cameraId?: string }) => {
+    if (activeUser.role === 'VIEWER' || activeUser.role === 'RESIDENT' || !activeUser.customPermissions?.canDeleteRecordings) {
+      alert('Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.');
+      return;
+    }
+    try {
+      const res = await fetch('/api/recordings/delete-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getUserAuthHeaders() },
+        body: JSON.stringify(options || { ids: ['ALL'] }),
+      });
+      const data = await res.json();
+      const nextList = (data && Array.isArray(data.remainingRecordings)) ? data.remainingRecordings : [];
+      setRecordings(nextList);
+      try { localStorage.setItem('itl_recordings', JSON.stringify(nextList)); } catch {}
+    } catch (e) {
+      setRecordings([]);
+      try { localStorage.setItem('itl_recordings', JSON.stringify([])); } catch {}
+    }
   };
 
   const getUserAuthHeaders = (): Record<string, string> => {
@@ -907,19 +1000,27 @@ export default function App() {
 
         {/* Mobile Tab Navigation */}
         <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900 border-t border-slate-800 flex items-center justify-around p-2 text-[10px] text-slate-400">
-          <button onClick={() => setActiveTab('dashboard')} className={`p-1.5 flex flex-col items-center ${activeTab === 'dashboard' ? 'text-emerald-400 font-bold' : ''}`}>
-            Dashboard
-          </button>
-          <button onClick={() => setActiveTab('live-grid')} className={`p-1.5 flex flex-col items-center ${activeTab === 'live-grid' ? 'text-emerald-400 font-bold' : ''}`}>
-            Câmeras
-          </button>
-          <button onClick={() => setActiveTab('camera-map')} className={`p-1.5 flex flex-col items-center ${activeTab === 'camera-map' ? 'text-emerald-400 font-bold' : ''}`}>
-            Mapa
-          </button>
-          <button onClick={() => setActiveTab('cloud-recordings')} className={`p-1.5 flex flex-col items-center ${activeTab === 'cloud-recordings' ? 'text-emerald-400 font-bold' : ''}`}>
-            Nuvem
-          </button>
-          {(activeUser.role === 'ADMIN' || activeUser.customPermissions?.canManageUsers) && (
+          {(activeUser.role === 'ADMIN' || (activeUser.allowedTabs ? activeUser.allowedTabs.includes('dashboard') : (activeUser.role !== 'VIEWER' && activeUser.role !== 'RESIDENT'))) && (
+            <button onClick={() => setActiveTab('dashboard')} className={`p-1.5 flex flex-col items-center ${activeTab === 'dashboard' ? 'text-emerald-400 font-bold' : ''}`}>
+              Dashboard
+            </button>
+          )}
+          {(!activeUser.allowedTabs || activeUser.allowedTabs.includes('live-grid')) && (
+            <button onClick={() => setActiveTab('live-grid')} className={`p-1.5 flex flex-col items-center ${activeTab === 'live-grid' ? 'text-emerald-400 font-bold' : ''}`}>
+              Câmeras
+            </button>
+          )}
+          {(activeUser.role === 'ADMIN' || (activeUser.allowedTabs ? activeUser.allowedTabs.includes('camera-map') : activeUser.role !== 'VIEWER')) && (
+            <button onClick={() => setActiveTab('camera-map')} className={`p-1.5 flex flex-col items-center ${activeTab === 'camera-map' ? 'text-emerald-400 font-bold' : ''}`}>
+              Mapa
+            </button>
+          )}
+          {(activeUser.role === 'ADMIN' || (activeUser.allowedTabs ? activeUser.allowedTabs.includes('cloud-recordings') : Boolean(activeUser.customPermissions?.canViewRecordings))) && (
+            <button onClick={() => setActiveTab('cloud-recordings')} className={`p-1.5 flex flex-col items-center ${activeTab === 'cloud-recordings' ? 'text-emerald-400 font-bold' : ''}`}>
+              Nuvem
+            </button>
+          )}
+          {(activeUser.role === 'ADMIN' || Boolean(activeUser.customPermissions?.canManageUsers)) && (
             <button onClick={() => setActiveTab('user-management')} className={`p-1.5 flex flex-col items-center ${activeTab === 'user-management' ? 'text-emerald-400 font-bold' : ''}`}>
               Acesso
             </button>
@@ -928,7 +1029,7 @@ export default function App() {
 
         {/* Content Area */}
         <main className="flex-1 p-4 sm:p-6 pb-20 md:pb-6 overflow-x-hidden">
-          {activeTab === 'dashboard' && (
+          {activeTab === 'dashboard' && isTabPermitted('dashboard', activeUser) && (
             <Dashboard
               cameras={cameras}
               users={users}
@@ -953,27 +1054,28 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'camera-map' && (
+          {activeTab === 'camera-map' && isTabPermitted('camera-map', activeUser) && (
             <CameraMap cameras={cameras} onSelectCamera={setInspectingCamera} isLoggedIn={isLoggedIn} currentUser={activeUser} />
           )}
 
-          {activeTab === 'cloud-recordings' && (
+          {activeTab === 'cloud-recordings' && isTabPermitted('cloud-recordings', activeUser) && (
             <CloudRecordingsVault
               recordings={recordings}
               cameras={cameras}
               activeUser={activeUser}
               onDeleteRecording={handleDeleteRecording}
               onDeleteRecordingsBatch={handleDeleteRecordingsBatch}
+              onDeleteAllRecordings={handleDeleteAllRecordings}
               isVaultUnlocked={true}
               onUnlockVault={() => {}}
             />
           )}
 
-          {activeTab === 'dvr-agents' && (
+          {activeTab === 'dvr-agents' && isTabPermitted('dvr-agents', activeUser) && (
             <DvrAgentManager currentUser={activeUser} />
           )}
 
-          {activeTab === 'camera-admin' && (
+          {activeTab === 'camera-admin' && isTabPermitted('camera-admin', activeUser) && (
             <CameraAdminPanel
               cameras={cameras}
               activeUser={activeUser}
@@ -992,6 +1094,7 @@ export default function App() {
                 onAddUser={handleAddUser}
                 onUpdateUser={handleUpdateUser}
                 onDeleteUser={handleDeleteUser}
+                onSelectUser={setActiveUser}
               />
             ) : (
               <div className="p-8 text-center bg-slate-900 border border-slate-800 rounded-2xl max-w-lg mx-auto my-12 space-y-3">
@@ -1006,11 +1109,11 @@ export default function App() {
             )
           )}
 
-          {activeTab === 'api-docs' && (
+          {activeTab === 'api-docs' && isTabPermitted('api-docs', activeUser) && (
             <ApiDocumentationPanel />
           )}
 
-          {activeTab === 'financial-management' && (
+          {activeTab === 'financial-management' && isTabPermitted('financial-management', activeUser) && (
             <FinancialManagement
               currentUser={activeUser}
               users={users}
@@ -1022,11 +1125,11 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'activity-reports' && (
+          {activeTab === 'activity-reports' && isTabPermitted('activity-reports', activeUser) && (
             <ActivityReports logs={logs} activeUser={activeUser} />
           )}
 
-          {activeTab === 'backup-manager' && (
+          {activeTab === 'backup-manager' && isTabPermitted('backup-manager', activeUser) && (
             <BackupManager
               config={backupConfig}
               activeUser={activeUser}
@@ -1037,11 +1140,11 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'db-diagnostics' && (
+          {activeTab === 'db-diagnostics' && isTabPermitted('db-diagnostics', activeUser) && (
             <DatabaseDiagnosticsPanel activeUser={activeUser} />
           )}
 
-          {activeTab === 'white-label-admin' && (
+          {activeTab === 'white-label-admin' && isTabPermitted('white-label-admin', activeUser) && (
             <WhiteLabelAdminPanel
               companies={companies}
               cameras={cameras}
@@ -1055,7 +1158,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'company-clients' && (
+          {activeTab === 'company-clients' && isTabPermitted('company-clients', activeUser) && (
             (() => {
               const userCompany = companies.find((c) => c.id === activeUser.companyId) || companies[0];
               if (!userCompany) {

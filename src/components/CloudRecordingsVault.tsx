@@ -37,6 +37,7 @@ interface CloudRecordingsVaultProps {
   activeUser: User;
   onDeleteRecording: (id: string) => void;
   onDeleteRecordingsBatch?: (ids: string[]) => void;
+  onDeleteAllRecordings?: (options?: { ids?: string[]; date?: string; cameraId?: string }) => void;
   isVaultUnlocked: boolean;
   onUnlockVault: () => void;
 }
@@ -58,6 +59,7 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
   activeUser,
   onDeleteRecording,
   onDeleteRecordingsBatch,
+  onDeleteAllRecordings,
   isVaultUnlocked,
   onUnlockVault,
 }) => {
@@ -84,6 +86,13 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // Restrição estrita de exclusão: Visualizador e Vizinho NUNCA podem excluir gravações
+  const canDeleteRecordings = activeUser
+    ? activeUser.role !== 'VIEWER' &&
+      activeUser.role !== 'RESIDENT' &&
+      Boolean(activeUser.role === 'ADMIN' || activeUser.customPermissions?.canDeleteRecordings)
+    : false;
 
   // Live Stream Recording Engine States
   const [targetRecordingCamId, setTargetRecordingCamId] = useState<string>('');
@@ -430,6 +439,10 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
   };
 
   const handleDeleteSelected = async () => {
+    if (!canDeleteRecordings) {
+      alert('Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.');
+      return;
+    }
     if (selectedIds.length === 0) return;
     if (!confirm(`Deseja realmente excluir permanentemente as ${selectedIds.length} gravações selecionadas?`)) {
       return;
@@ -444,17 +457,14 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
       onDeleteRecordingsBatch(idsToDelete);
     } else {
       idsToDelete.forEach((id) => onDeleteRecording(id));
-      try {
-        await fetch('/api/recordings/batch-delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: idsToDelete }),
-        });
-      } catch (e) {}
     }
   };
 
   const handleDeleteAllFiltered = async () => {
+    if (!canDeleteRecordings) {
+      alert('Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.');
+      return;
+    }
     if (filteredRecordings.length === 0) return;
     const allIds = filteredRecordings.map((r) => r.id);
     const filterContext = selectedDate
@@ -469,17 +479,12 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
       setActiveRecording(null);
       setIsPlaying(false);
     }
-    if (onDeleteRecordingsBatch) {
+    if (onDeleteAllRecordings) {
+      onDeleteAllRecordings({ ids: idsToDelete, date: selectedDate, cameraId: selectedCameraId });
+    } else if (onDeleteRecordingsBatch) {
       onDeleteRecordingsBatch(idsToDelete);
     } else {
       idsToDelete.forEach((id) => onDeleteRecording(id));
-      try {
-        await fetch('/api/recordings/delete-all', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: idsToDelete, date: selectedDate, cameraId: selectedCameraId }),
-        });
-      } catch (e) {}
     }
   };
 
@@ -866,22 +871,24 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
                       <Download className="w-3 h-3 text-cyan-400" />
                       <span>Baixar Clipe</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (confirm(`Deseja realmente excluir a gravação de ${activeRecording.cameraName}?`)) {
-                          const idToDelete = activeRecording.id;
-                          setActiveRecording(null);
-                          setIsPlaying(false);
-                          onDeleteRecording(idToDelete);
-                        }
-                      }}
-                      className="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 text-[11px] font-medium rounded-lg flex items-center space-x-1 transition"
-                      title="Excluir gravação permanentemente"
-                    >
-                      <Trash2 className="w-3 h-3 text-rose-400" />
-                      <span>Excluir</span>
-                    </button>
+                    {canDeleteRecordings && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm(`Deseja realmente excluir a gravação de ${activeRecording.cameraName}?`)) {
+                            const idToDelete = activeRecording.id;
+                            setActiveRecording(null);
+                            setIsPlaying(false);
+                            onDeleteRecording(idToDelete);
+                          }
+                        }}
+                        className="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 text-[11px] font-medium rounded-lg flex items-center space-x-1 transition"
+                        title="Excluir gravação permanentemente"
+                      >
+                        <Trash2 className="w-3 h-3 text-rose-400" />
+                        <span>Excluir</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1100,32 +1107,34 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
               )}
             </div>
 
-            <div className="flex items-center gap-2 pt-1 border-t border-slate-800/80">
-              <button
-                type="button"
-                onClick={handleDeleteSelected}
-                disabled={selectedIds.length === 0}
-                className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold flex items-center justify-center space-x-1.5 transition ${
-                  selectedIds.length > 0
-                    ? 'bg-rose-500 hover:bg-rose-600 text-white shadow-lg'
-                    : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                }`}
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Excluir Selecionadas ({selectedIds.length})</span>
-              </button>
+            {canDeleteRecordings && (
+              <div className="flex items-center gap-2 pt-1 border-t border-slate-800/80">
+                <button
+                  type="button"
+                  onClick={handleDeleteSelected}
+                  disabled={selectedIds.length === 0}
+                  className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold flex items-center justify-center space-x-1.5 transition ${
+                    selectedIds.length > 0
+                      ? 'bg-rose-500 hover:bg-rose-600 text-white shadow-lg'
+                      : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                  }`}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Excluir Selecionadas ({selectedIds.length})</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={handleDeleteAllFiltered}
-                disabled={filteredRecordings.length === 0}
-                className="py-1.5 px-2.5 rounded-xl text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 flex items-center justify-center space-x-1 transition shrink-0"
-                title="Excluir todas as gravações atualmente visíveis nos filtros"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Excluir Todas</span>
-              </button>
-            </div>
+                <button
+                  type="button"
+                  onClick={handleDeleteAllFiltered}
+                  disabled={filteredRecordings.length === 0}
+                  className="py-1.5 px-2.5 rounded-xl text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 flex items-center justify-center space-x-1 transition shrink-0"
+                  title="Excluir todas as gravações atualmente visíveis nos filtros"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Excluir Todas</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Recordings List */}
@@ -1215,23 +1224,25 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
                       >
                         <RefreshCw className="w-3.5 h-3.5" />
                       </button>
-                      <button
-                        type="button"
-                        title="Excluir gravação"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (confirm(`Deseja realmente excluir esta gravação de ${rec.cameraName}?`)) {
-                            if (activeRecording?.id === rec.id) {
-                              setActiveRecording(null);
-                              setIsPlaying(false);
+                      {canDeleteRecordings && (
+                        <button
+                          type="button"
+                          title="Excluir gravação"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm(`Deseja realmente excluir esta gravação de ${rec.cameraName}?`)) {
+                              if (activeRecording?.id === rec.id) {
+                                setActiveRecording(null);
+                                setIsPlaying(false);
+                              }
+                              onDeleteRecording(rec.id);
                             }
-                            onDeleteRecording(rec.id);
-                          }
-                        }}
-                        className="p-1.5 hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 rounded-lg transition"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                          }}
+                          className="p-1.5 hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 rounded-lg transition"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 );

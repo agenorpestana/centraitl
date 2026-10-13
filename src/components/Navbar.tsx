@@ -89,16 +89,43 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span className="font-medium">{isVaultUnlocked ? 'E2EE Ativo' : 'E2EE Bloqueado'}</span>
           </button>
 
-          {/* User Profile Info */}
+          {/* User Profile Info & Fast Profile Switcher */}
           <div className="flex items-center space-x-2 bg-slate-800/80 border border-slate-700/80 rounded-xl p-1 sm:px-2.5 sm:py-1">
             <img
               src={activeUser.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150'}
               alt={activeUser.name}
               className="w-6 h-6 sm:w-7 sm:h-7 rounded-full object-cover ring-1 ring-emerald-500/40"
             />
-            <div className="hidden lg:block text-left">
-              <p className="text-xs font-semibold text-slate-200 truncate max-w-[120px]">{activeUser.name}</p>
-              <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">{activeUser.role}</p>
+            <div className="text-left flex flex-col justify-center">
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={activeUser.id}
+                  onChange={(e) => {
+                    const selected = allUsers.find((u) => u.id === e.target.value);
+                    if (selected) {
+                      onSelectUser(selected);
+                    }
+                  }}
+                  className="bg-transparent text-xs font-semibold text-slate-200 outline-none cursor-pointer max-w-[130px] sm:max-w-[160px] truncate hover:text-emerald-300 transition"
+                  title="Alternar entre usuários cadastrados no sistema"
+                >
+                  {allUsers.map((u) => (
+                    <option key={u.id} value={u.id} className="bg-slate-900 text-slate-100 py-1">
+                      {u.name} ({u.role === 'VIEWER' ? 'Visualizador' : u.role === 'RESIDENT' ? 'Vizinho' : u.role})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <span className={`text-[9px] font-bold uppercase tracking-wider ${
+                activeUser.role === 'ADMIN' ? 'text-amber-400' :
+                activeUser.role === 'VIEWER' ? 'text-rose-400' :
+                activeUser.role === 'RESIDENT' ? 'text-cyan-400' :
+                'text-emerald-400'
+              }`}>
+                {activeUser.role === 'VIEWER' ? 'Visualizador (Restrito)' :
+                 activeUser.role === 'RESIDENT' ? 'Vizinho / Morador' :
+                 activeUser.role}
+              </span>
             </div>
           </div>
 

@@ -76,6 +76,7 @@ export interface User {
   status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
   customPermissions: CustomPermissions;
   allowedCameraIds?: string[];
+  allowedTabs?: string[];
   lastActive: string;
   createdAt: string;
 

@@ -548,62 +548,26 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     '-map', '0:v:0?'
   );
 
-  if (streamSource.startsWith('rtsp://')) {
-    // Estratégia de conversão RTSP -> Padrão Único (equivalente a RTMP H.264):
-    // Converte qualquer codec RTSP (H.264, H.265/HEVC, MJPEG) para H.264 padrão com GOP exato de 2s (60 quadros a 30fps).
-    // Garante compatibilidade 100% universal e estabilidade ininterrupta em todos os navegadores.
-    if (isSubStream) {
-      ffmpegArgs.push(
-        '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-tune', 'zerolatency',
-        '-profile:v', 'baseline',
-        '-level', '3.1',
-        '-pix_fmt', 'yuv420p',
-        '-r', '30',
-        '-g', '60',
-        '-keyint_min', '60',
-        '-sc_threshold', '0',
-        '-b:v', '500k',
-        '-maxrate', '700k',
-        '-bufsize', '1000k'
-      );
-    } else {
-      ffmpegArgs.push(
-        '-vf', 'format=yuv420p',
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-tune', 'zerolatency',
-        '-profile:v', 'main',
-        '-level', '4.1',
-        '-pix_fmt', 'yuv420p',
-        '-r', '30',
-        '-g', '60',
-        '-keyint_min', '60',
-        '-sc_threshold', '0',
-        '-b:v', '1800k',
-        '-maxrate', '2200k',
-        '-bufsize', '3500k'
-      );
-    }
-  } else {
-    // Fluxo RTMP: Passthrough H.264 ultra-estável
-    ffmpegArgs.push(
-      '-c:v', 'copy'
-    );
-  }
+  // Estratégia de Padrão Único (RTMP e RTSP):
+  // Transmissão de vídeo H.264 passthrough com zero sobrecarga de CPU (0% CPU).
+  // -bsf:v dump_extra,h264_mp4toannexb assegura sincronização e cabeçalhos SPS/PPS em cada segmento.
+  ffmpegArgs.push(
+    '-c:v', 'copy',
+    '-bsf:v', 'dump_extra,h264_mp4toannexb'
+  );
 
-  const hlsSegmentDuration = streamSource.startsWith('rtsp://') ? '2' : '3';
-  const hlsListSize = streamSource.startsWith('rtsp://') ? '8' : '10';
-  const hlsDeleteThreshold = streamSource.startsWith('rtsp://') ? '3' : '4';
+  // Segmentação HLS estável (4s por segmento, 8 segmentos = ~32s de buffer seguro).
+  // Sem 'temp_file' para eliminar bloqueios de I/O de arquivo e 404s momentâneos no navegador.
+  const hlsSegmentDuration = '4';
+  const hlsListSize = '8';
+  const hlsDeleteThreshold = '3';
 
   ffmpegArgs.push(
     '-an',
     '-f', 'hls',
     '-hls_time', hlsSegmentDuration,
     '-hls_list_size', hlsListSize,
-    '-hls_flags', 'delete_segments+omit_endlist+temp_file',
+    '-hls_flags', 'delete_segments+omit_endlist',
     '-hls_delete_threshold', hlsDeleteThreshold,
     '-hls_segment_type', 'mpegts',
     '-hls_segment_filename', path.join(hlsDir, `${key}_%05d.ts`),
@@ -648,7 +612,8 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
         }
 
         const failCount = cameraReconnectFailures.get(key) || 0;
-        const delay = Math.min(3000, 1000 + failCount * 500);
+        // Backoff de reconexão inteligente: se câmera externa estiver offline, aguarda até 20s
+        const delay = Math.min(20000, 2000 + failCount * 2500);
 
         setTimeout(() => {
           if (deletedCameraIds.has(cam.id) || deletedCameraIds.has(key)) return;
@@ -738,6 +703,7 @@ import {
   Camera,
   CloudRecording,
   User,
+  CustomPermissions,
   ActivityLog,
   BackupConfig,
   NotificationConfig,
@@ -1554,6 +1520,11 @@ async function startServer() {
             const rawA = getVal(row, 'allowed_camera_ids');
             if (rawA) allowedCams = typeof rawA === 'string' ? JSON.parse(rawA) : rawA;
           } catch (e) {}
+          let allowedTabsList: string[] | undefined = undefined;
+          try {
+            const rawT = getVal(row, 'allowed_tabs');
+            if (rawT) allowedTabsList = typeof rawT === 'string' ? JSON.parse(rawT) : rawT;
+          } catch (e) {}
 
           return {
             id: String(getVal(row, 'id')),
@@ -1566,6 +1537,7 @@ async function startServer() {
             status: (getVal(row, 'status') || 'ACTIVE') as any,
             customPermissions: perms as any,
             allowedCameraIds: allowedCams,
+            allowedTabs: allowedTabsList,
             planId: getVal(row, 'plan_id') ? String(getVal(row, 'plan_id')) : undefined,
             planName: getVal(row, 'plan_name') ? String(getVal(row, 'plan_name')) : undefined,
             monthlyFee: getVal(row, 'monthly_fee') ? parseFloat(getVal(row, 'monthly_fee')) : undefined,
@@ -1669,6 +1641,7 @@ async function startServer() {
           status TEXT DEFAULT 'ACTIVE',
           custom_permissions TEXT,
           allowed_camera_ids TEXT,
+          allowed_tabs TEXT,
           plan_id TEXT,
           plan_name TEXT,
           monthly_fee REAL DEFAULT 0,
@@ -1683,6 +1656,7 @@ async function startServer() {
         );
       `);
 
+      try { sqliteDb.run('ALTER TABLE users ADD COLUMN allowed_tabs TEXT;'); } catch (e) {}
       try { sqliteDb.run('ALTER TABLE users ADD COLUMN company_id TEXT;'); } catch (e) {}
       try { sqliteDb.run('ALTER TABLE users ADD COLUMN company_name TEXT;'); } catch (e) {}
       try { sqliteDb.run('ALTER TABLE users ADD COLUMN is_company_admin INTEGER DEFAULT 0;'); } catch (e) {}
@@ -1927,11 +1901,14 @@ async function startServer() {
       const safeAllowedCams = typeof u.allowedCameraIds === 'string'
         ? u.allowedCameraIds
         : JSON.stringify(u.allowedCameraIds || ['ALL']);
+      const safeAllowedTabs = typeof u.allowedTabs === 'string'
+        ? u.allowedTabs
+        : JSON.stringify(u.allowedTabs || (u.role === 'VIEWER' ? ['live-grid'] : u.role === 'RESIDENT' ? ['live-grid', 'camera-map', 'cloud-recordings'] : []));
 
       sqliteDb.run(
         `INSERT OR REPLACE INTO users (
-          id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, company_id, company_name, is_company_admin, last_active, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, name, email, password_hash, role, phone, state_uf, city, status, custom_permissions, allowed_camera_ids, allowed_tabs, plan_id, plan_name, monthly_fee, chosen_due_day, financial_status, days_overdue, company_id, company_name, is_company_admin, last_active, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           u.id,
           u.name,
@@ -1944,6 +1921,7 @@ async function startServer() {
           u.status || 'ACTIVE',
           safeCustomPerms,
           safeAllowedCams,
+          safeAllowedTabs,
           u.planId || '',
           u.planName || '',
           u.monthlyFee || 0,
@@ -2558,6 +2536,10 @@ async function startServer() {
             status: row.status,
             customPermissions: typeof row.custom_permissions === 'string' ? JSON.parse(row.custom_permissions) : row.custom_permissions,
             allowedCameraIds: row.allowed_camera_ids ? (typeof row.allowed_camera_ids === 'string' ? JSON.parse(row.allowed_camera_ids) : row.allowed_camera_ids) : ['ALL'],
+            allowedTabs: row.allowed_tabs ? (typeof row.allowed_tabs === 'string' ? JSON.parse(row.allowed_tabs) : row.allowed_tabs) : undefined,
+            companyId: row.company_id || undefined,
+            companyName: row.company_name || undefined,
+            isCompanyAdmin: Boolean(row.is_company_admin),
             planId: row.plan_id || undefined,
             planName: row.plan_name || undefined,
             monthlyFee: row.monthly_fee ? parseFloat(row.monthly_fee) : undefined,
@@ -3163,28 +3145,75 @@ async function startServer() {
   // Continuous 24/7 Automatic Recording Engine for All Active Cameras
   const autoRecordingDurationSec = 300; // 5-minute rolling slices for real cloud storage
 
-  async function permanentlyDeleteRecording(id: string) {
-    if (!id) return;
-    const rawId = String(id).trim();
+  async function permanentlyDeleteRecordingsBatch(targetIds: string[] | 'ALL'): Promise<number> {
+    const isDeleteAll = targetIds === 'ALL' || (Array.isArray(targetIds) && targetIds.includes('ALL'));
+    const dirsToClean = [
+      recordingsDir,
+      '/var/www/centralitl.unityautomacoes.com.br/recordings',
+      '/var/www/itl-recordings',
+      '/tmp/recordings',
+      path.join(process.cwd(), 'public', 'recordings'),
+    ];
 
-    // 1. Localizar registros correspondentes na memória
-    const matchedRecs = recordings.filter((r) => {
-      if (!r) return false;
-      if (r.id === rawId) return true;
-      if (r.streamUrl && (r.streamUrl === rawId || path.basename(r.streamUrl) === rawId)) return true;
-      return false;
-    });
+    if (isDeleteAll) {
+      // 1. Unlink all video and thumbnail files on disk
+      for (const dir of dirsToClean) {
+        if (!fs.existsSync(dir)) continue;
+        try {
+          const files = fs.readdirSync(dir);
+          for (const f of files) {
+            if (f.endsWith('.mp4') || f.endsWith('.jpg') || f.includes('.part.') || f.includes('.tmp_fixed.')) {
+              try { fs.unlinkSync(path.join(dir, f)); } catch (e) {
+                try { fs.rmSync(path.join(dir, f), { force: true }); } catch (err) {}
+              }
+            }
+          }
+        } catch (e) {}
+      }
 
-    // 2. Localizar registros correspondentes no SQLite diretamente
-    const sqliteTargetUrls: string[] = [];
+      // 2. Clear from SQLite
+      if (sqliteDb) {
+        try {
+          sqliteDb.run('DELETE FROM cloud_recordings;');
+          saveSqliteFile();
+        } catch (e) {}
+      }
+
+      // 3. Clear from Postgres
+      if (isPgActive && pool) {
+        try {
+          await queryPg('DELETE FROM cloud_recordings;');
+        } catch (e) {}
+      }
+
+      const count = recordings.length;
+      recordings.forEach((r) => {
+        deletedRecordingIds.add(r.id);
+        if (r.streamUrl) deletedRecordingIds.add(path.basename(r.streamUrl));
+      });
+      recordings = [];
+      reconciledDiskFiles.clear();
+
+      saveToLocalFile();
+      await flushPersistenceToDisk();
+      return count;
+    }
+
+    if (!Array.isArray(targetIds) || targetIds.length === 0) return 0;
+
+    const idsSet = new Set(targetIds.map((i) => String(i).trim()));
+    const matchedRecs = recordings.filter((r) => idsSet.has(r.id) || (r.streamUrl && (idsSet.has(r.streamUrl) || idsSet.has(path.basename(r.streamUrl)))));
+    
+    // SQLite matches
     if (sqliteDb) {
       try {
-        const queryRes = sqliteDb.exec('SELECT id, stream_url FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
-        if (queryRes && queryRes.length > 0 && queryRes[0].values) {
-          queryRes[0].values.forEach((row: any[]) => {
-            if (row[0]) matchedRecs.push({ id: String(row[0]), streamUrl: String(row[1] || '') } as any);
-            if (row[1]) sqliteTargetUrls.push(String(row[1]));
-          });
+        for (const rawId of idsSet) {
+          const queryRes = sqliteDb.exec('SELECT id, stream_url FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
+          if (queryRes && queryRes.length > 0 && queryRes[0].values) {
+            queryRes[0].values.forEach((row: any[]) => {
+              if (row[0]) matchedRecs.push({ id: String(row[0]), streamUrl: String(row[1] || '') } as any);
+            });
+          }
         }
       } catch (e) {}
     }
@@ -3196,7 +3225,9 @@ async function startServer() {
     const registerCandidate = (val: string) => {
       if (!val) return;
       const base = path.basename(val);
-      const noExt = base.replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/i, '');
+      const noExt = base
+        .replace(/\.(mp4|part\.mp4|tmp_fixed\.mp4|jpg)$/i, '')
+        .replace(/_(mp4|part|jpg)$/i, '');
       filesToDelete.add(base);
       filesToDelete.add(noExt);
       filesToDelete.add(`${noExt}.mp4`);
@@ -3205,7 +3236,7 @@ async function startServer() {
       filesToDelete.add(`thumb_disk_${noExt}.jpg`);
       filesToDelete.add(`thumb_auto_${noExt}.jpg`);
       filesToDelete.add(`thumb_real_${noExt}.jpg`);
-      filesToDelete.add(`${base.replace('.mp4', '.jpg')}`);
+      filesToDelete.add(`${base.replace(/\.(mp4|part\.mp4)$/i, '.jpg')}`);
       baseNames.add(noExt);
 
       const cleanNoPrefix = noExt
@@ -3214,8 +3245,7 @@ async function startServer() {
         .replace(/^rec-auto-/, '')
         .replace(/^rec_auto_/, '')
         .replace(/^rec-real-/, '')
-        .replace(/^rec_real_/, '')
-        .replace(/_(mp4|jpg|part)$/i, '');
+        .replace(/^rec_real_/, '');
 
       if (cleanNoPrefix) {
         baseNames.add(cleanNoPrefix);
@@ -3224,8 +3254,12 @@ async function startServer() {
         filesToDelete.add(`${cleanNoPrefix}.mp4`);
         filesToDelete.add(`rec_auto_${cleanNoPrefix}.mp4`);
         filesToDelete.add(`rec_real_${cleanNoPrefix}.mp4`);
+        filesToDelete.add(`rec_disk_${cleanNoPrefix}.mp4`);
         filesToDelete.add(`rec_auto_${cleanNoPrefix.replace(/-/g, '_')}.mp4`);
         filesToDelete.add(`rec_auto_${cleanNoPrefix.replace(/_/g, '-')}.mp4`);
+        filesToDelete.add(`thumb_disk_${cleanNoPrefix}.jpg`);
+        filesToDelete.add(`thumb_auto_${cleanNoPrefix}.jpg`);
+        filesToDelete.add(`thumb_real_${cleanNoPrefix}.jpg`);
       }
 
       const tsMatch = base.match(/(\d{10,14})/);
@@ -3234,16 +3268,14 @@ async function startServer() {
       }
     };
 
-    registerCandidate(rawId);
+    idsSet.forEach(registerCandidate);
     matchedRecs.forEach((r) => {
       registerCandidate(r.id);
       if (r.streamUrl) registerCandidate(r.streamUrl);
       if (r.thumbnailUrl) registerCandidate(r.thumbnailUrl);
     });
-    sqliteTargetUrls.forEach(registerCandidate);
 
-    // Marcar em todas as formas no conjunto global de exclusões para nunca ser re-adicionado
-    deletedRecordingIds.add(rawId);
+    idsSet.forEach((id) => deletedRecordingIds.add(id));
     baseNames.forEach((bn) => {
       deletedRecordingIds.add(bn);
       deletedRecordingIds.add(`${bn}.mp4`);
@@ -3256,15 +3288,7 @@ async function startServer() {
       reconciledDiskFiles.delete(`/recordings/${f}`);
     });
 
-    // 1. Excluir fisicamente os arquivos do disco em todas as pastas de armazenamento
-    const dirsToClean = [
-      recordingsDir,
-      '/var/www/centralitl.unityautomacoes.com.br/recordings',
-      '/var/www/itl-recordings',
-      '/tmp/recordings',
-      path.join(process.cwd(), 'public', 'recordings'),
-    ];
-
+    // 1. Unlink matching files from disk
     for (const dir of dirsToClean) {
       if (!fs.existsSync(dir)) continue;
       try {
@@ -3300,13 +3324,20 @@ async function startServer() {
       } catch (e) {}
     }
 
-    // 2. Excluir permanentemente do Banco SQLite
+    // 2. Delete from SQLite
     if (sqliteDb) {
       try {
-        sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
+        for (const rawId of idsSet) {
+          sqliteDb.run('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
+        }
         for (const bn of baseNames) {
           if (bn.length >= 6) {
             sqliteDb.run('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${bn}%`, `%${bn}%`]);
+          }
+        }
+        for (const f of filesToDelete) {
+          if (f && f.length >= 5) {
+            sqliteDb.run('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${f}%`, `%${f}%`]);
           }
         }
         for (const ts of timestamps) {
@@ -3315,30 +3346,30 @@ async function startServer() {
           }
         }
         saveSqliteFile();
-      } catch (e) {}
+      } catch (e: any) {
+        console.error('[SQLite Recording Deletion Error]:', e.message || e);
+      }
     }
 
-    // 3. Excluir permanentemente do PostgreSQL (se ativo)
+    // 3. Delete from Postgres
     if (isPgActive && pool) {
       try {
-        await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
+        for (const rawId of idsSet) {
+          await queryPg('DELETE FROM cloud_recordings WHERE id = ? OR stream_url = ?', [rawId, rawId]);
+        }
         for (const bn of baseNames) {
           if (bn.length >= 6) {
             await queryPg('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${bn}%`, `%${bn}%`]);
           }
         }
-        for (const ts of timestamps) {
-          if (ts.length >= 8) {
-            await queryPg('DELETE FROM cloud_recordings WHERE id LIKE ? OR stream_url LIKE ?', [`%${ts}%`, `%${ts}%`]);
-          }
-        }
       } catch (e) {}
     }
 
-    // 4. Filtrar permanentemente da memória
+    // 4. Filter memory
+    const beforeCount = recordings.length;
     recordings = recordings.filter((r) => {
       if (!r || !r.id) return false;
-      if (r.id === rawId || deletedRecordingIds.has(r.id)) return false;
+      if (idsSet.has(r.id) || deletedRecordingIds.has(r.id)) return false;
       if (matchedRecs.some((m) => m.id === r.id)) return false;
       const recBase = path.basename(r.streamUrl || '');
       if (filesToDelete.has(recBase)) return false;
@@ -3349,6 +3380,11 @@ async function startServer() {
 
     saveToLocalFile();
     await flushPersistenceToDisk();
+    return Math.max(idsSet.size, beforeCount - recordings.length);
+  }
+
+  async function permanentlyDeleteRecording(id: string) {
+    return permanentlyDeleteRecordingsBatch([id]);
   }
 
   async function pruneRecordingsFIFO(customLimitGB?: number): Promise<{ prunedCount: number; currentGB: number; limitGB: number }> {
@@ -3779,27 +3815,11 @@ async function startServer() {
         '-map', '0:v:0'
       );
 
-      if (effectiveInputSource.startsWith('rtsp://')) {
-        // Conversão uniforme de RTSP para MP4 H.264 padrão com GOP estável
-        ffmpegArgs.push(
-          '-c:v', 'libx264',
-          '-preset', 'ultrafast',
-          '-tune', 'zerolatency',
-          '-profile:v', 'main',
-          '-pix_fmt', 'yuv420p',
-          '-r', '30',
-          '-g', '60',
-          '-b:v', '1500k',
-          '-maxrate', '1800k',
-          '-bufsize', '3000k',
-          '-an'
-        );
-      } else {
-        ffmpegArgs.push(
-          '-c:v', 'copy',
-          '-an'
-        );
-      }
+      // Padrão único para gravação: cópia direta de fluxo H.264 (0% de CPU)
+      ffmpegArgs.push(
+        '-c:v', 'copy',
+        '-an'
+      );
 
       ffmpegArgs.push(
         '-f', 'segment',
@@ -3822,7 +3842,7 @@ async function startServer() {
         proc.stderr?.on('data', () => {});
       } catch (e: any) {
         console.error('[Auto Recorder FFmpeg Spawn Error]:', e.message || e);
-        recordingLastFailureTimes.set(cam.id, Date.now() + 5000);
+        recordingLastFailureTimes.set(cam.id, Date.now() + 15000);
         return;
       }
 
@@ -3835,8 +3855,8 @@ async function startServer() {
 
         const fails = (recordingFailureCounts.get(cam.id) || 0) + 1;
         recordingFailureCounts.set(cam.id, fails);
-        // Short cooldown to allow camera socket to reset before reconnecting
-        const backoff = Math.min(30000, 3000 * Math.pow(1.3, Math.min(fails, 5)));
+        // Exponential backoff up to 120s para prevenir consumo de CPU em câmeras offline
+        const backoff = Math.min(120000, 5000 * Math.pow(1.5, Math.min(fails, 8)));
         recordingLastFailureTimes.set(cam.id, Date.now() + backoff);
       };
 
@@ -5968,10 +5988,15 @@ async function startServer() {
 
   app.delete('/api/recordings/:id', async (req, res) => {
     try {
+      const reqUser = getUserFromReq(req);
+      if (reqUser && (reqUser.role === 'VIEWER' || reqUser.role === 'RESIDENT' || reqUser.customPermissions?.canDeleteRecordings === false)) {
+        return res.status(403).json({ success: false, error: 'Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.' });
+      }
       const { id } = req.params;
-      await permanentlyDeleteRecording(id);
+      const count = await permanentlyDeleteRecordingsBatch([id]);
       addLog('ITL Admin', `Gravação em nuvem excluída permanentemente: ${id}`, 'RECORDING');
-      return res.json({ success: true, message: 'Gravação removida permanentemente do banco, disco e JSON' });
+      const remainingRecordings = filterRecordingsForUser(reqUser, recordings);
+      return res.json({ success: true, count, message: 'Gravação removida permanentemente de todos os arquivos e bancos de dados.', remainingRecordings });
     } catch (err: any) {
       console.error('[DELETE Recording Error]:', err);
       return res.status(500).json({ success: false, error: err.message || err });
@@ -5980,18 +6005,18 @@ async function startServer() {
 
   app.post('/api/recordings/batch-delete', async (req, res) => {
     try {
-      const { ids } = req.body;
+      const reqUser = getUserFromReq(req);
+      if (reqUser && (reqUser.role === 'VIEWER' || reqUser.role === 'RESIDENT' || reqUser.customPermissions?.canDeleteRecordings === false)) {
+        return res.status(403).json({ success: false, error: 'Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.' });
+      }
+      const { ids } = req.body || {};
       let count = 0;
       if (Array.isArray(ids) && ids.length > 0) {
-        for (const id of ids) {
-          if (id) {
-            await permanentlyDeleteRecording(id);
-            count++;
-          }
-        }
+        count = await permanentlyDeleteRecordingsBatch(ids);
         addLog('ITL Admin', `${count} gravações em nuvem excluídas permanentemente em lote`, 'RECORDING');
       }
-      return res.json({ success: true, count, message: `${count} gravações removidas permanentemente` });
+      const remainingRecordings = filterRecordingsForUser(reqUser, recordings);
+      return res.json({ success: true, count, message: `${count} gravações removidas permanentemente em sincronia total.`, remainingRecordings });
     } catch (err: any) {
       console.error('[BATCH DELETE Recording Error]:', err);
       return res.status(500).json({ success: false, error: err.message || err });
@@ -6000,36 +6025,35 @@ async function startServer() {
 
   app.post('/api/recordings/delete-all', async (req, res) => {
     try {
-      const { ids, date, cameraId } = req.body || {};
       const reqUser = getUserFromReq(req);
+      if (reqUser && (reqUser.role === 'VIEWER' || reqUser.role === 'RESIDENT' || reqUser.customPermissions?.canDeleteRecordings === false)) {
+        return res.status(403).json({ success: false, error: 'Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.' });
+      }
+      const { ids, date, cameraId } = req.body || {};
       const userAccessible = filterRecordingsForUser(reqUser, recordings);
 
       let count = 0;
       if (Array.isArray(ids) && ids.length > 0 && !ids.includes('ALL')) {
-        for (const id of ids) {
-          if (id) {
-            await permanentlyDeleteRecording(id);
-            count++;
-          }
-        }
+        count = await permanentlyDeleteRecordingsBatch(ids);
+      } else if (!date && (!cameraId || cameraId === 'ALL')) {
+        // Complete wipe of all recordings
+        count = await permanentlyDeleteRecordingsBatch('ALL');
       } else {
-        let toDelete = userAccessible;
-        if (date || (cameraId && cameraId !== 'ALL')) {
-          toDelete = userAccessible.filter((r) => {
-            if (date && !r.startTime.includes(date)) return false;
-            if (cameraId && cameraId !== 'ALL' && r.cameraId !== cameraId) return false;
-            return true;
-          });
-        }
-
-        for (const rec of toDelete) {
-          await permanentlyDeleteRecording(rec.id);
-          count++;
+        // Filtered wipe
+        const toDelete = userAccessible.filter((r) => {
+          if (date && !r.startTime.includes(date)) return false;
+          if (cameraId && cameraId !== 'ALL' && r.cameraId !== cameraId) return false;
+          return true;
+        });
+        const toDeleteIds = toDelete.map((r) => r.id);
+        if (toDeleteIds.length > 0) {
+          count = await permanentlyDeleteRecordingsBatch(toDeleteIds);
         }
       }
 
-      addLog('ITL Admin', `${count} gravações em nuvem excluídas permanentemente`, 'RECORDING');
-      return res.json({ success: true, count, message: `${count} gravações excluídas permanentemente` });
+      addLog('ITL Admin', `${count} gravações em nuvem excluídas permanentemente de todos os arquivos e tabelas`, 'RECORDING');
+      const remainingRecordings = filterRecordingsForUser(reqUser, recordings);
+      return res.json({ success: true, count, message: `${count} gravações excluídas permanentemente de todos os arquivos e bancos de dados.`, remainingRecordings });
     } catch (err: any) {
       console.error('[DELETE ALL Recordings Error]:', err);
       return res.status(500).json({ success: false, error: err.message || err });
@@ -6059,6 +6083,7 @@ async function startServer() {
         stateUf,
         city,
         allowedCameraIds,
+        allowedTabs,
         customPermissions,
         companyId,
         companyName,
@@ -6093,7 +6118,14 @@ async function startServer() {
         if (stateUf !== undefined) existing.stateUf = stateUf;
         if (city !== undefined) existing.city = city;
         if (allowedCameraIds) existing.allowedCameraIds = allowedCameraIds;
+        if (allowedTabs) existing.allowedTabs = allowedTabs;
         if (customPermissions) existing.customPermissions = customPermissions;
+        if (existing.role === 'VIEWER' || existing.role === 'RESIDENT') {
+          existing.customPermissions = {
+            ...(existing.customPermissions || {}),
+            canDeleteRecordings: false,
+          } as CustomPermissions;
+        }
         if (effectiveCompanyId) existing.companyId = effectiveCompanyId;
         if (effectiveCompanyName) existing.companyName = effectiveCompanyName;
         if (isCompanyAdmin !== undefined) existing.isCompanyAdmin = Boolean(isCompanyAdmin);
@@ -6109,6 +6141,7 @@ async function startServer() {
       const userPass = (password || '').toString().trim() || '123456';
       const passHash = hashPasswordPBKDF2(userPass);
       const newUserId = id || `user-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
+      const userRole = role || 'RESIDENT';
 
       const newUser: User = {
         id: newUserId,
@@ -6116,7 +6149,7 @@ async function startServer() {
         email: cleanEmail,
         password: userPass,
         passwordHash: passHash,
-        role: role || 'RESIDENT',
+        role: userRole,
         phone: phone || '',
         stateUf: stateUf || 'BA',
         city: city || 'Itamaraju',
@@ -6125,7 +6158,8 @@ async function startServer() {
         companyName: effectiveCompanyName,
         isCompanyAdmin: Boolean(isCompanyAdmin),
         allowedCameraIds: allowedCameraIds && allowedCameraIds.length > 0 ? allowedCameraIds : ['ALL'],
-        customPermissions: customPermissions || {
+        allowedTabs: allowedTabs || (userRole === 'VIEWER' ? ['live-grid'] : userRole === 'RESIDENT' ? ['live-grid', 'camera-map', 'cloud-recordings'] : ['dashboard', 'live-grid', 'camera-map', 'cloud-recordings', 'dvr-agents', 'camera-admin', 'user-management', 'api-docs', 'financial-management', 'activity-reports', 'backup-manager', 'db-diagnostics']),
+        customPermissions: {
           canViewLive: true,
           canViewRecordings: true,
           canControlPTZ: false,
@@ -6135,10 +6169,14 @@ async function startServer() {
           canAccessAuditLogs: false,
           canManageUsers: false,
           canExportReports: false,
+          ...(customPermissions || {}),
         },
         lastActive: 'Nunca',
         createdAt: new Date().toISOString().split('T')[0],
       };
+      if (userRole === 'VIEWER' || userRole === 'RESIDENT') {
+        newUser.customPermissions.canDeleteRecordings = false;
+      }
       (newUser as any).password_hash = passHash;
 
       users.push(newUser);
@@ -6195,10 +6233,17 @@ async function startServer() {
       if (req.body.stateUf !== undefined) updatedUser.stateUf = req.body.stateUf;
       if (req.body.city !== undefined) updatedUser.city = req.body.city;
       if (req.body.allowedCameraIds) updatedUser.allowedCameraIds = req.body.allowedCameraIds;
+      if (req.body.allowedTabs) updatedUser.allowedTabs = req.body.allowedTabs;
       if (req.body.customPermissions) {
         updatedUser.customPermissions = {
           ...currentUser.customPermissions,
           ...req.body.customPermissions,
+        };
+      }
+      if (updatedUser.role === 'VIEWER' || updatedUser.role === 'RESIDENT') {
+        updatedUser.customPermissions = {
+          ...updatedUser.customPermissions,
+          canDeleteRecordings: false,
         };
       }
       if (req.body.status !== undefined) updatedUser.status = req.body.status;

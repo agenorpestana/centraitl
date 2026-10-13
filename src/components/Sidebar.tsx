@@ -64,6 +64,60 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (item.superAdminOnly && !isSuperAdmin) return false;
     if (item.companyAdminOnly && !isCompanyAdmin && !isSuperAdmin) return false;
     if (item.adminOnly && !isAdmin && !isSuperAdmin) return false;
+
+    // Se o usuário não for Super Admin, aplicar restrições estritas de abas
+    if (activeUser && activeUser.role !== 'ADMIN') {
+      // Usuários restritos (Visualizador e Vizinho): NUNCA podem ver abas administrativas
+      if (activeUser.role === 'VIEWER' || activeUser.role === 'RESIDENT') {
+        const forbiddenTabsForRestricted = [
+          'dashboard',
+          'white-label-admin',
+          'company-clients',
+          'dvr-agents',
+          'camera-admin',
+          'user-management',
+          'api-docs',
+          'financial-management',
+          'activity-reports',
+          'backup-manager',
+          'db-diagnostics',
+        ];
+        if (forbiddenTabsForRestricted.includes(item.id)) {
+          return false;
+        }
+
+        // 1. Se possuir lista de abas permitidas explicitamente marcada no cadastro:
+        if (Array.isArray(activeUser.allowedTabs)) {
+          return activeUser.allowedTabs.includes(item.id);
+        }
+
+        // 2. Se allowedTabs não estiver definido, aplicar padrão estrito por papel
+        if (activeUser.role === 'VIEWER') {
+          const viewerTabs = ['live-grid'];
+          if (activeUser.customPermissions?.canViewRecordings) viewerTabs.push('cloud-recordings');
+          return viewerTabs.includes(item.id);
+        }
+
+        if (activeUser.role === 'RESIDENT') {
+          const residentTabs = ['live-grid', 'camera-map'];
+          if (activeUser.customPermissions?.canViewRecordings) residentTabs.push('cloud-recordings');
+          return residentTabs.includes(item.id);
+        }
+      }
+
+      // Demais papéis (Operador, Guarda, etc.):
+      if (Array.isArray(activeUser.allowedTabs) && activeUser.allowedTabs.length > 0) {
+        return activeUser.allowedTabs.includes(item.id);
+      }
+
+      // Validar permissões granulares caso não tenha allowedTabs configurado
+      if (item.id === 'cloud-recordings' && !activeUser.customPermissions?.canViewRecordings) return false;
+      if (['camera-admin', 'dvr-agents'].includes(item.id) && !activeUser.customPermissions?.canManageCameras) return false;
+      if (item.id === 'financial-management' && !activeUser.customPermissions?.canManageFinancial) return false;
+      if (item.id === 'activity-reports' && !activeUser.customPermissions?.canExportReports) return false;
+      if (['backup-manager', 'db-diagnostics', 'api-docs'].includes(item.id)) return false;
+    }
+
     return true;
   });
 
