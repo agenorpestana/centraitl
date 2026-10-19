@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Central ITL - Visualizador DVR Nativo (Gravação em Nuvem)</title>
+  <style>
+    :root {
+      --bg: #070a12;
+      --panel: #0f172a;
+      --card: #131d33;
+      --border: #1e293b;
+      --border-focus: #3b82f6;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; user-select: none; }
+    
+    /* Top Header Bar */
+    header {
+      background-color: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 54px;
+      flex-shrink: 0;
+      z-index: 50;
+    }
+    .header-left { display: flex; align-items: center; gap: 14px; }
+    .brand-logo { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 15px; letter-spacing: 0.8px; color: #fff; }
+    .brand-logo span { color: #38bdf8; }
+    .cloud-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: #34d399;
+      padding: 3px 10px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    .pulse-dot { width: 7px; height: 7px; border-radius: 50%; background-color: #10b981; animation: pulse 2s infinite; }
+    @keyframes pulse {
+      0% { transform: scale(0.95); opacity: 0.8; }
+      50% { transform: scale(1.3); opacity: 1; }
+      100% { transform: scale(0.95); opacity: 0.8; }
+    }
+    
+    /* Header Center Clock & Stats */
+    .header-center { display: flex; align-items: center; gap: 16px; }
+    .dvr-clock {
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 14px;
+      font-weight: 700;
+      color: #38bdf8;
+      background: #000;
+      padding: 4px 12px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      letter-spacing: 1px;
+    }
+    .cam-counter { font-size: 12px; color: var(--text-muted); font-weight: 600; }
+
+    /* Header Right Controls */
+    .header-right { display: flex; align-items: center; gap: 8px; }
+    .layout-switcher { display: flex; background: #000; border: 1px solid var(--border); border-radius: 6px; padding: 2px; }
+    .layout-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+    }
+    .layout-btn:hover { color: #fff; background: rgba(255,255,255,0.06); }
+    .layout-btn.active { color: #fff; background: var(--primary); }
+
+    /* Pagination Controls */
+    .pagination-container {
+      display: flex;
+      align-items: center;
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px 4px;
+      gap: 4px;
+    }
+    .btn-page {
+      background: #131d33;
+      border: 1px solid #1e293b;
+      color: #cbd5e1;
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+    }
+    .btn-page:hover:not(:disabled) {
+      color: #fff;
+      background: #1e293b;
+      border-color: #3b82f6;
+    }
+    .btn-page:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+      border-color: transparent;
+      background: transparent;
+    }
+    .page-indicator {
+      font-size: 11px;
+      font-weight: 800;
+      color: #38bdf8;
+      padding: 0 8px;
+      font-family: 'Consolas', 'Courier New', monospace;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+
+    .btn-icon {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+    .btn-icon:hover { background: #1e293b; border-color: #475569; }
+    .btn-danger { background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.3); color: #f87171; }
+    .btn-danger:hover { background: rgba(239, 68, 68, 0.25); border-color: #ef4444; }
+
+    /* Main Container */
+    main { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; }
+
+    /* Login View */
+    #loginSection {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at center, #131d33 0%, #070a12 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 20px;
+    }
+    .login-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      width: 100%;
+      max-width: 440px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .login-header { margin-bottom: 24px; text-align: center; }
+    .login-header h2 { font-size: 20px; font-weight: 800; color: #fff; }
+    .login-header p { font-size: 13px; color: var(--text-muted); margin-top: 6px; line-height: 1.4; }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .form-input {
+      width: 100%;
+      background: #060911;
+      border: 1px solid var(--border);
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-input:focus { border-color: var(--border-focus); }
+    .btn-submit {
+      width: 100%;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 12px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: background 0.2s;
+    }
+    .btn-submit:hover { background: var(--primary-hover); }
+    .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+    .login-error {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+    .cloud-note {
+      margin-top: 20px;
+      padding: 12px;
+      background: rgba(16, 185, 129, 0.08);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+      border-radius: 8px;
+      font-size: 12px;
+      color: #34d399;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    /* Video Grid Container */
+    #dvrGridSection {
+      flex: 1;
+      height: 100%;
+      padding: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .camera-grid {
+      flex: 1;
+      display: grid;
+      gap: 6px;
+      height: 100%;
+      width: 100%;
+      background: #000;
+      border-radius: 6px;
+      padding: 6px;
+      overflow: hidden;
+    }
+
+    /* Grid Layout Modes */
+    .grid-1x1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+    .grid-2x2 { grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(2, 1fr); }
+    .grid-3x3 { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); }
+    .grid-4x4 { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); }
+
+    /* Individual Camera Cell */
+    .cam-cell {
+      background: #080c14;
+      border: 1px solid #1a2333;
+      border-radius: 4px;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    .cam-cell:hover { border-color: #3b82f6; }
+    .cam-cell.active-focus { border-color: #60a5fa; box-shadow: 0 0 10px rgba(96, 165, 250, 0.3); }
+
+    /* Video Feed Element */
+    .cam-video-container {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      overflow: hidden;
+    }
+    .cam-video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+      pointer-events: none;
+    }
+
+    /* Channel Tag Top-Left (Identical to Web App Image 2) */
+    .cam-tag-channel {
+      position: absolute;
+      top: 6px;
+      left: 8px;
+      z-index: 20;
+      background: rgba(0, 0, 0, 0.85);
+      font-family: 'Consolas', monospace;
+      font-size: 11px;
+      color: #34d399;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+      pointer-events: none;
+    }
+    .cam-tag-channel .ping-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #34d399;
+      animation: blink 1s infinite;
+    }
+    .cam-tag-protocol {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-weight: 800;
+      font-family: sans-serif;
+      background: rgba(6, 78, 59, 0.9);
+      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.6);
+    }
+    .cam-tag-protocol.rtsp {
+      background: rgba(8, 51, 68, 0.9);
+      color: #67e8f9;
+      border: 1px solid rgba(6, 182, 212, 0.6);
+    }
+
+    /* OSD Top Overlay */
+    .osd-top {
+      position: absolute;
+      top: 6px;
+      right: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      z-index: 20;
+      pointer-events: none;
+    }
+    .osd-cloud-rec {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      font-weight: 800;
+      color: #ef4444;
+      background: rgba(0,0,0,0.8);
+      padding: 2px 7px;
+      border-radius: 4px;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+    .rec-dot { width: 6px; height: 6px; border-radius: 50%; background: #ef4444; animation: blink 1s infinite; }
+    @keyframes blink { 50% { opacity: 0.2; } }
+
+    /* Bottom Label Bar (Identical to Web App Image 2) */
+    .cam-bottom-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: rgba(10, 15, 29, 0.92);
+      border-top: 1px solid rgba(30, 41, 59, 0.85);
+      padding: 4px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      z-index: 20;
+      backdrop-filter: blur(4px);
+    }
+    .cam-bottom-name {
+      font-size: 12px;
+      font-weight: 700;
+      color: #f1f5f9;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 60%;
+    }
+    .cam-bottom-location {
+      font-size: 11px;
+      color: #94a3b8;
+      font-family: monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: right;
+    }
+
+    /* Hover Control Action Overlay */
+    .cam-hover-actions {
+      position: absolute;
+      bottom: 30px;
+      right: 8px;
+      display: flex;
+      gap: 6px;
+      z-index: 25;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    .cam-cell:hover .cam-hover-actions { opacity: 1; }
+    .btn-cam-overlay {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(51, 65, 85, 0.9);
+      color: #e2e8f0;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      backdrop-filter: blur(4px);
+      transition: all 0.15s;
+    }
+    .btn-cam-overlay:hover {
+      background: #2563eb;
+      border-color: #3b82f6;
+      color: #fff;
+    }
+
+    /* Loading Overlay State */
+    .cam-loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(7, 10, 18, 0.92);
+      backdrop-filter: blur(4px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      z-index: 15;
+      text-align: center;
+      padding: 16px;
+    }
+    .loading-spinner-ring {
+      width: 38px;
+      height: 38px;
+      border: 3px solid rgba(16, 185, 129, 0.15);
+      border-top-color: #10b981;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+    .loading-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #f8fafc;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .loading-subtitle {
+      font-size: 11px;
+      color: #94a3b8;
+      font-family: monospace;
+    }
+
+    /* OFFLINE STATE (Matching Web App Image 2 exactly) */
+    .cam-offline-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(8, 12, 22, 0.96);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      text-align: center;
+      gap: 10px;
+      z-index: 18;
+    }
+    .offline-icon-box {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: rgba(136, 19, 55, 0.35);
+      border: 1px solid rgba(244, 63, 94, 0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #f43f5e;
+      box-shadow: 0 4px 12px rgba(244, 63, 94, 0.15);
+    }
+    .offline-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-top: 2px;
+    }
+    .offline-subtitle {
+      font-size: 11px;
+      color: #94a3b8;
+      line-height: 1.4;
+      max-width: 240px;
+    }
+    .offline-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .btn-offline-action {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-offline-reconnect {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #f1f5f9;
+    }
+    .btn-offline-reconnect:hover {
+      background: #334155;
+      border-color: #475569;
+    }
+    .btn-offline-diag {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: #34d399;
+    }
+    .btn-offline-diag:hover {
+      background: rgba(16, 185, 129, 0.25);
+      border-color: rgba(16, 185, 129, 0.6);
+    }
+    .btn-offline-fullscreen {
+      position: absolute;
+      bottom: 30px;
+      right: 10px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      padding: 4px 9px;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+    }
+    .btn-offline-fullscreen:hover {
+      background: #2563eb;
+      border-color: #3b82f6;
+      color: #fff;
+    }
+
+    /* Modal Diagnostic Test */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(3, 7, 18, 0.85);
+      backdrop-filter: blur(6px);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-backdrop.hidden { display: none !important; }
+    .modal-box {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      max-width: 520px;
+      width: 100%;
+      padding: 22px;
+      color: #f8fafc;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      position: relative;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #1e293b;
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+    }
+    .modal-title { font-size: 14px; font-weight: 800; display: flex; align-items: center; gap: 8px; color: #38bdf8; }
+    .btn-modal-close {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      border-radius: 6px;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .btn-modal-close:hover { color: #fff; background: #334155; }
+    .diag-status-card {
+      padding: 12px 14px;
+      border-radius: 10px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 12px;
+    }
+    .diag-status-card.success {
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      color: #34d399;
+    }
+    .diag-status-card.error {
+      background: rgba(244, 63, 94, 0.12);
+      border: 1px solid rgba(244, 63, 94, 0.35);
+      color: #f43f5e;
+    }
+    .diag-logs {
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 10px;
+      font-family: 'Consolas', monospace;
+      font-size: 11px;
+      color: #cbd5e1;
+      max-height: 160px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+
+    /* Empty cameras notice */
+    .empty-cameras {
+      grid-column: 1 / -1;
+      grid-row: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--text-muted);
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <!-- Header Bar -->
+  <header>
+    <div class="header-left">
+      <div class="brand-logo">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <circle cx="12" cy="11" r="3"/>
+        </svg>
+        CENTRAL ITL <span>DVR</span>
+      </div>
+      <div class="cloud-badge">
+        <span class="pulse-dot"></span>
+        GRAVAÇÃO EM NUVEM 24H
+      </div>
+    </div>
+
+    <div class="header-center">
+      <div id="dvrClock" class="dvr-clock">--:--:--</div>
+      <div id="camCountLabel" class="cam-counter">Carregando câmeras...</div>
+    </div>
+
+    <div class="header-right">
+      <!-- Pagination Controls (Página Anterior / Próxima Página) -->
+      <div id="paginationContainer" class="pagination-container">
+        <button id="btnPrevPage" class="btn-page" title="Página Anterior (Tecla Seta Esquerda ou PageUp)" disabled>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+          <span>Anterior</span>
+        </button>
+        <span id="pageIndicator" class="page-indicator">Pág 1 / 1</span>
+        <button id="btnNextPage" class="btn-page" title="Próxima Página (Tecla Seta Direita ou PageDown)">
+          <span>Próxima</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+      </div>
+
+      <!-- Layout Switcher -->
+      <div class="layout-switcher">
+        <button class="layout-btn" data-layout="1x1" title="Visualização 1 Câmera em Destaque">1x1</button>
+        <button class="layout-btn active" data-layout="2x2" title="Grade 2x2 (4 Câmeras)">2x2</button>
+        <button class="layout-btn" data-layout="3x3" title="Grade 3x3 (9 Câmeras)">3x3</button>
+        <button class="layout-btn" data-layout="4x4" title="Grade 4x4 (16 Câmeras)">4x4</button>
+      </div>
+
+      <button id="btnFullscreen" class="btn-icon" title="Modo Tela Cheia (F11)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        Tela Cheia
+      </button>
+
+      <button id="btnRefresh" class="btn-icon" title="Sincronizar Câmeras da Nuvem">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+      </button>
+
+      <button id="btnLogout" class="btn-icon btn-danger" title="Desconectar da Central">
+        Sair
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <!-- LOGIN MODAL / VIEW -->
+    <div id="loginSection">
+      <div class="login-card">
+        <div class="login-header">
+          <h2>Conectar à Central ITL</h2>
+          <p>Visualizador DVR Nativo de alta performance para monitoramento de câmeras sem limitações de navegador.</p>
+        </div>
+
+        <div id="loginError" class="login-error hidden"></div>
+
+        <form id="loginForm" onsubmit="window.itlPerformLogin && window.itlPerformLogin(event); return false;">
+          <div class="form-group">
+            <label>URL do Servidor Central:</label>
+            <input type="text" id="serverUrl" class="form-input" value="https://centralitl.unityautomacoes.com.br" required />
+          </div>
+
+          <div class="form-group">
+            <label>Email ou Usuário:</label>
+            <input type="text" id="email" class="form-input" placeholder="admin@itl.com.br" required />
+          </div>
+
+          <div class="form-group">
+            <label>Senha de Acesso:</label>
+            <input type="password" id="password" class="form-input" placeholder="••••••••" required />
+          </div>
+
+          <button type="submit" id="btnLoginSubmit" class="btn-submit" onclick="window.itlPerformLogin && window.itlPerformLogin(event)">
+            Entrar no Visualizador DVR
+          </button>
+        </form>
+
+        <div class="cloud-note">
+          ✔ Todas as gravações permanecem ativas em nuvem 24 horas.<br>
+          Nenhum armazenamento local é consumido ou requerido neste computador.
+        </div>
+      </div>
+    </div>
+
+    <!-- DVR VIDEO GRID -->
+    <div id="dvrGridSection">
+      <div id="videoGrid" class="camera-grid grid-2x2">
+        <!-- Renderizado dinamicamente via renderer.js -->
+      </div>
+    </div>
+  </main>
+
+  <!-- DIAGNOSTIC MODAL -->
+  <div id="diagModal" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          <span id="diagModalTitle">Diagnóstico da Câmera</span>
+        </div>
+        <button id="btnDiagClose" class="btn-modal-close" title="Fechar">✕</button>
+      </div>
+
+      <div id="diagModalBody">
+        <div id="diagLoading" class="py-6 text-center" style="display: none; padding: 24px; text-align: center;">
+          <div class="loading-spinner-ring" style="margin: 0 auto 12px;"></div>
+          <div style="font-size: 13px; font-weight: 700; color: #f8fafc;">Testando sinal RTSP / RTMP...</div>
+          <div style="font-size: 11px; color: #94a3b8; font-family: monospace; margin-top: 4px;">Validando handshake e pacotes de vídeo</div>
+        </div>
+
+        <div id="diagStatusCard" class="diag-status-card success" style="display: none;">
+          <div>
+            <div id="diagStatusTitle" style="font-weight: 800; font-size: 12px; margin-bottom: 3px;">SINAL DETECTADO</div>
+            <div id="diagStatusMsg" style="font-size: 11px; color: #cbd5e1;">A câmera está enviando dados de transmissão normalmente.</div>
+          </div>
+        </div>
+
+        <div style="font-size: 11px; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">Logs de Diagnóstico do Servidor:</div>
+        <pre id="diagLogs" class="diag-logs">Aguardando início do teste...</pre>
+
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
+          <button id="btnDiagRetry" class="btn-offline-action btn-offline-reconnect" style="padding: 7px 14px;">↺ Retestar Câmera</button>
+          <button id="btnDiagDismiss" class="btn-offline-action btn-offline-diag" style="padding: 7px 14px;">Fechar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Engine de Vídeo HLS Local Nativa -->
+  <script src="hls.min.js"></script>
+  <script>
+    // Garantir que a instância Hls esteja sempre acessível no objeto window
+    (function() {
+      if (typeof window.Hls === 'undefined') {
+        if (typeof Hls !== 'undefined') {
+          window.Hls = Hls;
+        } else if (typeof module !== 'undefined' && module.exports) {
+          window.Hls = module.exports;
+        } else if (typeof exports !== 'undefined' && exports.Hls) {
+          window.Hls = exports.Hls;
+        }
+      }
+      console.log('[ITL DVR] Motor HLS Carregado:', typeof window.Hls);
+    })();
+  </script>
+  <script src="renderer.js"></script>
+</body>
+</html>

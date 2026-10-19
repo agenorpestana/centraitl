@@ -1,0 +1,763 @@
+#!/bin/bash
+
+# Cores para output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}=== Gerenciador de Instalação Multi-SaaS Unity & Central ITL (Ubuntu 24.04 LTS Ready) ===${NC}"
+
+# Verificar se está rodando como root
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${RED}Por favor, execute como root (sudo ./install.sh)${NC}"
+  exit 1
+fi
+
+# Variável global para armazenar a senha do PostgreSQL
+PG_PASS=""
+
+# Função para verificar se o PostgreSQL está de fato aceitando conexões
+is_postgres_healthy() {
+    if command -v pg_isready &>/dev/null; then
+        if pg_isready -h localhost -p 5432 &>/dev/null || sudo -u postgres pg_isready &>/dev/null; then
+            return 0
+        fi
+    fi
+    if sudo -u postgres psql -tAc "SELECT 1" &>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Função de autocura e inicialização garantida do PostgreSQL (suporte Ubuntu 20.04/22.04/24.04 LTS)
+ensure_postgresql_running() {
+    echo -e "${YELLOW}Verificando conectividade e cluster do PostgreSQL...${NC}"
+
+    # 1. Garantir que os pacotes do PostgreSQL estão instalados
+    if ! command -v psql &>/dev/null; then
+        echo -e "${YELLOW}Instalando PostgreSQL e extensões...${NC}"
+        apt-get update -y && apt-get install -y postgresql postgresql-contrib
+    fi
+
+    # 2. Garantir diretório do socket do PostgreSQL com permissões corretas
+    mkdir -p /var/run/postgresql
+    chown -R postgres:postgres /var/run/postgresql 2>/dev/null || true
+    chmod 2775 /var/run/postgresql 2>/dev/null || true
+
+    # 3. Se já estiver saudável e respondendo, finaliza
+    if is_postgres_healthy; then
+        echo -e "${GREEN}PostgreSQL está ativo e aceitando conexões!${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}PostgreSQL não está respondendo no socket padrão. Iniciando rotina de recuperação e ativação do cluster...${NC}"
+
+    # 4. Tentar iniciar clusters existentes no Debian/Ubuntu
+    if command -v pg_lsclusters &>/dev/null; then
+        local CLUSTERS_COUNT=$(pg_lsclusters -h 2>/dev/null | wc -l)
+        if [ "$CLUSTERS_COUNT" -eq 0 ]; then
+            echo -e "${YELLOW}Nenhum cluster PostgreSQL encontrado. Criando cluster 'main'...${NC}"
+            local PG_VER=$(ls -d /usr/lib/postgresql/[0-9]* 2>/dev/null | sort -V | tail -n 1 | xargs -n 1 basename 2>/dev/null)
+            if [ -z "$PG_VER" ]; then PG_VER="16"; fi
+            pg_createcluster "$PG_VER" main --start 2>/dev/null || true
+        else
+            while read -r ver cluster port status rest; do
+                if [ "$status" != "online" ]; then
+                    echo -e "${YELLOW}Iniciando cluster PostgreSQL $ver $cluster (porta $port)...${NC}"
+                    pg_ctlcluster "$ver" "$cluster" start 2>/dev/null || true
+                fi
+            done < <(pg_lsclusters -h 2>/dev/null)
+        fi
+    fi
+
+    # 5. Reiniciar o serviço do systemd
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl unmask postgresql 2>/dev/null || true
+    systemctl start postgresql 2>/dev/null || true
+    systemctl enable postgresql 2>/dev/null || true
+    systemctl restart postgresql 2>/dev/null || true
+
+    # 6. Aguardar até 15 segundos para o socket aparecer
+    echo -e "${YELLOW}Aguardando inicialização do socket do PostgreSQL...${NC}"
+    local TRIES=0
+    while [ $TRIES -lt 15 ]; do
+        if is_postgres_healthy; then
+            echo -e "${GREEN}PostgreSQL iniciado e pronto para conexões!${NC}"
+            return 0
+        fi
+        sleep 1
+        TRIES=$((TRIES + 1))
+    done
+
+    # 7. Fallback: Se ainda não subiu, tentar iniciar diretamente pelo pg_ctl como usuário postgres
+    if ! is_postgres_healthy; then
+        echo -e "${YELLOW}Tentando recuperação direta do cluster via pg_ctl...${NC}"
+        local MAIN_DATA=$(find /var/lib/postgresql/ -maxdepth 2 -type d -name "main" 2>/dev/null | head -n 1)
+        if [ ! -z "$MAIN_DATA" ]; then
+            sudo -u postgres /usr/lib/postgresql/*/bin/pg_ctl -D "$MAIN_DATA" -l /var/lib/postgresql/logfile start 2>/dev/null || true
+            sleep 2
+        fi
+    fi
+
+    if is_postgres_healthy; then
+        echo -e "${GREEN}PostgreSQL recuperado e ativo com sucesso!${NC}"
+        return 0
+    else
+        echo -e "${RED}Aviso: Não foi possível conectar ao socket do PostgreSQL local no momento.${NC}"
+        echo -e "${YELLOW}O sistema continuará a instalação usando o mecanismo SQLite e JSON Store local de alta performance.${NC}"
+        return 1
+    fi
+}
+
+check_and_install_postgresql() {
+    ensure_postgresql_running
+}
+
+# Função para executar comandos no PostgreSQL
+run_postgres_cmd() {
+    local SQL_CMD="$1"
+    sudo -u postgres psql -c "$SQL_CMD"
+    return $?
+}
+
+# Função para importar arquivo de banco de dados schema.sql no PostgreSQL
+import_sql_schema() {
+    local DB="$1"
+    local FILE="$2"
+    local USER="$3"
+    local PASS="$4"
+    local ERR_LOG=$(mktemp)
+
+    echo -e "${YELLOW}Executando estrutura $(basename "$FILE") no banco PostgreSQL ${DB}...${NC}"
+
+    # Garantir que o postgres está ativo antes de tentar importar
+    ensure_postgresql_running &>/dev/null
+
+    # 1ª tentativa: via usuário postgres local (mais confiável e não depende de senha TCP)
+    if sudo -u postgres psql -d "${DB}" -f "$FILE" 2>"$ERR_LOG"; then
+        echo -e "${GREEN}Estrutura de tabelas importada com sucesso via usuário postgres local!${NC}"
+        rm -f "$ERR_LOG"
+        return 0
+    fi
+
+    # 2ª tentativa: via localhost com usuário e senha
+    if PGPASSWORD="${PASS}" psql -h localhost -U "${USER}" -d "${DB}" -f "$FILE" 2>"$ERR_LOG"; then
+        echo -e "${GREEN}Estrutura de tabelas importada com sucesso com o usuário '${USER}'!${NC}"
+        rm -f "$ERR_LOG"
+        return 0
+    fi
+
+    # 3ª tentativa: via 127.0.0.1 porta 5432
+    if PGPASSWORD="${PASS}" psql -h 127.0.0.1 -p 5432 -U "${USER}" -d "${DB}" -f "$FILE" 2>"$ERR_LOG"; then
+        echo -e "${GREEN}Estrutura de tabelas importada com sucesso via 127.0.0.1!${NC}"
+        rm -f "$ERR_LOG"
+        return 0
+    fi
+
+    echo -e "${YELLOW}Aviso: Não foi possível executar schema.sql no PostgreSQL neste instante.${NC}"
+    if [ -s "$ERR_LOG" ]; then
+        echo -e "${YELLOW}Detalhes da tentativa:${NC}"
+        head -n 5 "$ERR_LOG"
+    fi
+    echo -e "${GREEN}O backend sincronizará as tabelas automaticamente na inicialização via SQLite e conexão em segundo plano.${NC}"
+    rm -f "$ERR_LOG"
+    return 0
+}
+
+
+# Limpar links simbólicos quebrados no Nginx
+if [ -d /etc/nginx/sites-enabled/ ]; then
+    echo -e "${YELLOW}Removendo configurações inválidas e links simbólicos quebrados no Nginx...${NC}"
+    rm -f /etc/nginx/sites-enabled/bash
+    find /etc/nginx/sites-enabled/ -type l ! -exec test -e {} \; -delete 2>/dev/null
+fi
+
+# ==========================================
+# 0. Menu Principal: Ação
+# ==========================================
+echo -e "${BLUE}O que você deseja fazer?${NC}"
+echo "1) Instalar ou Atualizar um Sistema"
+echo "2) Desinstalar um Sistema existente"
+echo "3) Sair"
+read ACTION_CHOICE
+
+if [ "$ACTION_CHOICE" -eq 3 ]; then exit 0; fi
+
+# ==========================================
+# 1. Seleção do Sistema
+# ==========================================
+echo -e "${YELLOW}Selecione o Sistema:${NC}"
+echo "1) Opa Suite Dashboard (Porta 3000)"
+echo "2) Unity Score SaaS (Porta 3001)"
+echo "3) Pastoral da Catequese (Porta 3004)"
+echo "4) ITL Cursos (Porta 3003)"
+echo "5) Rastreae (Porta 3002)"
+echo "6) iWedding SaaS (Porta 3005)"
+echo "7) StreamControl (Porta 3006)"
+echo "8) Unity DVR (Porta 3007)"
+echo "9) Unity Tax Manager (Porta 3008)"
+echo "10) VooSimples (Porta 3009)"
+echo "11) Unity Comprovantes (Porta 3010)"
+echo "12) Bolão da Copa - Provedor ISP (Porta 3011)"
+echo "13) Central de Câmeras SNRD (Porta 3012)"
+echo "14) Central ITL de Câmeras & Segurança (Porta 3013)"
+echo "15) Central ITL de Câmeras & Segurança (Porta 3014)"
+read SYSTEM_CHOICE
+
+case $SYSTEM_CHOICE in
+  1)
+    SYSTEM_NAME="Opa Suite Dashboard"
+    APP_PORT=3000
+    PM2_PREFIX="opa-dash-api"
+    DEFAULT_DB_NAME="opadashboard"
+    DEFAULT_DB_USER="opadash"
+    IS_CATEQUESE=0
+    ;;
+  2)
+    SYSTEM_NAME="Unity Score SaaS"
+    APP_PORT=3001
+    PM2_PREFIX="unity-score-api"
+    DEFAULT_DB_NAME="unity_saas"
+    DEFAULT_DB_USER="unity_user"
+    IS_CATEQUESE=0
+    ;;
+  3)
+    SYSTEM_NAME="Pastoral da Catequese"
+    APP_PORT=3004
+    PM2_PREFIX="catequese-api"
+    DEFAULT_DB_NAME="catequese_db"
+    DEFAULT_DB_USER="catequese_user"
+    IS_CATEQUESE=1
+    ;;
+  4)
+    SYSTEM_NAME="ITL Cursos"
+    APP_PORT=3003
+    PM2_PREFIX="itl-cursos-api"
+    DEFAULT_DB_NAME="itl_cursos"
+    DEFAULT_DB_USER="itl_user"
+    IS_CATEQUESE=0
+    ;;
+  5)
+    SYSTEM_NAME="Rastreae"
+    APP_PORT=3002
+    PM2_PREFIX="rastreae-api"
+    DEFAULT_DB_NAME="rastreae_db"
+    DEFAULT_DB_USER="rastreae_user"
+    IS_CATEQUESE=0
+    ;;
+  6)
+    SYSTEM_NAME="iWedding SaaS"
+    APP_PORT=3005
+    PM2_PREFIX="iwedding-api"
+    DEFAULT_DB_NAME="iwedding_db"
+    DEFAULT_DB_USER="iwedding_user"
+    IS_CATEQUESE=0
+    ;;
+  7)
+    SYSTEM_NAME="StreamControl"
+    APP_PORT=3006
+    PM2_PREFIX="streamcontrol-api"
+    DEFAULT_DB_NAME="streamcontrol"
+    DEFAULT_DB_USER="stream_user"
+    IS_CATEQUESE=0
+    ;;
+  8)
+    SYSTEM_NAME="Unity DVR"
+    APP_PORT=3007
+    PM2_PREFIX="unity-dvr-api"
+    DEFAULT_DB_NAME="unity_dvr"
+    DEFAULT_DB_USER="dvr_user"
+    IS_CATEQUESE=0
+    ;;
+  9)
+    SYSTEM_NAME="Unity Tax Manager"
+    APP_PORT=3008
+    PM2_PREFIX="unity-tax-api"
+    DEFAULT_DB_NAME="unity_tax_db"
+    DEFAULT_DB_USER="tax_user"
+    IS_CATEQUESE=0
+    ;;
+  10)
+    SYSTEM_NAME="VooSimples"
+    APP_PORT=3009
+    PM2_PREFIX="voosimples-api"
+    DEFAULT_DB_NAME="voosimples_db"
+    DEFAULT_DB_USER="voos_user"
+    IS_CATEQUESE=0
+    ;;
+  11)
+    SYSTEM_NAME="Unity Comprovantes"
+    APP_PORT=3010
+    PM2_PREFIX="unity-comprovantes-api"
+    DEFAULT_DB_NAME="unity_comprovantes"
+    DEFAULT_DB_USER="comprovantes_user"
+    IS_CATEQUESE=0
+    ;;
+  12)
+    SYSTEM_NAME="Bolão da Copa - Provedor ISP"
+    APP_PORT=3011
+    PM2_PREFIX="bolao-copa-api"
+    DEFAULT_DB_NAME="copa_bolao_db"
+    DEFAULT_DB_USER="copa_user"
+    IS_CATEQUESE=0
+    ;;
+  13)
+    SYSTEM_NAME="Central de Câmeras SNRD"
+    APP_PORT=3012
+    PM2_PREFIX="snrd-cameras-api"
+    DEFAULT_DB_NAME="snrd_cameras"
+    DEFAULT_DB_USER="snrd_user"
+    IS_CATEQUESE=0
+    ;;
+  14)
+    SYSTEM_NAME="Central ITL de Câmeras & Segurança"
+    APP_PORT=3013
+    PM2_PREFIX="itl-cameras-api"
+    DEFAULT_DB_NAME="itl_cameras"
+    DEFAULT_DB_USER="itl_user"
+    IS_CATEQUESE=0
+    ;;
+  15)
+    SYSTEM_NAME="Central ITL de Câmeras & Segurança"
+    APP_PORT=3014
+    PM2_PREFIX="itl-cameras-api"
+    DEFAULT_DB_NAME="itl_cameras"
+    DEFAULT_DB_USER="itl_user"
+    IS_CATEQUESE=0
+    ;;
+  *)
+    echo -e "${RED}Opção inválida.${NC}"
+    exit 1
+    ;;
+esac
+
+# ==========================================
+# LÓGICA DE DESINSTALAÇÃO
+# ==========================================
+if [ "$ACTION_CHOICE" -eq 2 ]; then
+    echo -e "${RED}=== MODO DE DESINSTALAÇÃO ===${NC}"
+    echo -e "${YELLOW}Digite o domínio do sistema que deseja remover (ex: app.seudominio.com):${NC}"
+    read DOMAIN
+
+    if [ -z "$DOMAIN" ]; then
+      echo -e "${RED}Domínio é obrigatório para localizar a instalação.${NC}"
+      exit 1
+    fi
+
+    APP_DIR="/var/www/$DOMAIN"
+    SAFE_DOMAIN_SUFFIX=$(echo $DOMAIN | tr '.' '-')
+    PM2_NAME="${PM2_PREFIX}-${SAFE_DOMAIN_SUFFIX}"
+
+    echo -e "${RED}ATENÇÃO: Você está prestes a remover:${NC}"
+    echo -e "Sistema: $SYSTEM_NAME"
+    echo -e "Domínio: $DOMAIN"
+    echo -e "Processo PM2: $PM2_NAME"
+    echo ""
+    echo -e "${YELLOW}Tem certeza que deseja prosseguir? (s/n)${NC}"
+    read CONFIRM
+
+    if [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ]; then
+        echo "Operação cancelada."
+        exit 0
+    fi
+
+    echo -e "${YELLOW}1. Parando e removendo processo PM2...${NC}"
+    pm2 delete "$PM2_NAME" 2>/dev/null
+    pm2 save
+
+    echo -e "${YELLOW}2. Removendo configurações do Nginx...${NC}"
+    rm -f "/etc/nginx/sites-available/$DOMAIN"
+    rm -f "/etc/nginx/sites-enabled/$DOMAIN"
+    systemctl reload nginx
+
+    echo -e "${YELLOW}3. Removendo Certificado SSL (se existir)...${NC}"
+    certbot delete --cert-name "$DOMAIN" --non-interactive 2>/dev/null
+
+    echo -e "${YELLOW}4. Removendo arquivos da aplicação...${NC}"
+    if [ -d "$APP_DIR" ]; then
+        rm -rf "$APP_DIR"
+        echo "Diretório $APP_DIR removido."
+    fi
+
+    echo -e "${YELLOW}5. Banco de Dados${NC}"
+    echo -e "${RED}Deseja EXCLUIR o Banco de Dados? (s/n)${NC}"
+    read DB_CONFIRM
+
+    if [ "$DB_CONFIRM" == "s" ] || [ "$DB_CONFIRM" == "S" ]; then
+        echo -e "${YELLOW}Digite o NOME EXATO do banco de dados para excluir:${NC}"
+        read DB_TO_DELETE
+        if [ ! -z "$DB_TO_DELETE" ]; then
+            sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"${DB_TO_DELETE}\";"
+            echo -e "${GREEN}Banco de dados PostgreSQL removido com sucesso.${NC}"
+        fi
+    fi
+
+    echo -e "${GREEN}=== Desinstalação Concluída! ===${NC}"
+    exit 0
+fi
+
+# ==========================================
+# LÓGICA DE INSTALAÇÃO / ATUALIZAÇÃO
+# ==========================================
+
+echo -e "${GREEN}>> Selecionado: $SYSTEM_NAME${NC}"
+
+echo -e "${YELLOW}Digite o domínio (ex: app.seudominio.com):${NC}"
+read DOMAIN
+if [ -z "$DOMAIN" ]; then exit 1; fi
+
+APP_DIR="/var/www/$DOMAIN"
+SAFE_DOMAIN_SUFFIX=$(echo $DOMAIN | tr '.' '-')
+PM2_NAME="${PM2_PREFIX}-${SAFE_DOMAIN_SUFFIX}"
+
+# Verifica se é atualização
+IS_UPDATE=0
+if [ -d "$APP_DIR/.git" ]; then IS_UPDATE=1; fi
+
+# Coleta de dados do Banco com preenchimento automático
+EXISTING_DB_HOST="localhost"
+EXISTING_DB_USER="${DEFAULT_DB_USER}"
+EXISTING_DB_NAME="${DEFAULT_DB_NAME}"
+EXISTING_DB_PASSWORD=""
+EXISTING_APP_PORT="${APP_PORT}"
+
+if [ -f "$APP_DIR/.env" ]; then
+  VAL_HOST=$(grep -E "^DB_HOST=" "$APP_DIR/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+  VAL_USER=$(grep -E "^DB_USER=" "$APP_DIR/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+  VAL_NAME=$(grep -E "^DB_NAME=" "$APP_DIR/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+  VAL_PASS=$(grep -E "^DB_PASSWORD=" "$APP_DIR/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+  VAL_PORT=$(grep -E "^PORT=" "$APP_DIR/.env" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+
+  if [ ! -z "$VAL_HOST" ]; then EXISTING_DB_HOST="$VAL_HOST"; fi
+  if [ ! -z "$VAL_USER" ]; then EXISTING_DB_USER="$VAL_USER"; fi
+  if [ ! -z "$VAL_NAME" ]; then EXISTING_DB_NAME="$VAL_NAME"; fi
+  if [ ! -z "$VAL_PASS" ]; then EXISTING_DB_PASSWORD="$VAL_PASS"; fi
+  if [ ! -z "$VAL_PORT" ]; then EXISTING_APP_PORT="$VAL_PORT"; fi
+fi
+
+# Coleta de dados do Banco
+echo -e "${YELLOW}Configuração do Banco de Dados PostgreSQL:${NC}"
+echo -e "Nome do Banco [${EXISTING_DB_NAME}]:"
+read DB_NAME
+DB_NAME=${DB_NAME:-$EXISTING_DB_NAME}
+
+echo -e "Usuário do Banco [${EXISTING_DB_USER}]:"
+read DB_USER
+DB_USER=${DB_USER:-$EXISTING_DB_USER}
+
+if [ ! -z "$EXISTING_DB_PASSWORD" ]; then
+  echo -e "Senha do Banco [Pressione Enter para manter a senha atual]:"
+  read -s DB_PASSWORD
+  DB_PASSWORD=${DB_PASSWORD:-$EXISTING_DB_PASSWORD}
+else
+  echo -e "Senha do Banco:"
+  read -s DB_PASSWORD
+fi
+echo
+
+if [ $IS_UPDATE -eq 0 ]; then
+    echo -e "${YELLOW}Digite a URL do repositório GitHub:${NC}"
+    read REPO_URL
+fi
+
+# Instalação de dependências do sistema
+echo -e "${YELLOW}Instalando pacotes do sistema (Nginx, Certbot, Git, PostgreSQL, Ffmpeg...)${NC}"
+apt update && apt install -y nginx libnginx-mod-rtmp certbot python3-certbot-nginx curl git postgresql postgresql-contrib build-essential ffmpeg gnupg ca-certificates
+
+systemctl start postgresql
+systemctl enable postgresql
+systemctl start nginx
+systemctl enable nginx
+
+# Garantir que o PostgreSQL está rodando
+check_and_install_postgresql
+
+# Configuração automática do módulo RTMP no Nginx com suporte a HLS
+echo -e "${YELLOW}Criando e configurando permissões para o diretório HLS...${NC}"
+mkdir -p /tmp/hls
+chown -R www-data:www-data /tmp/hls 2>/dev/null || true
+chmod -R 777 /tmp/hls
+
+if [ -f /etc/nginx/nginx.conf ]; then
+    if ! grep -q "rtmp {" /etc/nginx/nginx.conf; then
+        echo -e "${YELLOW}Configurando bloco RTMP com HLS em /etc/nginx/nginx.conf...${NC}"
+        cat >> /etc/nginx/nginx.conf <<EOL
+
+rtmp {
+    server {
+        listen 1935;
+        chunk_size 4096;
+
+        application live {
+            live on;
+            record off;
+            meta copy;
+
+            # HLS Streaming Configurations
+            hls on;
+            hls_path /tmp/hls;
+            hls_fragment 3s;
+            hls_playlist_length 60s;
+            hls_cleanup on;
+        }
+    }
+}
+EOL
+        echo -e "${GREEN}Módulo RTMP/HLS configurado com sucesso na porta 1935!${NC}"
+    elif ! grep -q "hls_path" /etc/nginx/nginx.conf; then
+        echo -e "${YELLOW}Atualizando bloco RTMP existente para incluir suporte HLS em /etc/nginx/nginx.conf...${NC}"
+        cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
+        sed -i 's/live on;/live on;\n            hls on;\n            hls_path \/tmp\/hls;\n            hls_fragment 3s;\n            hls_playlist_length 60s;\n            hls_cleanup on;/g' /etc/nginx/nginx.conf
+        echo -e "${GREEN}Suporte HLS adicionado ao bloco RTMP com sucesso!${NC}"
+    fi
+fi
+
+# Configuração de Firewall para a porta RTMP (1935)
+if command -v ufw &> /dev/null; then
+    echo -e "${YELLOW}Liberando porta RTMP 1935/tcp no UFW...${NC}"
+    ufw allow 1935/tcp
+fi
+if command -v iptables &> /dev/null; then
+    echo -e "${YELLOW}Liberando porta RTMP 1935/tcp no iptables...${NC}"
+    iptables -A INPUT -p tcp --dport 1935 -j ACCEPT
+fi
+
+# Instalação do Node.js v20 LTS
+if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
+    echo -e "${YELLOW}Node.js/npm não encontrados. Instalando Node.js v20 LTS via script oficial NodeSource...${NC}"
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt install -y nodejs
+fi
+
+# Instalação global e persistência do PM2
+if ! command -v pm2 &> /dev/null; then
+    echo -e "${YELLOW}PM2 não encontrado. Instalando PM2 globalmente via npm...${NC}"
+    npm install -g pm2
+fi
+
+echo -e "${YELLOW}Garantindo persistência e inicialização automática do PM2 no boot da VPS...${NC}"
+CURRENT_USER=$(whoami)
+STARTUP_LINE=$(env PATH=$PATH:/usr/bin pm2 startup systemd -u "$CURRENT_USER" --hp "/root" 2>/dev/null | grep -E "(sudo env PATH|env PATH)" | tail -n 1 | sed 's/sudo //g')
+if [ ! -z "$STARTUP_LINE" ]; then
+    eval "$STARTUP_LINE" &>/dev/null || true
+fi
+systemctl enable "pm2-${CURRENT_USER}" &>/dev/null || systemctl enable pm2 &>/dev/null || true
+systemctl start "pm2-${CURRENT_USER}" &>/dev/null || systemctl start pm2 &>/dev/null || true
+
+# Configuração PostgreSQL
+if [ ! -z "$DB_PASSWORD" ]; then
+    echo -e "${YELLOW}Configurando banco de dados e usuário no PostgreSQL...${NC}"
+    ensure_postgresql_running
+
+    if is_postgres_healthy; then
+        # Criar usuário no PostgreSQL se não existir e definir senha
+        sudo -u postgres psql -c "DO \$body\$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${DB_USER}') THEN CREATE USER ${DB_USER} WITH ENCRYPTED PASSWORD '${DB_PASSWORD}'; ELSE ALTER USER ${DB_USER} WITH ENCRYPTED PASSWORD '${DB_PASSWORD}'; END IF; END \$body\$;" 2>/dev/null || true
+        
+        # Criar banco de dados se não existir
+        sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'" 2>/dev/null | grep -q 1 || sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};" 2>/dev/null || true
+        
+        # Conceder privilégios completos
+        sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};" 2>/dev/null || true
+        sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};" 2>/dev/null || true
+        sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${DB_USER};" 2>/dev/null || true
+        sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${DB_USER};" 2>/dev/null || true
+        sudo -u postgres psql -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${DB_USER};" 2>/dev/null || true
+        sudo -u postgres psql -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${DB_USER};" 2>/dev/null || true
+        
+        echo -e "${GREEN}Fase do PostgreSQL configurada com sucesso!${NC}"
+    else
+        echo -e "${YELLOW}Aviso: PostgreSQL não está acessível no socket padrão neste momento.${NC}"
+        echo -e "${GREEN}O sistema operará normalmente através do motor SQLite e JSON Store local de alta performance.${NC}"
+    fi
+fi
+
+# Download ou atualização do código fonte
+mkdir -p $APP_DIR
+if [ $IS_UPDATE -eq 1 ]; then
+    echo -e "${YELLOW}Atualizando código fonte já existente (git pull)...${NC}"
+    cd $APP_DIR && git pull
+else
+    echo -e "${YELLOW}Baixando nova cópia do repositório...${NC}"
+    git clone $REPO_URL $APP_DIR
+    cd $APP_DIR
+fi
+
+# Executa as tabelas SQL da aplicação
+if [ ! -z "$DB_PASSWORD" ]; then
+    SCHEMA_PATH=""
+    if [ -f "$APP_DIR/schema.sql" ]; then
+        SCHEMA_PATH="$APP_DIR/schema.sql"
+    elif [ -f "$APP_DIR/server/schema.sql" ]; then
+        SCHEMA_PATH="$APP_DIR/server/schema.sql"
+    fi
+
+    if [ ! -z "$SCHEMA_PATH" ]; then
+        import_sql_schema "${DB_NAME}" "${SCHEMA_PATH}" "${DB_USER}" "${DB_PASSWORD}"
+    fi
+fi
+
+# Configuração e Build
+cd $APP_DIR
+
+SECRET_KEY=$(openssl rand -base64 32)
+if [ -f .env ]; then
+  EXISTING_SECRET=$(grep -E "^JWT_SECRET=" .env | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+  if [ ! -z "$EXISTING_SECRET" ]; then
+    SECRET_KEY="$EXISTING_SECRET"
+  fi
+fi
+
+cat > .env <<EOL
+PORT=${APP_PORT}
+APP_PORT=${APP_PORT}
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=${DB_USER}
+DB_PASSWORD="${DB_PASSWORD}"
+DB_NAME=${DB_NAME}
+NODE_ENV=production
+JWT_SECRET="${SECRET_KEY}"
+DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@localhost:5432/${DB_NAME}"
+EOL
+
+npm install && npm run build
+PM2_START_DIR="$APP_DIR"
+
+if [ -f "dist/server.cjs" ]; then
+    PM2_SCRIPT="dist/server.cjs"
+elif [ -f "server.js" ]; then
+    PM2_SCRIPT="server.js"
+elif [ -f "server/index.ts" ]; then
+    PM2_SCRIPT="server/index.ts"
+else
+    PM2_SCRIPT="server.ts"
+fi
+
+# PM2 Deployment com Limites de Memória e Auto-Restart Seguro
+cd $PM2_START_DIR
+pm2 delete "$PM2_NAME" 2>/dev/null || true
+pm2 delete "central-itl" 2>/dev/null || true
+
+if [[ "$PM2_SCRIPT" == *.ts ]]; then
+    PORT=$APP_PORT APP_PORT=$APP_PORT pm2 start "npx tsx $PM2_SCRIPT" --name "$PM2_NAME" --max-memory-restart 800M --restart-delay 4000 --update-env --env PORT="$APP_PORT" --env APP_PORT="$APP_PORT"
+else
+    PORT=$APP_PORT APP_PORT=$APP_PORT pm2 start "$PM2_SCRIPT" --name "$PM2_NAME" --max-memory-restart 800M --restart-delay 4000 --update-env --env PORT="$APP_PORT" --env APP_PORT="$APP_PORT"
+fi
+
+pm2 save --force
+echo -e "${GREEN}Processo PM2 '${PM2_NAME}' iniciado na porta ${APP_PORT}!${NC}"
+
+# Nginx Configuration
+NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
+WEB_ROOT="$APP_DIR/dist"
+if [ ! -d "$WEB_ROOT" ] && [ -d "$APP_DIR/build" ]; then WEB_ROOT="$APP_DIR/build"; fi
+
+cat > $NGINX_CONF <<EOL
+server {
+    listen 80;
+    server_name $DOMAIN;
+    root $WEB_ROOT;
+    index index.html;
+    client_max_body_size 200M;
+
+    location /live {
+        proxy_pass http://localhost:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_cache_bypass \$http_upgrade;
+    }
+
+    location /api {
+        proxy_pass http://localhost:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_cache_bypass \$http_upgrade;
+    }
+
+    location /recordings {
+        proxy_pass http://localhost:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+        client_max_body_size 200M;
+    }
+
+    location /uploads {
+        proxy_pass http://localhost:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+        client_max_body_size 200M;
+    }
+
+    location /downloads {
+        alias $WEB_ROOT/downloads;
+        try_files \$uri \$uri/ =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+
+    include /etc/nginx/sites-available/${DOMAIN}.custom*;
+}
+EOL
+
+ln -sf "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
+[ -f /etc/nginx/sites-enabled/default ] && rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl restart nginx
+
+# ==========================================
+# Geração Automática do Instalador DVR Desktop Windows
+# ==========================================
+if [ -d "$APP_DIR/apps/dvr-desktop" ]; then
+    echo -e "${YELLOW}Compilando e gerando Visualizador DVR Desktop pré-configurado para https://${DOMAIN}...${NC}"
+    mkdir -p "$APP_DIR/public/downloads" "$APP_DIR/dist/downloads"
+    
+    cd "$APP_DIR/apps/dvr-desktop"
+    cat > dvr-config.json <<EOL
+{
+  "serverUrl": "https://${DOMAIN}",
+  "domain": "${DOMAIN}",
+  "systemName": "${SYSTEM_NAME}",
+  "mode": "DVR_VIEWER",
+  "cloudRecording": true,
+  "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOL
+
+    npm install --production=false
+    npm run build
+    node scripts/package-bundle.js "https://${DOMAIN}" "$APP_DIR"
+    cd "$APP_DIR"
+
+    echo -e "${GREEN}✔ Visualizador DVR Desktop gerado com sucesso (Gravação em Nuvem)!${NC}"
+    echo -e "${GREEN}✔ Disponível para download em: https://${DOMAIN}/downloads/itl-dvr-agent-windows.zip${NC}"
+fi
+
+# SSL certbot
+certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN --redirect
+
+echo -e "${GREEN}=== Instalação / Atualização Concluída com Sucesso! ===${NC}"
+echo -e "Nome do Sistema: $SYSTEM_NAME"
+echo -e "URL de Acesso: https://$DOMAIN"
+echo -e "Porta do Backend: $APP_PORT"
+echo -e "Nome do Processo PM2: $PM2_NAME"
+if [ -f "$APP_DIR/public/downloads/itl-dvr-agent-windows.zip" ]; then
+    echo -e "Download do Instalador DVR: https://$DOMAIN/downloads/itl-dvr-agent-windows.zip"
+fi

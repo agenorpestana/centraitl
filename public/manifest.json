@@ -1,0 +1,25 @@
+{
+  "short_name": "Central ITL",
+  "name": "Central ITL - Monitoramento 24h & Câmeras em Nuvem",
+  "description": "Sistema de Monitoramento 24h, Câmeras em Nuvem e Vizinhança Protegida ITL",
+  "icons": [
+    {
+      "src": "/pwa-icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192 512x512",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/4836/4836691.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#020617",
+  "theme_color": "#10b981",
+  "display": "standalone",
+  "orientation": "any",
+  "categories": ["utilities", "security"]
+}

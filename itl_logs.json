@@ -1,0 +1,290 @@
+[
+  {
+    "id": "log-1792425741316-373",
+    "userName": "ITL Admin",
+    "action": "Arquivo de backup 'safety_before_postgres_restore_1792425726903.json' removido do servidor",
+    "category": "BACKUP",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-19 16:02:21"
+  },
+  {
+    "id": "log-1792425726904-55",
+    "userName": "ITL Admin",
+    "action": "Restauração de Banco PostgreSQL (.sql) executada",
+    "category": "BACKUP",
+    "details": "Script SQL executado (0 instruções processadas, PostgreSQL Ativo: Não)",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-19 16:02:06"
+  },
+  {
+    "id": "log-1792425690310-457",
+    "userName": "ITL Admin",
+    "action": "Restauração de Backup JSON executada com sucesso",
+    "category": "BACKUP",
+    "details": "Restaurados: 1 câmeras, 1 usuários, 0 planos, 0 faturas",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-19 16:01:30"
+  },
+  {
+    "id": "log-1792425662179-357",
+    "userName": "ITL Admin",
+    "action": "Backup do Arquivo JSON executado com sucesso",
+    "category": "BACKUP",
+    "details": "Arquivo 'itl_backup_store_2026-10-19T16-01-02.json' salvo em /app/applet/backups (12 KB)",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-19 16:01:02"
+  },
+  {
+    "id": "log-1792425658463-224",
+    "userName": "ITL Admin",
+    "action": "Backup do Banco PostgreSQL executado com sucesso",
+    "category": "BACKUP",
+    "details": "Arquivo 'itl_postgres_backup_2026-10-19T16-00-58.sql' salvo em /app/applet/backups (14.2 KB)",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-19 16:00:58"
+  },
+  {
+    "id": "log-1792423314265-523",
+    "userName": "ITL Admin",
+    "action": "Gravação em nuvem excluída permanentemente: rec-disk-cam-01_20261019_140000_mp4",
+    "category": "RECORDING",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-19 15:21:54"
+  },
+  {
+    "id": "log-1792423308608-572",
+    "userName": "ITL Admin",
+    "action": "Gravação em nuvem excluída permanentemente: rec-disk-estacionamento_2026-10-19_cam_estacionamento_143000_mp4",
+    "category": "RECORDING",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-19 15:21:48"
+  },
+  {
+    "id": "log-1791405223332-923",
+    "userName": "ITL Admin",
+    "action": "Novo usuário cadastrado: Visualizador Portaria Teste (VIEWER)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-07 20:33:43"
+  },
+  {
+    "id": "log-1791405142934-935",
+    "userName": "ITL Admin",
+    "action": "Novo usuário cadastrado: Visualizador Portaria 1 (VIEWER)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-07 20:32:22"
+  },
+  {
+    "id": "log-1791405105939-166",
+    "userName": "ITL Admin",
+    "action": "Gravação em nuvem excluída permanentemente: test-id",
+    "category": "RECORDING",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-07 20:31:45"
+  },
+  {
+    "id": "log-1791405087861-584",
+    "userName": "ITL Admin",
+    "action": "Gravação em nuvem excluída permanentemente: rec-disk-rec_auto_cam-5218_1999999999_mp4",
+    "category": "RECORDING",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-07 20:31:27"
+  },
+  {
+    "id": "log-1791382069997-571",
+    "userName": "ITL Admin",
+    "action": "Gravação em nuvem excluída permanentemente: rec-disk-rec_auto_cam-5218_1775567890_mp4",
+    "category": "RECORDING",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-07 14:07:49"
+  },
+  {
+    "id": "log-1791382049419-437",
+    "userName": "ITL Admin",
+    "action": "Limite de armazenamento de gravações alterado para 100 GB (0 fatias removidas)",
+    "category": "SYSTEM",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-07 14:07:29"
+  },
+  {
+    "id": "log-1791377999704-934",
+    "userName": "ITL Admin",
+    "action": "Gravação em nuvem excluída permanentemente: rec-disk-rec_auto_testcam_9999999999_mp4",
+    "category": "RECORDING",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-07 12:59:59"
+  },
+  {
+    "id": "log-1791292801730-773",
+    "userName": "ITL Admin",
+    "action": "Câmera atualizada: Câmera Entrada Norte Estável",
+    "category": "SYSTEM",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-06 13:20:01"
+  },
+  {
+    "id": "log-1790967194772-765",
+    "userName": "ITL Admin",
+    "action": "Permissões/dados do usuário Maria Silva Editada atualizados",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:53:14"
+  },
+  {
+    "id": "log-1790967189975-219",
+    "userName": "ITL Admin",
+    "action": "Novo usuário cadastrado: Maria Silva (OPERATOR)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:53:09"
+  },
+  {
+    "id": "log-1790966885271-369",
+    "userName": "ITL Admin",
+    "action": "Permissões/dados do usuário Usuario Teste Local Editado atualizados",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:48:05"
+  },
+  {
+    "id": "log-1790966881897-751",
+    "userName": "ITL Admin",
+    "action": "Novo usuário cadastrado: Usuario Teste Local (RESIDENT)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:48:01"
+  },
+  {
+    "id": "log-1790965564436-655",
+    "userName": "ITL Admin",
+    "action": "Usuário removido: user-8108",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:26:04"
+  },
+  {
+    "id": "log-1790965558220-138",
+    "userName": "ITL Admin",
+    "action": "Permissões/dados do usuário Carlos Gerente Atualizado atualizados",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:25:58"
+  },
+  {
+    "id": "log-1790965540983-269",
+    "userName": "ITL Admin",
+    "action": "Novo usuário cadastrado: Carlos Gerente (COMPANY_ADMIN)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:25:40"
+  },
+  {
+    "id": "log-1790965068112-885",
+    "userName": "ITL Admin",
+    "action": "Novo usuário cadastrado: Teste Usuario (RESIDENT)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-10-02 18:17:48"
+  },
+  {
+    "id": "log-1789425586595-704",
+    "userName": "Super Admin Unity",
+    "action": "Login efetuado com sucesso (ADMIN)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:46"
+  },
+  {
+    "id": "log-1789425584688-989",
+    "userName": "Super Admin Unity",
+    "action": "Login efetuado com sucesso (ADMIN)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:44"
+  },
+  {
+    "id": "log-1789425569867-448",
+    "userName": "Super Admin Unity",
+    "action": "Login efetuado com sucesso (ADMIN)",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:29"
+  },
+  {
+    "id": "log-1789425556417-147",
+    "userName": "Sistema Security",
+    "action": "Tentativa de login com usuário inexistente: admin@sistema.com.br",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:16"
+  },
+  {
+    "id": "log-1789425553563-289",
+    "userName": "Sistema Security",
+    "action": "Tentativa de login com usuário inexistente: admin@sistema.com.br",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:13"
+  },
+  {
+    "id": "log-1789425546160-994",
+    "userName": "Sistema Security",
+    "action": "Tentativa de login com usuário inexistente: admin@sistema.com.br",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:39:06"
+  },
+  {
+    "id": "log-1789425532752-183",
+    "userName": "Sistema Security",
+    "action": "Tentativa de login com usuário inexistente: admin@itl.com.br",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:38:52"
+  },
+  {
+    "id": "log-1789425529843-680",
+    "userName": "Sistema Security",
+    "action": "Tentativa de login com usuário inexistente: test@itl.com.br",
+    "category": "AUTH",
+    "details": "",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-09-14 22:38:49"
+  },
+  {
+    "id": "log-101",
+    "userName": "Super Admin Unity",
+    "action": "Sistema Central ITL Inicializado",
+    "category": "SYSTEM",
+    "details": "Serviço de gerenciamento de transmissões e gravações ativado",
+    "ipAddress": "127.0.0.1",
+    "timestamp": "2026-07-29 05:00:00"
+  }
+]

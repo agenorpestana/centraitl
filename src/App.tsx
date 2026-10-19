@@ -1,0 +1,1226 @@
+import React, { useState, useEffect } from 'react';
+import { Navbar } from './components/Navbar';
+import { Sidebar } from './components/Sidebar';
+import { Dashboard } from './components/Dashboard';
+import { CameraGrid } from './components/CameraGrid';
+import { CameraMap } from './components/CameraMap';
+import { CloudRecordingsVault } from './components/CloudRecordingsVault';
+import { CameraAdminPanel } from './components/CameraAdminPanel';
+import { UserManagement } from './components/UserManagement';
+import { ActivityReports } from './components/ActivityReports';
+import { BackupManager } from './components/BackupManager';
+import { CameraDetailModal } from './components/CameraDetailModal';
+import { AdminLoginModal } from './components/AdminLoginModal';
+import { LandingPage } from './components/LandingPage';
+import { FinancialManagement } from './components/FinancialManagement';
+import { SystemBlockedOverlay } from './components/SystemBlockedOverlay';
+import { FinancialAlertBanner } from './components/FinancialAlertBanner';
+import { MercadoPagoSettingsModal } from './components/MercadoPagoSettingsModal';
+import { DatabaseDiagnosticsPanel } from './components/DatabaseDiagnosticsPanel';
+import { ApiDocumentationPanel } from './components/ApiDocumentationPanel';
+import { WhiteLabelAdminPanel } from './components/WhiteLabelAdminPanel';
+import { CompanyClientManager } from './components/CompanyClientManager';
+import { DvrAgentManager } from './components/DvrAgentManager';
+
+import {
+  Camera,
+  CloudRecording,
+  User,
+  ActivityLog,
+  BackupConfig,
+  NotificationConfig,
+  E2EESettings,
+  Invoice,
+  FinancialPlan,
+  MercadoPagoConfig,
+  ArchitectureConfig,
+  StreamInfo,
+  Company,
+  WhiteLabelConfig,
+} from './types';
+
+import {
+  INITIAL_CAMERAS,
+  INITIAL_RECORDINGS,
+  INITIAL_USERS,
+  INITIAL_LOGS,
+  INITIAL_BACKUP_CONFIG,
+  INITIAL_NOTIFICATION_CONFIG,
+  INITIAL_E2EE_SETTINGS,
+  INITIAL_ARCHITECTURE_CONFIG,
+  INITIAL_STREAMS,
+} from './data/mockData';
+
+import {
+  checkInvoiceFinancialStatus,
+  INITIAL_MP_CONFIG,
+  INITIAL_PLANS,
+} from './lib/financial';
+
+import {
+  DEFAULT_ITL_WHITELABEL,
+  INITIAL_COMPANIES,
+  applyThemeVariables,
+  resolveWhiteLabelConfig,
+} from './lib/whitelabel';
+
+import {
+  purgeInsecureLocalStorage,
+  getSecureSessionUser,
+  setSecureSessionUser,
+  clearAuthSession,
+  getAuthHeaders,
+} from './lib/security';
+
+export function isTabPermitted(tabId: string, user: User | null | undefined): boolean {
+  if (!user) return false;
+  if (user.role === 'ADMIN') return true;
+
+  if (user.role === 'VIEWER' || user.role === 'RESIDENT') {
+    const forbiddenTabs = [
+      'dashboard',
+      'white-label-admin',
+      'company-clients',
+      'dvr-agents',
+      'camera-admin',
+      'user-management',
+      'api-docs',
+      'financial-management',
+      'activity-reports',
+      'backup-manager',
+      'db-diagnostics',
+    ];
+    if (forbiddenTabs.includes(tabId)) return false;
+
+    if (Array.isArray(user.allowedTabs)) {
+      return user.allowedTabs.includes(tabId);
+    }
+    if (user.role === 'VIEWER') {
+      return tabId === 'live-grid' || (tabId === 'cloud-recordings' && Boolean(user.customPermissions?.canViewRecordings));
+    }
+    if (user.role === 'RESIDENT') {
+      return tabId === 'live-grid' || tabId === 'camera-map' || (tabId === 'cloud-recordings' && Boolean(user.customPermissions?.canViewRecordings));
+    }
+  }
+
+  if (Array.isArray(user.allowedTabs) && user.allowedTabs.length > 0) {
+    return user.allowedTabs.includes(tabId);
+  }
+
+  if (tabId === 'cloud-recordings') return Boolean(user.customPermissions?.canViewRecordings);
+  if (tabId === 'camera-admin' || tabId === 'dvr-agents') return Boolean(user.customPermissions?.canManageCameras);
+  if (tabId === 'financial-management') return Boolean(user.customPermissions?.canManageFinancial);
+  if (tabId === 'activity-reports') return Boolean(user.customPermissions?.canExportReports);
+  if (['backup-manager', 'db-diagnostics', 'api-docs', 'user-management', 'white-label-admin'].includes(tabId)) return false;
+
+  return true;
+}
+
+export default function App() {
+  // Authentication State with LocalStorage Persistence
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('itl_logged_in');
+      return stored === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const [activeUser, setActiveUser] = useState<User>(() => {
+    try {
+      const stored = localStorage.getItem('itl_active_user');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return INITIAL_USERS[0];
+  });
+
+  // Active Navigation Tab with LocalStorage Persistence
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem('itl_active_tab');
+      const disabledTabs = ['event-map', 'architecture-config', 'push-notifications', 'e2ee-vault', 'lpr-recognition', 'facial-recognition', 'ai-hub', 'motion-alerts', 'lgpd-audit'];
+      if (stored && !disabledTabs.includes(stored)) {
+        return stored;
+      }
+    } catch {}
+    return 'live-grid';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('itl_logged_in', isLoggedIn ? 'true' : 'false');
+    } catch {}
+  }, [isLoggedIn]);
+
+  useEffect(() => {
+    try {
+      if (activeUser) {
+        localStorage.setItem('itl_active_user', JSON.stringify(activeUser));
+
+        // Validação estrita de abas para o usuário ativo: redirecionar se estiver em aba não permitida
+        if (!isTabPermitted(activeTab, activeUser)) {
+          let fallbackTab = 'live-grid';
+          if (Array.isArray(activeUser.allowedTabs) && activeUser.allowedTabs.length > 0) {
+            const firstValid = activeUser.allowedTabs.find((t) => isTabPermitted(t, activeUser));
+            if (firstValid) fallbackTab = firstValid;
+          }
+          setActiveTab(fallbackTab);
+        }
+      }
+    } catch {}
+  }, [activeUser, activeTab]);
+
+  useEffect(() => {
+    try {
+      if (activeTab) {
+        localStorage.setItem('itl_active_tab', activeTab);
+      }
+    } catch {}
+  }, [activeTab]);
+
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+
+  // Application Data States with Instant LocalStorage Persistence
+  const [cameras, setCameras] = useState<Camera[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_cameras');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_CAMERAS;
+  });
+
+  const [recordings, setRecordings] = useState<CloudRecording[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_recordings');
+      if (stored !== null) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return INITIAL_RECORDINGS;
+  });
+
+  const [users, setUsers] = useState<User[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_users');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_USERS;
+  });
+
+  const [logs, setLogs] = useState<ActivityLog[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_logs');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_LOGS;
+  });
+
+  const [backupConfig, setBackupConfig] = useState<BackupConfig>(() => {
+    try {
+      const stored = localStorage.getItem('itl_backup_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return INITIAL_BACKUP_CONFIG;
+  });
+
+  const [notificationConfig, setNotificationConfig] = useState<NotificationConfig>(() => {
+    try {
+      const stored = localStorage.getItem('itl_notification_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return INITIAL_NOTIFICATION_CONFIG;
+  });
+
+  const [e2eeSettings, setE2eesettings] = useState<E2EESettings>(INITIAL_E2EE_SETTINGS);
+
+  // Architecture States
+  const [architectureConfig, setArchitectureConfig] = useState<ArchitectureConfig>(() => {
+    try {
+      const stored = localStorage.getItem('itl_architecture_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return INITIAL_ARCHITECTURE_CONFIG;
+  });
+
+  const [streams, setStreams] = useState<StreamInfo[]>(INITIAL_STREAMS);
+
+  // Financial States
+  const [plans, setPlans] = useState<FinancialPlan[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_plans');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_PLANS;
+  });
+
+  const [invoices, setInvoices] = useState<Invoice[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_invoices');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [
+      {
+        id: 'inv-1001',
+        userId: 'user-superadmin-01',
+        userName: 'Super Admin Unity',
+        userEmail: 'admin@sistema.com.br',
+        planName: 'Plano Vizinhança Protegida ITL',
+        amount: 149.90,
+        originalAmount: 149.90,
+        dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        status: 'PAID',
+        isProRata: false,
+        paymentDate: new Date().toISOString().split('T')[0],
+        createdAt: '2026-07-01',
+      },
+    ];
+  });
+
+  const [mpConfig, setMpConfig] = useState<MercadoPagoConfig>(() => {
+    try {
+      const stored = localStorage.getItem('itl_mp_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return INITIAL_MP_CONFIG;
+  });
+  const [isMpSettingsOpen, setIsMpSettingsOpen] = useState(false);
+
+  // Multi-tenancy & White Label States
+  const [companies, setCompanies] = useState<Company[]>(() => {
+    try {
+      const stored = localStorage.getItem('itl_companies');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return INITIAL_COMPANIES;
+  });
+
+  const [whitelabelConfig, setWhitelabelConfig] = useState<WhiteLabelConfig>(() => {
+    try {
+      const stored = localStorage.getItem('itl_whitelabel_config');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return DEFAULT_ITL_WHITELABEL;
+  });
+
+  const [previewCompany, setPreviewCompany] = useState<Company | null>(null);
+
+  // Modal States
+  const [inspectingCamera, setInspectingCamera] = useState<Camera | null>(null);
+  const [isE2EEModalOpen, setIsE2EEModalOpen] = useState(false);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+
+  // Security purge on mount (Removes any legacy plaintext passwords)
+  useEffect(() => {
+    purgeInsecureLocalStorage();
+    const secureUser = getSecureSessionUser();
+    if (secureUser) {
+      setActiveUser(secureUser);
+    }
+  }, []);
+
+  // Sync states to local storage to ensure 0ms latency and 0 data-loss on F5
+  useEffect(() => {
+    try {
+      if (Array.isArray(cameras)) {
+        localStorage.setItem('itl_cameras', JSON.stringify(cameras));
+      }
+    } catch {}
+  }, [cameras]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(recordings)) {
+        localStorage.setItem('itl_recordings', JSON.stringify(recordings));
+      }
+    } catch {}
+  }, [recordings]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(users)) {
+        localStorage.setItem('itl_users', JSON.stringify(users));
+      }
+    } catch {}
+  }, [users]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(companies)) {
+        localStorage.setItem('itl_companies', JSON.stringify(companies));
+      }
+    } catch {}
+  }, [companies]);
+
+  useEffect(() => {
+    try {
+      if (whitelabelConfig) {
+        localStorage.setItem('itl_whitelabel_config', JSON.stringify(whitelabelConfig));
+      }
+    } catch {}
+  }, [whitelabelConfig]);
+
+  // Apply theme variables dynamically whenever active user, company or preview changes
+  useEffect(() => {
+    const userCompany = activeUser?.companyId ? companies.find((c) => c.id === activeUser.companyId) : null;
+    const effectiveThemeConfig = resolveWhiteLabelConfig(previewCompany || userCompany, whitelabelConfig);
+    if (effectiveThemeConfig?.colors?.dark) {
+      applyThemeVariables(effectiveThemeConfig.colors.dark);
+    }
+  }, [activeUser, companies, whitelabelConfig, previewCompany]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(logs)) {
+        localStorage.setItem('itl_logs', JSON.stringify(logs));
+      }
+    } catch {}
+  }, [logs]);
+
+  useEffect(() => {
+    try {
+      if (backupConfig) {
+        localStorage.setItem('itl_backup_config', JSON.stringify(backupConfig));
+      }
+    } catch {}
+  }, [backupConfig]);
+
+  useEffect(() => {
+    try {
+      if (notificationConfig) {
+        localStorage.setItem('itl_notification_config', JSON.stringify(notificationConfig));
+      }
+    } catch {}
+  }, [notificationConfig]);
+
+  useEffect(() => {
+    try {
+      if (architectureConfig) {
+        localStorage.setItem('itl_architecture_config', JSON.stringify(architectureConfig));
+      }
+    } catch {}
+  }, [architectureConfig]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(plans)) {
+        localStorage.setItem('itl_plans', JSON.stringify(plans));
+      }
+    } catch {}
+  }, [plans]);
+
+  useEffect(() => {
+    try {
+      if (Array.isArray(invoices)) {
+        localStorage.setItem('itl_invoices', JSON.stringify(invoices));
+      }
+    } catch {}
+  }, [invoices]);
+
+  useEffect(() => {
+    try {
+      if (mpConfig) {
+        localStorage.setItem('itl_mp_config', JSON.stringify(mpConfig));
+      }
+    } catch {}
+  }, [mpConfig]);
+
+  // Fetch initial data from Express backend server with instant fallback
+  useEffect(() => {
+    let isMounted = true;
+    const fetchBackendData = async () => {
+      try {
+        const authHeaders = {
+          'x-user-id': activeUser.id,
+          'x-user-email': activeUser.email,
+          'Authorization': `Bearer ${activeUser.id}`,
+        };
+
+        const [
+          cRes,
+          rRes,
+          uRes,
+          lRes,
+          bRes,
+          nRes,
+          pRes,
+          iRes,
+          mpRes,
+          archCfgRes,
+          streamsRes,
+          companiesRes,
+          wlRes,
+        ] = await Promise.all([
+          fetch('/api/cameras', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/recordings', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/users', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/logs').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/backup').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/notifications').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/financial/plans').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/financial/invoices').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/mercadopago/config').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/v1/architecture/config').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/v1/streams', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/companies').then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetch('/api/whitelabel/config', { headers: authHeaders }).then((r) => r.ok ? r.json() : null).catch(() => null),
+        ]);
+
+        if (!isMounted) return;
+
+        if (Array.isArray(cRes)) {
+          setCameras((prev) => (cRes.length > 0 ? cRes : prev.length > 0 ? prev : cRes));
+        }
+        if (Array.isArray(rRes)) {
+          setRecordings(rRes);
+          try {
+            localStorage.setItem('itl_recordings', JSON.stringify(rRes));
+          } catch {}
+        }
+        if (Array.isArray(uRes) && uRes.length > 0) setUsers(uRes);
+        if (Array.isArray(lRes) && lRes.length > 0) setLogs(lRes);
+        if (bRes && bRes.schedule) setBackupConfig(bRes);
+        if (nRes && nRes.pushEnabled !== undefined) setNotificationConfig(nRes);
+        if (Array.isArray(pRes) && pRes.length > 0) setPlans(pRes);
+        if (Array.isArray(iRes) && iRes.length > 0) setInvoices(iRes);
+        if (mpRes && mpRes.accessToken) setMpConfig(mpRes);
+        if (archCfgRes && archCfgRes.primaryTopology) setArchitectureConfig(archCfgRes);
+        if (Array.isArray(streamsRes)) setStreams(streamsRes);
+        if (Array.isArray(companiesRes) && companiesRes.length > 0) setCompanies(companiesRes);
+        if (wlRes && wlRes.name) setWhitelabelConfig(wlRes);
+        if (archCfgRes && archCfgRes.primaryTopology) setArchitectureConfig(archCfgRes);
+        if (Array.isArray(streamsRes)) setStreams(streamsRes);
+      } catch (err) {
+        console.log('Dados locais mantidos com sucesso.');
+      }
+    };
+
+    fetchBackendData();
+    return () => { isMounted = false; };
+  }, [activeUser.id]);
+
+  // Periodic recordings sync
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/recordings?limit=50');
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (Array.isArray(data.recordings) ? data.recordings : []);
+        if (list.length > 0) {
+          setRecordings((prev) => {
+            if (prev.length !== list.length) return list;
+            const prevKeys = prev.map((r) => `${r.id}_${r.durationSeconds}_${r.fileSizeMB}`).join('|');
+            const nextKeys = list.map((r) => `${r.id}_${r.durationSeconds}_${r.fileSizeMB}`).join('|');
+            return prevKeys === nextKeys ? prev : list;
+          });
+        }
+      } catch (e) {}
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [isLoggedIn]);
+
+  // Handlers
+  const handleAddCamera = async (camData: Partial<Camera>) => {
+    try {
+      const res = await fetch('/api/cameras', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(camData),
+      });
+      const newCam = await res.json();
+      if (newCam && newCam.id) {
+        setCameras((prev) => [newCam, ...prev.filter((c) => c.id !== newCam.id)]);
+        if (activeUser.allowedCameraIds && !activeUser.allowedCameraIds.includes('ALL')) {
+          if (!activeUser.allowedCameraIds.includes(newCam.id)) {
+            const updatedAllowed = [...activeUser.allowedCameraIds, newCam.id];
+            setActiveUser((prev) => ({ ...prev, allowedCameraIds: updatedAllowed }));
+            setUsers((prev) =>
+              prev.map((u) => (u.id === activeUser.id ? { ...u, allowedCameraIds: updatedAllowed } : u))
+            );
+          }
+        }
+        return;
+      }
+    } catch (e) {}
+    const fallback: Camera = {
+      id: `cam-${Date.now()}`,
+      name: camData.name || 'Nova Câmera RTSP',
+      location: camData.location || 'Localização Personalizada',
+      protocol: camData.protocol || 'RTSP',
+      rtspUrl: camData.rtspUrl || '',
+      rtmpUrl: camData.rtmpUrl || '',
+      streamKey: camData.streamKey || '',
+      rtmpServerUrl: camData.rtmpServerUrl || '',
+      fullRtmpUrl: camData.fullRtmpUrl || '',
+      stateUf: camData.stateUf || 'BA',
+      city: camData.city || 'Itamaraju',
+      status: 'ONLINE',
+      isE2EEEncrypted: true,
+      fps: 30,
+      resolution: '1080p (Full HD)',
+      storageUsedGB: 0.1,
+      cloudRecordingsActive: true,
+      motionSensitivity: camData.motionSensitivity ?? 8,
+      aiDetectionEnabled: false,
+      twoWayAudioEnabled: true,
+      lat: camData.lat || -17.0397,
+      lng: camData.lng || -39.5312,
+      createdAt: new Date().toISOString(),
+    };
+    setCameras((prev) => [fallback, ...prev]);
+    if (activeUser.allowedCameraIds && !activeUser.allowedCameraIds.includes('ALL')) {
+      if (!activeUser.allowedCameraIds.includes(fallback.id)) {
+        const updatedAllowed = [...activeUser.allowedCameraIds, fallback.id];
+        setActiveUser((prev) => ({ ...prev, allowedCameraIds: updatedAllowed }));
+        setUsers((prev) =>
+          prev.map((u) => (u.id === activeUser.id ? { ...u, allowedCameraIds: updatedAllowed } : u))
+        );
+      }
+    }
+  };
+
+  const handleUpdateCamera = async (id: string, updatedData: Partial<Camera>) => {
+    setCameras((prev) => prev.map((c) => (c.id === id ? { ...c, ...updatedData } : c)));
+    try {
+      await fetch(`/api/cameras/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedData),
+      });
+    } catch (e) {}
+  };
+
+  const handleDeleteCamera = async (id: string) => {
+    setCameras((prev) => prev.filter((c) => c.id !== id));
+    try {
+      await fetch(`/api/cameras/${id}`, { method: 'DELETE' });
+    } catch (e) {}
+  };
+
+  const handleDeleteRecording = async (id: string) => {
+    if (activeUser.role === 'VIEWER' || activeUser.role === 'RESIDENT' || !activeUser.customPermissions?.canDeleteRecordings) {
+      alert('Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.');
+      return;
+    }
+    setRecordings((prev) => {
+      const next = prev.filter((r) => r.id !== id);
+      try { localStorage.setItem('itl_recordings', JSON.stringify(next)); } catch {}
+      return next;
+    });
+    try {
+      const res = await fetch(`/api/recordings/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: getUserAuthHeaders(),
+      });
+      const data = await res.json();
+      if (data && Array.isArray(data.remainingRecordings)) {
+        setRecordings(data.remainingRecordings);
+        try { localStorage.setItem('itl_recordings', JSON.stringify(data.remainingRecordings)); } catch {}
+      }
+    } catch (e) {}
+  };
+
+  const handleDeleteRecordingsBatch = async (ids: string[]) => {
+    if (activeUser.role === 'VIEWER' || activeUser.role === 'RESIDENT' || !activeUser.customPermissions?.canDeleteRecordings) {
+      alert('Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.');
+      return;
+    }
+    setRecordings((prev) => {
+      const next = prev.filter((r) => !ids.includes(r.id));
+      try { localStorage.setItem('itl_recordings', JSON.stringify(next)); } catch {}
+      return next;
+    });
+    try {
+      const res = await fetch('/api/recordings/batch-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getUserAuthHeaders() },
+        body: JSON.stringify({ ids }),
+      });
+      const data = await res.json();
+      if (data && Array.isArray(data.remainingRecordings)) {
+        setRecordings(data.remainingRecordings);
+        try { localStorage.setItem('itl_recordings', JSON.stringify(data.remainingRecordings)); } catch {}
+      }
+    } catch (e) {}
+  };
+
+  const handleDeleteAllRecordings = async (options?: { ids?: string[]; date?: string; cameraId?: string }) => {
+    if (activeUser.role === 'VIEWER' || activeUser.role === 'RESIDENT' || !activeUser.customPermissions?.canDeleteRecordings) {
+      alert('Usuários com perfil Visualizador ou Vizinho não possuem permissão para excluir gravações.');
+      return;
+    }
+    try {
+      const res = await fetch('/api/recordings/delete-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getUserAuthHeaders() },
+        body: JSON.stringify(options || { ids: ['ALL'] }),
+      });
+      const data = await res.json();
+      const nextList = (data && Array.isArray(data.remainingRecordings)) ? data.remainingRecordings : [];
+      setRecordings(nextList);
+      try { localStorage.setItem('itl_recordings', JSON.stringify(nextList)); } catch {}
+    } catch (e) {
+      setRecordings([]);
+      try { localStorage.setItem('itl_recordings', JSON.stringify([])); } catch {}
+    }
+  };
+
+  const getUserAuthHeaders = (): Record<string, string> => {
+    if (!activeUser) return {};
+    return {
+      'x-user-id': activeUser.id,
+      'x-user-email': activeUser.email,
+      'Authorization': `Bearer ${activeUser.id}`,
+    };
+  };
+
+  const handleAddUser = async (userData: Partial<User>): Promise<User | null> => {
+    try {
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getUserAuthHeaders(),
+        },
+        body: JSON.stringify(userData),
+      });
+
+      let data: any = null;
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        throw new Error(
+          res.status === 502
+            ? 'Erro 502: O servidor está reiniciando ou indisponível. Aguarde alguns instantes e tente novamente.'
+            : res.ok
+            ? 'Resposta inesperada do servidor'
+            : `Erro ${res.status}: Servidor temporariamente indisponível`
+        );
+      }
+
+      if (res.ok && data && data.id) {
+        const fullSavedUser: User = {
+          ...data,
+          ...(userData.password ? { password: userData.password } : {}),
+        };
+        setUsers((prev) => {
+          const next = [...prev.filter((u) => u.id !== fullSavedUser.id && u.email?.toLowerCase() !== fullSavedUser.email?.toLowerCase()), fullSavedUser];
+          try { localStorage.setItem('itl_users', JSON.stringify(next)); } catch {}
+          return next;
+        });
+        return fullSavedUser;
+      } else {
+        alert(data?.error || 'Erro ao cadastrar usuário no banco de dados.');
+        return null;
+      }
+    } catch (e: any) {
+      alert(`Falha de conexão ao cadastrar usuário: ${e.message || e}`);
+      return null;
+    }
+  };
+
+  const handleUpdateUser = async (id: string, updatedData: Partial<User>): Promise<User | null> => {
+    try {
+      const res = await fetch(`/api/users/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getUserAuthHeaders(),
+        },
+        body: JSON.stringify(updatedData),
+      });
+
+      let data: any = null;
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        throw new Error(
+          res.status === 502
+            ? 'Erro 502: O servidor está reiniciando ou indisponível. Aguarde alguns instantes e tente novamente.'
+            : res.ok
+            ? 'Resposta inesperada do servidor'
+            : `Erro ${res.status}: Servidor temporariamente indisponível`
+        );
+      }
+
+      if (res.ok && data && data.id) {
+        const fullUpdatedUser: User = {
+          ...data,
+          ...updatedData,
+          id: data.id,
+        };
+        setUsers((prev) => {
+          const next = prev.map((u) => (u.id === id || u.id === data.id ? { ...u, ...fullUpdatedUser } : u));
+          try { localStorage.setItem('itl_users', JSON.stringify(next)); } catch {}
+          return next;
+        });
+        if (activeUser.id === id || activeUser.id === data.id) {
+          setActiveUser((prev) => ({ ...prev, ...fullUpdatedUser }));
+        }
+        return fullUpdatedUser;
+      } else {
+        alert(data?.error || 'Erro ao atualizar dados do usuário.');
+        return null;
+      }
+    } catch (e: any) {
+      alert(`Falha de conexão ao atualizar usuário: ${e.message || e}`);
+      return null;
+    }
+  };
+
+  const handleDeleteUser = async (id: string) => {
+    try {
+      const res = await fetch(`/api/users/${id}`, {
+        method: 'DELETE',
+        headers: getUserAuthHeaders(),
+      });
+      if (res.ok) {
+        setUsers((prev) => {
+          const next = prev.filter((u) => u.id !== id);
+          try { localStorage.setItem('itl_users', JSON.stringify(next)); } catch {}
+          return next;
+        });
+      }
+    } catch (e) {}
+  };
+
+  // Financial status calculation for active user
+  const activeUserInvoice = invoices.find(
+    (inv) => inv.userId === activeUser.id && (inv.status === 'PENDING' || inv.status === 'OVERDUE')
+  );
+  const financialStatusInfo = activeUserInvoice
+    ? checkInvoiceFinancialStatus(activeUserInvoice.dueDate, activeUserInvoice.status)
+    : { financialStatus: 'OK' as const, daysUntilDue: 999, daysOverdue: 0, shouldAlert: false, shouldBlock: false, message: 'Fatura em dia.' };
+
+  const handlePayInvoiceFromApp = async (invoiceId: string) => {
+    try {
+      await fetch(`/api/financial/invoices/${invoiceId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'PAID',
+          paymentDate: new Date().toISOString().split('T')[0],
+        }),
+      });
+    } catch (e) {}
+    setInvoices((prev) =>
+      prev.map((i) =>
+        i.id === invoiceId
+          ? { ...i, status: 'PAID' as const, paymentDate: new Date().toISOString().split('T')[0] }
+          : i
+      )
+    );
+  };
+
+  const handleSaveMpConfig = async (newConfig: MercadoPagoConfig) => {
+    try {
+      const res = await fetch('/api/mercadopago/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newConfig),
+      });
+      const data = await res.json();
+      if (data && data.accessToken) {
+        setMpConfig(data);
+        return;
+      }
+    } catch (e) {}
+    setMpConfig(newConfig);
+  };
+
+  const handleUpdateArchitectureConfig = async (cfg: ArchitectureConfig) => {
+    try {
+      await fetch('/api/v1/architecture/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg),
+      });
+    } catch (e) {}
+    setArchitectureConfig(cfg);
+  };
+
+  // White Label & Companies Handlers
+  const handleSaveCompany = async (comp: Company) => {
+    try {
+      const exists = companies.some((c) => c.id === comp.id);
+      const method = exists ? 'PUT' : 'POST';
+      const endpoint = exists ? `/api/companies/${comp.id}` : '/api/companies';
+      const res = await fetch(endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(comp),
+      });
+      const saved = await res.json();
+      if (saved && saved.id) {
+        setCompanies((prev) => {
+          const idx = prev.findIndex((c) => c.id === saved.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = saved;
+            return next;
+          }
+          return [...prev, saved];
+        });
+        return;
+      }
+    } catch (e) {}
+    setCompanies((prev) => {
+      const idx = prev.findIndex((c) => c.id === comp.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = comp;
+        return next;
+      }
+      return [...prev, comp];
+    });
+  };
+
+  const handleDeleteCompany = async (companyId: string) => {
+    try {
+      await fetch(`/api/companies/${companyId}`, { method: 'DELETE' });
+    } catch (e) {}
+    setCompanies((prev) => prev.filter((c) => c.id !== companyId));
+    if (previewCompany?.id === companyId) {
+      setPreviewCompany(null);
+    }
+  };
+
+  const handleSaveGlobalWhiteLabel = async (config: WhiteLabelConfig) => {
+    try {
+      const res = await fetch('/api/whitelabel/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      const data = await res.json();
+      if (data && data.name) {
+        setWhitelabelConfig(data);
+        return;
+      }
+    } catch (e) {}
+    setWhitelabelConfig(config);
+  };
+
+  // Render Public Landing Page for Guests
+  if (!isLoggedIn) {
+    return (
+      <>
+        <LandingPage
+          onOpenLogin={() => setIsLoginModalOpen(true)}
+          cameras={cameras}
+          onSelectCamera={(cam) => setInspectingCamera(cam)}
+        />
+
+        <AdminLoginModal
+          isOpen={isLoginModalOpen}
+          onClose={() => setIsLoginModalOpen(false)}
+          onLoginSuccess={(loggedInUser) => {
+            setActiveUser(loggedInUser);
+            setIsLoggedIn(true);
+            setActiveTab('live-grid');
+          }}
+          activeUser={activeUser}
+        />
+      </>
+    );
+  }
+
+  // Active White Label configuration calculation
+  const activeCompany = previewCompany || (activeUser?.companyId ? companies.find((c) => c.id === activeUser.companyId) : null);
+  const activeWhiteLabel = resolveWhiteLabelConfig(activeCompany, whitelabelConfig);
+
+  // Render Authenticated Dashboard
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans antialiased selection:bg-rose-500 selection:text-white">
+      {/* System Blocked Overlay when overdue > 5 days */}
+      {financialStatusInfo.shouldBlock && (
+        <SystemBlockedOverlay
+          user={activeUser}
+          overdueInvoice={activeUserInvoice}
+          onPaymentSuccess={handlePayInvoiceFromApp}
+        />
+      )}
+
+      {/* Top Financial Alert Banner when 5 days before due or <=5 days overdue */}
+      {financialStatusInfo.shouldAlert && activeUserInvoice && !financialStatusInfo.shouldBlock && (
+        <FinancialAlertBanner
+          invoice={activeUserInvoice}
+          daysUntilDue={financialStatusInfo.daysUntilDue}
+          daysOverdue={financialStatusInfo.daysOverdue}
+          onOpenPaymentModal={() => setActiveTab('financial-management')}
+        />
+      )}
+
+      {/* Top Navigation */}
+      <Navbar
+        activeUser={activeUser}
+        onSelectUser={setActiveUser}
+        allUsers={users}
+        onOpenE2EEModal={() => setIsE2EEModalOpen(true)}
+        onOpenLoginModal={() => setIsLoginModalOpen(true)}
+        onLogout={() => {
+          setIsLoggedIn(false);
+          clearAuthSession();
+        }}
+        isVaultUnlocked={e2eeSettings.isVaultUnlocked}
+        whitelabelConfig={activeWhiteLabel}
+      />
+
+      {/* Main Body Layout */}
+      <div className={`flex flex-1 ${isSidebarCollapsed ? 'max-w-[1920px]' : 'max-w-7xl'} w-full mx-auto transition-all duration-300`}>
+        <Sidebar
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          totalCameras={cameras.length}
+          activeUser={activeUser}
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
+        />
+
+        {/* Mobile Tab Navigation */}
+        <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900 border-t border-slate-800 flex items-center justify-around p-2 text-[10px] text-slate-400">
+          {(activeUser.role === 'ADMIN' || (activeUser.allowedTabs ? activeUser.allowedTabs.includes('dashboard') : (activeUser.role !== 'VIEWER' && activeUser.role !== 'RESIDENT'))) && (
+            <button onClick={() => setActiveTab('dashboard')} className={`p-1.5 flex flex-col items-center ${activeTab === 'dashboard' ? 'text-emerald-400 font-bold' : ''}`}>
+              Dashboard
+            </button>
+          )}
+          {(!activeUser.allowedTabs || activeUser.allowedTabs.includes('live-grid')) && (
+            <button onClick={() => setActiveTab('live-grid')} className={`p-1.5 flex flex-col items-center ${activeTab === 'live-grid' ? 'text-emerald-400 font-bold' : ''}`}>
+              Câmeras
+            </button>
+          )}
+          {(activeUser.role === 'ADMIN' || (activeUser.allowedTabs ? activeUser.allowedTabs.includes('camera-map') : activeUser.role !== 'VIEWER')) && (
+            <button onClick={() => setActiveTab('camera-map')} className={`p-1.5 flex flex-col items-center ${activeTab === 'camera-map' ? 'text-emerald-400 font-bold' : ''}`}>
+              Mapa
+            </button>
+          )}
+          {(activeUser.role === 'ADMIN' || (activeUser.allowedTabs ? activeUser.allowedTabs.includes('cloud-recordings') : Boolean(activeUser.customPermissions?.canViewRecordings))) && (
+            <button onClick={() => setActiveTab('cloud-recordings')} className={`p-1.5 flex flex-col items-center ${activeTab === 'cloud-recordings' ? 'text-emerald-400 font-bold' : ''}`}>
+              Nuvem
+            </button>
+          )}
+          {(activeUser.role === 'ADMIN' || Boolean(activeUser.customPermissions?.canManageUsers)) && (
+            <button onClick={() => setActiveTab('user-management')} className={`p-1.5 flex flex-col items-center ${activeTab === 'user-management' ? 'text-emerald-400 font-bold' : ''}`}>
+              Acesso
+            </button>
+          )}
+        </div>
+
+        {/* Content Area */}
+        <main className="flex-1 p-4 sm:p-6 pb-20 md:pb-6 overflow-x-hidden">
+          {activeTab === 'dashboard' && isTabPermitted('dashboard', activeUser) && (
+            <Dashboard
+              cameras={cameras}
+              users={users}
+              recordings={recordings}
+              logs={logs}
+              invoices={invoices}
+              activeUser={activeUser}
+              onSelectCamera={setInspectingCamera}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onUpdateCameras={(updatedCams) => setCameras(updatedCams)}
+            />
+          )}
+
+          {activeTab === 'live-grid' && (
+            <CameraGrid
+              cameras={cameras}
+              activeUser={activeUser}
+              onSelectCamera={setInspectingCamera}
+              onTriggerTestAlert={() => {}}
+              onUpdateCamera={handleUpdateCamera}
+              onDvrModeChange={(isDvr) => setIsSidebarCollapsed(isDvr)}
+            />
+          )}
+
+          {activeTab === 'camera-map' && isTabPermitted('camera-map', activeUser) && (
+            <CameraMap cameras={cameras} onSelectCamera={setInspectingCamera} isLoggedIn={isLoggedIn} currentUser={activeUser} />
+          )}
+
+          {activeTab === 'cloud-recordings' && isTabPermitted('cloud-recordings', activeUser) && (
+            <CloudRecordingsVault
+              recordings={recordings}
+              cameras={cameras}
+              activeUser={activeUser}
+              onDeleteRecording={handleDeleteRecording}
+              onDeleteRecordingsBatch={handleDeleteRecordingsBatch}
+              onDeleteAllRecordings={handleDeleteAllRecordings}
+              isVaultUnlocked={true}
+              onUnlockVault={() => {}}
+            />
+          )}
+
+          {activeTab === 'dvr-agents' && isTabPermitted('dvr-agents', activeUser) && (
+            <DvrAgentManager currentUser={activeUser} />
+          )}
+
+          {activeTab === 'camera-admin' && isTabPermitted('camera-admin', activeUser) && (
+            <CameraAdminPanel
+              cameras={cameras}
+              activeUser={activeUser}
+              onAddCamera={handleAddCamera}
+              onDeleteCamera={handleDeleteCamera}
+              onUpdateCamera={handleUpdateCamera}
+            />
+          )}
+
+          {activeTab === 'user-management' && (
+            (activeUser.role === 'ADMIN' || activeUser.customPermissions?.canManageUsers) ? (
+              <UserManagement
+                users={users}
+                cameras={cameras}
+                activeUser={activeUser}
+                onAddUser={handleAddUser}
+                onUpdateUser={handleUpdateUser}
+                onDeleteUser={handleDeleteUser}
+                onSelectUser={setActiveUser}
+              />
+            ) : (
+              <div className="p-8 text-center bg-slate-900 border border-slate-800 rounded-2xl max-w-lg mx-auto my-12 space-y-3">
+                <div className="w-12 h-12 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center font-bold">
+                  !
+                </div>
+                <h3 className="font-bold text-sm text-slate-100">Acesso Restrito a Administradores</h3>
+                <p className="text-xs text-slate-400">
+                  A aba de Acesso Multiusuário e Gerenciamento de Usuários está disponível apenas para contas com perfil Administrador.
+                </p>
+              </div>
+            )
+          )}
+
+          {activeTab === 'api-docs' && isTabPermitted('api-docs', activeUser) && (
+            <ApiDocumentationPanel />
+          )}
+
+          {activeTab === 'financial-management' && isTabPermitted('financial-management', activeUser) && (
+            <FinancialManagement
+              currentUser={activeUser}
+              users={users}
+              invoices={invoices}
+              mpConfig={mpConfig}
+              onUpdateInvoices={setInvoices}
+              onUpdateUsers={setUsers}
+              onOpenMpSettings={() => setIsMpSettingsOpen(true)}
+            />
+          )}
+
+          {activeTab === 'activity-reports' && isTabPermitted('activity-reports', activeUser) && (
+            <ActivityReports logs={logs} activeUser={activeUser} />
+          )}
+
+          {activeTab === 'backup-manager' && isTabPermitted('backup-manager', activeUser) && (
+            <BackupManager
+              config={backupConfig}
+              activeUser={activeUser}
+              onTriggerBackup={() => {
+                setBackupConfig((prev) => ({ ...prev, lastBackupDate: new Date().toISOString().replace('T', ' ').substring(0, 19) }));
+              }}
+              onUpdateConfig={(newCfg) => setBackupConfig((prev) => ({ ...prev, ...newCfg }))}
+            />
+          )}
+
+          {activeTab === 'db-diagnostics' && isTabPermitted('db-diagnostics', activeUser) && (
+            <DatabaseDiagnosticsPanel activeUser={activeUser} />
+          )}
+
+          {activeTab === 'white-label-admin' && isTabPermitted('white-label-admin', activeUser) && (
+            <WhiteLabelAdminPanel
+              companies={companies}
+              cameras={cameras}
+              users={users}
+              onSaveCompany={handleSaveCompany}
+              onDeleteCompany={handleDeleteCompany}
+              activeCompanyId={previewCompany?.id}
+              onSelectCompanyPreview={setPreviewCompany}
+              globalConfig={whitelabelConfig}
+              onSaveGlobalConfig={handleSaveGlobalWhiteLabel}
+            />
+          )}
+
+          {activeTab === 'company-clients' && isTabPermitted('company-clients', activeUser) && (
+            (() => {
+              const userCompany = companies.find((c) => c.id === activeUser.companyId) || companies[0];
+              if (!userCompany) {
+                return (
+                  <div className="p-8 text-center bg-slate-900 border border-slate-800 rounded-2xl max-w-lg mx-auto my-12 space-y-3">
+                    <h3 className="font-bold text-sm text-slate-100">Nenhuma empresa associada</h3>
+                    <p className="text-xs text-slate-400">Entre em contato com a central para vincular sua conta a uma empresa parceira.</p>
+                  </div>
+                );
+              }
+              return (
+                <CompanyClientManager
+                  company={userCompany}
+                  cameras={cameras}
+                  users={users}
+                  onSaveUser={(u) => {
+                    if (users.some((existing) => existing.id === u.id)) {
+                      handleUpdateUser(u.id, u);
+                    } else {
+                      handleAddUser(u);
+                    }
+                  }}
+                  onDeleteUser={handleDeleteUser}
+                  currentUser={activeUser}
+                />
+              );
+            })()
+          )}
+        </main>
+      </div>
+
+      {/* Camera Inspector Modal */}
+      {inspectingCamera && (
+        <CameraDetailModal
+          camera={inspectingCamera}
+          activeUser={activeUser}
+          onClose={() => setInspectingCamera(null)}
+          onTriggerTestAlert={() => {}}
+          onUpdateCamera={handleUpdateCamera}
+        />
+      )}
+
+      {/* Admin Login Modal */}
+      <AdminLoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => setIsLoginModalOpen(false)}
+        onLoginSuccess={(loggedInUser) => {
+          setActiveUser(loggedInUser);
+          setIsLoggedIn(true);
+        }}
+        activeUser={activeUser}
+      />
+
+      {/* Mercado Pago API Settings Modal (Super Admin) */}
+      <MercadoPagoSettingsModal
+        isOpen={isMpSettingsOpen}
+        onClose={() => setIsMpSettingsOpen(false)}
+        config={mpConfig}
+        onSaveConfig={handleSaveMpConfig}
+        currentUser={activeUser}
+      />
+    </div>
+  );
+}
