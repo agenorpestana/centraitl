@@ -164,7 +164,7 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           }
 
           // Apenas se o fluxo estiver completamente estagnado por mais de 15 segundos sem novos fragmentos
-          if (frozenCount >= 3 && timeSinceLastFrag >= 15000) {
+          if (frozenCount >= 4 && timeSinceLastFrag >= 30000) {
             console.warn(`[Watchdog ITL] Fluxo de '${camera.name}' paralisado sem dados há ${Math.round(timeSinceLastFrag / 1000)}s. Reconectando suavemente...`);
             frozenCount = 0;
             lastTime = -1;
@@ -518,21 +518,21 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
           hlsInstance = new HlsClass({
             enableWorker: true,
             lowLatencyMode: false,
-            backBufferLength: 30,
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
-            maxBufferSize: 60 * 1024 * 1024,
-            liveSyncDurationCount: 3, // Inicia a 3 segmentos (~6s), prevenindo stall aos 4s e garantindo fluxo contínuo
-            liveMaxLatencyDurationCount: 8,
-            maxBufferHole: 0.8,
-            highBufferWatchdogPeriod: 1,
+            backBufferLength: 60,
+            maxBufferLength: 45,
+            maxMaxBufferLength: 90,
+            maxBufferSize: 80 * 1024 * 1024,
+            liveSyncDurationCount: 3, // Inicia a 3 segmentos (~6s), garantindo fluxo contínuo
+            liveMaxLatencyDurationCount: 25, // Permite margem de buffer de 50s sem forçar saltos bruscos
+            maxBufferHole: 1.0,
+            highBufferWatchdogPeriod: 2,
             nudgeOffset: 0.1,
             nudgeMaxRetry: 10,
-            manifestLoadingTimeOut: 15000,
+            manifestLoadingTimeOut: 20000,
             manifestLoadingMaxRetry: 10,
-            levelLoadingTimeOut: 15000,
+            levelLoadingTimeOut: 20000,
             levelLoadingMaxRetry: 10,
-            fragLoadingTimeOut: 15000,
+            fragLoadingTimeOut: 20000,
             fragLoadingMaxRetry: 10,
             liveDurationInfinity: true,
           });
@@ -560,14 +560,8 @@ export const LiveStreamPlayer: React.FC<LiveStreamPlayerProps> = ({
                 if (videoElement.paused) {
                   videoElement.play().catch(() => {});
                 } else {
-                  // Recuperação suave de stall: avança levemente se houver dados buffered adiante
-                  const buf = videoElement.buffered;
-                  if (buf && buf.length > 0) {
-                    const lastBufEnd = buf.end(buf.length - 1);
-                    if (videoElement.currentTime < lastBufEnd - 0.2) {
-                      videoElement.currentTime = videoElement.currentTime + 0.1;
-                    }
-                  }
+                  // Solicita continuação de carregamento sem pular quadro para não travar decodificador
+                  try { hlsInstance.startLoad(); } catch (e) {}
                   videoElement.play().catch(() => {});
                 }
               } catch (e) {}

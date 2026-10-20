@@ -153,7 +153,8 @@ export function buildLiveStreamArgs(
     );
   } else if (streamSource.startsWith('rtmp://')) {
     args.push(
-      '-rw_timeout', '15000000',
+      '-rtmp_live', 'live',
+      '-rtmp_buffer', '1000',
       '-analyzeduration', '500000',
       '-probesize', '500000'
     );
@@ -223,8 +224,8 @@ export function buildLiveStreamArgs(
     }
   }
 
-  const hlsTime = String(options.hlsTimeSec || 1);
-  const hlsListSize = String(options.hlsListSize || 5);
+  const hlsTime = String(options.hlsTimeSec || 2);
+  const hlsListSize = String(options.hlsListSize || 30);
 
   args.push(
     '-an',
@@ -269,7 +270,8 @@ export function buildRecordingArgs(
     );
   } else if (streamSource.startsWith('rtmp://')) {
     args.push(
-      '-rw_timeout', '20000000',
+      '-rtmp_live', 'live',
+      '-rtmp_buffer', '1000',
       '-analyzeduration', '1000000',
       '-probesize', '1000000'
     );

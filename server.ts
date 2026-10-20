@@ -522,16 +522,17 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   if (streamSource.startsWith('rtsp://')) {
     ffmpegArgs.push(
       '-rtsp_transport', 'tcp',
-      '-stimeout', '10000000',
-      '-analyzeduration', '2000000',
-      '-probesize', '2000000'
+      '-stimeout', '15000000',
+      '-analyzeduration', '1000000',
+      '-probesize', '1000000'
     );
   } else if (streamSource.startsWith('rtmp://')) {
     // RTMP: Estabilização de fluxo de rede com buffer adequado para prevenir travamentos
     ffmpegArgs.push(
-      '-rw_timeout', '15000000',
-      '-analyzeduration', '2000000',
-      '-probesize', '2000000'
+      '-rtmp_live', 'live',
+      '-rtmp_buffer', '1000',
+      '-analyzeduration', '1000000',
+      '-probesize', '1000000'
     );
   } else if (streamSource.startsWith('http://') || streamSource.startsWith('https://')) {
     ffmpegArgs.push(
@@ -543,7 +544,9 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
   }
 
   ffmpegArgs.push(
-    '-fflags', '+genpts+discardcorrupt',
+    '-avoid_negative_ts', 'make_zero',
+    '-fflags', '+genpts+discardcorrupt+nobuffer',
+    '-flags', 'low_delay',
     '-i', streamSource,
     '-map', '0:v:0?'
   );
@@ -556,18 +559,18 @@ function startCameraRtspStream(cam: Camera, forceRestart = false, isSubStream = 
     '-bsf:v', 'dump_extra,h264_mp4toannexb'
   );
 
-  // Segmentação HLS profissional (2s por segmento, 10 segmentos = 20s de buffer deslizante contínuo).
-  // temp_file garante escrita atômica para que o player nunca leia segmentos incompletos.
+  // Segmentação HLS profissional estável (2s por segmento, 30 segmentos = 60s de buffer deslizante contínuo).
+  // Garante que o player nunca fique sem fragmentos ou trave após 15 a 20 segundos.
   const hlsSegmentDuration = '2';
-  const hlsListSize = '10';
-  const hlsDeleteThreshold = '4';
+  const hlsListSize = '30';
+  const hlsDeleteThreshold = '10';
 
   ffmpegArgs.push(
     '-an',
     '-f', 'hls',
     '-hls_time', hlsSegmentDuration,
     '-hls_list_size', hlsListSize,
-    '-hls_flags', 'delete_segments+temp_file',
+    '-hls_flags', 'delete_segments+split_by_time',
     '-hls_delete_threshold', hlsDeleteThreshold,
     '-hls_segment_type', 'mpegts',
     '-hls_segment_filename', path.join(hlsDir, `${key}_%05d.ts`),
@@ -964,6 +967,15 @@ async function startServer() {
     }
 
     if (fileName.endsWith('.ts')) {
+      for (let w = 0; w < 10; w++) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const retryMatch = findMatchingFile();
+        if (retryMatch) {
+          res.setHeader('Content-Type', 'video/mp2t');
+          res.setHeader('Cache-Control', 'public, max-age=60');
+          return res.sendFile(retryMatch);
+        }
+      }
       res.setHeader('Content-Type', 'video/mp2t');
       res.setHeader('Cache-Control', 'no-cache');
       return res.status(404).send('Segment not ready');
@@ -1239,8 +1251,31 @@ async function startServer() {
   const activeRecordings = new Map<string, ActiveRecordingSession>();
 
   const pad2 = (n: number) => n.toString().padStart(2, '0');
-  const formatDateTime = (d: Date) =>
-    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  function formatDateTimeBR(dateInput: Date | number | string): string {
+    if (!dateInput) return '';
+    const d = typeof dateInput === 'number'
+      ? new Date(dateInput)
+      : (dateInput instanceof Date ? dateInput : new Date(dateInput));
+    if (isNaN(d.getTime())) return '';
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).formatToParts(d);
+      const m: Record<string, string> = {};
+      for (const p of parts) m[p.type] = p.value;
+      return `${m.year}-${m.month}-${m.day} ${m.hour}:${m.minute}:${m.second}`;
+    } catch (e) {
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+    }
+  }
+  const formatDateTime = formatDateTimeBR;
 
   const LOGS_FILE = path.join(process.cwd(), 'itl_logs.json');
 
@@ -3405,7 +3440,9 @@ async function startServer() {
   }
 
   async function pruneRecordingsFIFO(customLimitGB?: number): Promise<{ prunedCount: number; currentGB: number; limitGB: number }> {
-    let maxGB = customLimitGB || backupConfig?.storageLimitGB || 100;
+    let maxGB = (typeof customLimitGB === 'number' && !isNaN(customLimitGB) && customLimitGB > 0)
+      ? customLimitGB
+      : (backupConfig?.storageLimitGB || 100);
     if (!customLimitGB && sqliteDb) {
       try {
         const storageRes = sqliteDb.exec("SELECT storage_limit_gb FROM storage_config WHERE id = 'default'");
@@ -3416,29 +3453,46 @@ async function startServer() {
       } catch (e) {}
     }
     const maxBytes = maxGB * 1024 * 1024 * 1024;
+    // O usuário requisitou expressamente: apagar gravações mais antigas quando estiver PRÓXIMO do limite definido.
+    // Limiar de disparo de retenção preventiva: 90% da cota configurada
+    const warningThresholdBytes = maxBytes * 0.90;
+    // Ponto de equilíbrio de descarte (FIFO): reduz até 80% para garantir folga contínua e evitar travamentos
+    const targetCapBytes = maxBytes * 0.80;
 
-    // 1. Medir espaço real consumido no disco em todas as pastas de gravações
-    let totalDiskBytes = 0;
-    const diskFiles: Array<{ name: string; fullPath: string; size: number; mtime: number }> = [];
-    const checkDirs = [
+    // 1. Medir espaço real consumido no disco em todas as pastas de gravações (sem duplicações canônicas)
+    const rawDirs = [
       recordingsDir,
       '/var/www/centralitl.unityautomacoes.com.br/recordings',
       '/var/www/itl-recordings',
       '/tmp/recordings',
       path.join(process.cwd(), 'public', 'recordings'),
     ];
+    const seenDirs = new Set<string>();
+    const checkDirs: string[] = [];
+    for (const d of rawDirs) {
+      if (!fs.existsSync(d)) continue;
+      try {
+        const real = fs.realpathSync(d);
+        if (!seenDirs.has(real)) {
+          seenDirs.add(real);
+          checkDirs.push(d);
+        }
+      } catch (e) {
+        checkDirs.push(d);
+      }
+    }
+
+    let totalDiskBytes = 0;
+    const diskFiles: Array<{ name: string; fullPath: string; size: number; mtime: number }> = [];
 
     for (const dir of checkDirs) {
-      if (!fs.existsSync(dir)) continue;
       try {
-        const entries = fs.readdirSync(dir);
-        for (const entry of entries) {
-          if (!entry.toLowerCase().endsWith('.mp4')) continue;
-          const fp = path.join(dir, entry);
+        const allFiles = getSupportedVideoFilesRecursive(dir, dir);
+        for (const item of allFiles) {
           try {
-            const st = fs.statSync(fp);
+            const st = fs.statSync(item.fullPath);
             totalDiskBytes += st.size;
-            diskFiles.push({ name: entry, fullPath: fp, size: st.size, mtime: st.mtimeMs || st.birthtimeMs || 0 });
+            diskFiles.push({ name: item.fileName, fullPath: item.fullPath, size: st.size, mtime: st.mtimeMs || st.birthtimeMs || 0 });
           } catch (e) {}
         }
       } catch (e) {}
@@ -3447,9 +3501,25 @@ async function startServer() {
     const memBytes = recordings.reduce((acc, r) => acc + ((r.fileSizeMB || 0) * 1024 * 1024), 0);
     let currentUsageBytes = Math.max(totalDiskBytes, memBytes);
 
-    if (currentUsageBytes <= maxBytes) {
+    // Checagem de espaço livre físico do sistema de arquivos
+    let isDiskLowSpace = false;
+    try {
+      if ((fs as any).statfsSync && fs.existsSync(recordingsDir)) {
+        const stats = (fs as any).statfsSync(recordingsDir);
+        const freeGB = (stats.bavail * stats.bsize) / (1024 * 1024 * 1024);
+        if (freeGB < 10) {
+          isDiskLowSpace = true;
+          console.warn(`[FIFO Pruner] AVISO: Disco físico com apenas ${freeGB.toFixed(2)} GB livres. Ativando purga preventiva!`);
+        }
+      }
+    } catch (e) {}
+
+    // Se o uso estiver abaixo de 90% da cota e houver espaço livre no disco, manter gravações
+    if (currentUsageBytes < warningThresholdBytes && !isDiskLowSpace) {
       return { prunedCount: 0, currentGB: currentUsageBytes / (1024 * 1024 * 1024), limitGB: maxGB };
     }
+
+    console.log(`[FIFO Pruner] Gravador próximo ou acima do limite (${(currentUsageBytes / (1024 * 1024 * 1024)).toFixed(2)} GB / ${maxGB} GB). Excluindo gravações mais antigas (FIFO)...`);
 
     // 2. Ordenar cronologicamente as gravações (mais antigas primeiro - FIFO)
     const sorted = [...recordings].sort((a, b) => {
@@ -3461,24 +3531,24 @@ async function startServer() {
     diskFiles.sort((a, b) => a.mtime - b.mtime);
 
     let prunedCount = 0;
-    const targetCapBytes = maxBytes * 0.95; // Prune até 95% da cota para manter margem de operação
 
-    // Limpar gravações registradas em ordem FIFO
+    // Limpar gravações registradas em ordem FIFO até reduzir para 80% da capacidade
     for (const rec of sorted) {
-      if (currentUsageBytes > targetCapBytes) {
+      if (currentUsageBytes > targetCapBytes || isDiskLowSpace) {
         await permanentlyDeleteRecording(rec.id);
         const freed = (rec.fileSizeMB || 30) * 1024 * 1024;
         currentUsageBytes = Math.max(0, currentUsageBytes - freed);
         prunedCount++;
+        if (currentUsageBytes <= targetCapBytes && !isDiskLowSpace) break;
       } else {
         break;
       }
     }
 
-    // Se ainda exceder por arquivos órfãos não cadastrados no banco, excluir os mais antigos diretamente
-    if (currentUsageBytes > targetCapBytes) {
+    // Se ainda exceder por arquivos órfãos não cadastrados no catálogo, excluir arquivos mais antigos diretamente no disco
+    if (currentUsageBytes > targetCapBytes || isDiskLowSpace) {
       for (const df of diskFiles) {
-        if (currentUsageBytes <= targetCapBytes) break;
+        if (currentUsageBytes <= targetCapBytes && !isDiskLowSpace) break;
         if (fs.existsSync(df.fullPath)) {
           try {
             fs.unlinkSync(df.fullPath);
@@ -3495,7 +3565,7 @@ async function startServer() {
       saveToLocalFile();
       saveSqliteFile();
       await flushPersistenceToDisk();
-      console.log(`[FIFO Pruner] Limpeza executada! Removidas ${prunedCount} gravação(ões) mais antigas. Novo uso: ${(currentUsageBytes / (1024 * 1024 * 1024)).toFixed(2)} GB (limite configurado: ${maxGB} GB).`);
+      console.log(`[FIFO Pruner] Limpeza concluída! Removidas ${prunedCount} gravação(ões) mais antigas. Novo uso: ${(currentUsageBytes / (1024 * 1024 * 1024)).toFixed(2)} GB (limite configurado: ${maxGB} GB).`);
       addLog('ITL Storage', `Limpeza automática FIFO executada: ${prunedCount} gravação(ões) antigas removidas. Uso atual: ${(currentUsageBytes / (1024 * 1024 * 1024)).toFixed(2)} GB / ${maxGB} GB`, 'RECORDING');
     }
 
@@ -3627,11 +3697,11 @@ async function startServer() {
         const nameLower = c.name.toLowerCase();
         return baseNoExt.toLowerCase().includes(idLower) || (nameLower.length > 3 && baseNoExt.toLowerCase().includes(nameLower));
       });
-      targetCam = foundInName || camerasList[0];
+      targetCam = foundInName;
     }
 
     const camId = targetCam ? targetCam.id : (parsedCamHint || 'cam-01');
-    const camName = targetCam ? targetCam.name : (parsedCamHint ? `Câmera ${parsedCamHint}` : 'Câmera DVR');
+    const camName = targetCam ? targetCam.name : (parsedCamHint ? `Câmera ${parsedCamHint.replace(/^cam[-_]/i, '')}` : 'Câmera DVR');
 
     return { timestamp, camId, camName, targetCam };
   }
@@ -3641,18 +3711,31 @@ async function startServer() {
     isDiskScanActive = true;
 
     try {
-      const dirsToScan = [
+      const rawDirs = [
         recordingsDir,
         '/var/www/centralitl.unityautomacoes.com.br/recordings',
         '/var/www/itl-recordings',
         '/tmp/recordings',
         path.join(process.cwd(), 'public', 'recordings'),
       ];
+      const seenDirs = new Set<string>();
+      const dirsToScan: string[] = [];
+      for (const d of rawDirs) {
+        if (!fs.existsSync(d)) continue;
+        try {
+          const real = fs.realpathSync(d);
+          if (!seenDirs.has(real)) {
+            seenDirs.add(real);
+            dirsToScan.push(d);
+          }
+        } catch (e) {
+          dirsToScan.push(d);
+        }
+      }
 
       let addedCount = 0;
 
       for (const dirPath of dirsToScan) {
-        if (!fs.existsSync(dirPath)) continue;
         try {
           const videoFiles = getSupportedVideoFilesRecursive(dirPath, dirPath);
 
@@ -3730,13 +3813,11 @@ async function startServer() {
               const endTime = new Date(timestamp + realDurationSec * 1000);
               const fileSizeMB = Math.max(0.1, +(stats.size / (1024 * 1024)).toFixed(1));
 
-              // Gerar thumbnail da gravação
+              // Gerar thumbnail da gravação de forma assíncrona (não bloqueante)
               const thumbFileName = `thumb_disk_${fileName.replace(/\.[^.]+$/, '')}.jpg`;
               const thumbPath = path.join(recordingsDir, thumbFileName);
               if (!fs.existsSync(thumbPath)) {
-                try {
-                  await execAsync(`ffmpeg -y -ss 00:00:01 -i "${targetPath}" -vframes 1 -q:v 2 "${thumbPath}"`, 8000);
-                } catch (e) {}
+                execAsync(`ffmpeg -y -ss 00:00:01 -i "${targetPath}" -vframes 1 -q:v 2 "${thumbPath}"`, 4000).catch(() => {});
               }
 
               const thumbUrl = fs.existsSync(thumbPath)
@@ -3764,6 +3845,12 @@ async function startServer() {
                 isE2EELocked: true,
                 tags: [sliceTag, 'Nuvem Real HD', targetCam ? (targetCam.location || 'Central ITL') : 'Central ITL'],
               };
+
+              // Se o arquivo físico existe no disco, ele é válido e não deve ser filtrado como deletado
+              deletedRecordingIds.delete(recId);
+              deletedRecordingIds.delete(fileName);
+              deletedRecordingIds.delete(relativePath);
+              deletedRecordingIds.delete(relativeUrl);
 
               if (existingIndex >= 0) {
                 recordings[existingIndex] = newRec;
@@ -3880,7 +3967,8 @@ async function startServer() {
         );
       } else if (effectiveInputSource.startsWith('rtmp://')) {
         ffmpegArgs.push(
-          '-rw_timeout', '15000000',
+          '-rtmp_live', 'live',
+          '-rtmp_buffer', '1000',
           '-analyzeduration', '1000000',
           '-probesize', '1000000'
         );
@@ -5794,33 +5882,64 @@ async function startServer() {
       // 1. Filtro por Câmera específica
       if (cameraId && cameraId !== 'ALL') {
         const cleanReqCam = cameraId.replace(/^cam[-_]/i, '').toLowerCase();
+        const targetCamObj = cameras.find((c) => c.id === cameraId || c.id.replace(/^cam[-_]/i, '').toLowerCase() === cleanReqCam);
+        const targetCamName = targetCamObj ? targetCamObj.name.toLowerCase() : '';
         list = list.filter((r) => {
           if (!r.cameraId) return false;
           const cleanRecCam = r.cameraId.replace(/^cam[-_]/i, '').toLowerCase();
-          return r.cameraId === cameraId || cleanRecCam === cleanReqCam;
+          if (r.cameraId === cameraId || cleanRecCam === cleanReqCam) return true;
+          if (targetCamName && r.cameraName && r.cameraName.toLowerCase().includes(targetCamName)) return true;
+          return false;
         });
       }
 
-      // 2. Filtro por Data exata (YYYY-MM-DD)
+      // 2. Filtro por Data exata (YYYY-MM-DD ou DD/MM/YYYY)
       if (date && date !== 'ALL') {
-        list = list.filter((r) => r.startTime && r.startTime.includes(date));
+        let cleanDate = date;
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(date)) {
+          cleanDate = date.split('/').reverse().join('-');
+        }
+        list = list.filter((r) => {
+          if (!r.startTime) return false;
+          if (r.startTime.includes(cleanDate)) return true;
+          const datePart = r.startTime.split(' ')[0] || '';
+          if (datePart === cleanDate) return true;
+          try {
+            const d = new Date(r.startTime.includes(' ') ? r.startTime.replace(' ', 'T') : r.startTime);
+            if (!isNaN(d.getTime())) {
+              const brYMD = formatDateTimeBR(d).split(' ')[0];
+              if (brYMD === cleanDate) return true;
+            }
+          } catch (e) {}
+          return false;
+        });
       } else if (startDate || endDate) {
-        // Faixa de datas
         if (startDate) list = list.filter((r) => r.startTime && r.startTime.split(' ')[0] >= startDate);
         if (endDate) list = list.filter((r) => r.startTime && r.startTime.split(' ')[0] <= endDate);
       }
 
-      // 3. Filtro por Faixa de Horário (HH:MM) - interseção do segmento de vídeo com a janela pesquisada
+      // 3. Filtro por Faixa de Horário (HH:MM) - interseção inteligente com o segmento de vídeo
       if (startTime || endTime) {
         list = list.filter((r) => {
           if (!r.startTime || !r.startTime.includes(' ')) return true;
-          const startPart = r.startTime.split(' ')[1] || '';
-          const endPart = (r.endTime && r.endTime.includes(' ')) ? r.endTime.split(' ')[1] : startPart;
+          let startPart = r.startTime.split(' ')[1] || '';
+          let endPart = (r.endTime && r.endTime.includes(' ')) ? r.endTime.split(' ')[1] : startPart;
           const startLimit = startTime ? (startTime.length === 5 ? `${startTime}:00` : startTime) : '00:00:00';
           const endLimit = endTime ? (endTime.length === 5 ? `${endTime}:59` : endTime) : '23:59:59';
-          if (endPart < startLimit) return false;
-          if (startPart > endLimit) return false;
-          return true;
+
+          // Verificação direta com tolerância
+          if (!(endPart < startLimit || startPart > endLimit)) return true;
+
+          // Se a gravação foi gravada com timestamp UTC no passado, converte para horário local de Brasília
+          try {
+            const d = new Date(r.startTime.replace(' ', 'T') + 'Z');
+            if (!isNaN(d.getTime())) {
+              const brTime = formatDateTimeBR(d).split(' ')[1];
+              if (brTime >= startLimit && brTime <= endLimit) return true;
+            }
+          } catch (e) {}
+
+          return false;
         });
       }
 
@@ -6713,7 +6832,8 @@ async function startServer() {
 
   // Manual Storage FIFO Pruning Trigger Endpoint
   app.post('/api/recordings/prune', async (req, res) => {
-    const limitGB = req.body.limitGB ? parseInt(req.body.limitGB, 10) : backupConfig.storageLimitGB || 100;
+    const parsed = parseFloat(req.body.limitGB);
+    const limitGB = (!isNaN(parsed) && parsed > 0) ? parsed : (backupConfig.storageLimitGB || 100);
     const result = await pruneRecordingsFIFO(limitGB);
     res.json({
       success: true,

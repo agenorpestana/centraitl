@@ -363,10 +363,22 @@ export const CloudRecordingsVault: React.FC<CloudRecordingsVaultProps> = ({
     }
 
     if (selectedCameraId !== 'ALL') {
-      list = list.filter((r) => r.cameraId === selectedCameraId || (r.cameraId || '').replace(/^cam[-_]/i, '') === selectedCameraId.replace(/^cam[-_]/i, ''));
+      const cleanReq = selectedCameraId.replace(/^cam[-_]/i, '').toLowerCase();
+      const targetCam = cameras.find((c) => c.id === selectedCameraId || c.id.replace(/^cam[-_]/i, '').toLowerCase() === cleanReq);
+      const targetName = targetCam ? targetCam.name.toLowerCase() : '';
+      list = list.filter((r) => {
+        const cleanRec = (r.cameraId || '').replace(/^cam[-_]/i, '').toLowerCase();
+        if (r.cameraId === selectedCameraId || cleanRec === cleanReq) return true;
+        if (targetName && r.cameraName && r.cameraName.toLowerCase().includes(targetName)) return true;
+        return false;
+      });
     }
     if (selectedDate && selectedDate !== 'ALL') {
-      list = list.filter((r) => r.startTime && r.startTime.includes(selectedDate));
+      let cleanDate = selectedDate;
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(cleanDate)) {
+        cleanDate = cleanDate.split('/').reverse().join('-');
+      }
+      list = list.filter((r) => r.startTime && (r.startTime.includes(cleanDate) || r.startTime.split(' ')[0] === cleanDate));
     }
     if (selectedStartTime || selectedEndTime) {
       list = list.filter((r) => {
